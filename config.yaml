@@ -1,0 +1,114 @@
+# ============================================================
+# PaperOdyssey global config (single source of truth; business code must not hardcode paths/params/model names)
+# Loaded by: config.py (get_config())
+# Ablation experiments = change only the corresponding switch here (see README: Ablation discipline)
+# ============================================================
+
+seed: 42
+
+# ---- Paths (relative to the project root) ----
+paths:
+  raw: data/raw
+  processed: data/processed
+  indices: data/indices
+  eval: data/eval
+  results: data/results
+
+# ---- kb/ knowledge base ----
+kb:
+  filter:
+    categories: [cs.CL, cs.AI, cs.LG]
+    year_min: 2015
+    year_max: 2025
+    citation_min: 0            # OpenAlex citation-count lower bound (raise for quality, lower for quantity)
+    target_papers: 20000       # target paper count (15k-30k)
+  download:
+    max_concurrency: 4
+    request_interval_s: 3.0    # arXiv rate limiting
+  chunk:
+    mode: section_fixed        # section_fixed | semantic (Q3 ablation)
+    chunk_tokens: 350
+    overlap_tokens: 100
+    tokenizer: tiktoken        # tiktoken | transformers (measurement convention, note in the report)
+    semantic_threshold: 0.8    # semantic chunking similarity threshold (active when mode=semantic)
+    prefix: "[{title}] {section}"   # chunk prefix format
+  store:
+    passages_file: passages.jsonl
+    sqlite_file: papers.sqlite
+  stats:
+    out_file: corpus_stats.json
+
+# ---- retrieval/ retrieval core (ablation matrix changes go here) ----
+retrieval:
+  sparse:
+    enabled: true
+    backend: pyserini           # pyserini | rankbm25 (fallback if Java is unavailable)
+    top_k: 50                   # candidate count per retrieval channel before fusion
+    index_dir: indices/bm25
+  dense:
+    enabled: true
+    model_name: BAAI/bge-large-en-v1.5
+    batch_size: 64
+    fp16: true
+    faiss_dir: indices/faiss
+    hnsw: {M: 32, efConstruction: 200, efSearch: 128}
+    top_k: 50
+  fusion:
+    rrf_k: 60
+    weights: [1.0, 1.0]         # [sparse, dense]
+  rerank:
+    enabled: true
+    model_name: BAAI/bge-reranker-v2-m3
+    top_k: 10
+  parent_doc:
+    enabled: false              # Q3 ablation: parent-document retrieval
+  filters:
+    enabled: true               # Q3 innovation: metadata filtering
+  parallel: true                # run sparse/dense in parallel
+
+# ---- orchestration/ orchestration layer (agentic) ----
+orchestration:
+  num_sub_queries: 3
+  hyde:
+    enabled: false              # Q3 innovation: HyDE query expansion (on = one extra LLM call)
+  review:
+    batch_size: 5
+    max_tokens_per_paper: 1500  # token budget fed to the reviewer per paper (title + abstract + top passages)
+    rubric:                     # fixed scoring dimensions (D10)
+      - relevance              # relevance to the need
+      - coverage               # coverage of the input's aspects
+      - recency                # recency
+      - credibility            # source credibility
+      - technical_depth        # technical depth
+  loop:
+    enabled: true               # Q5 ablation: false = single-round parallel (agentic baseline)
+    max_rounds: 3
+    min_papers: 5               # stop when the pass paper count reaches the target
+    cache: true                 # cache identical inputs (saved under data/results/final_results/)
+  rewrite:
+    max_queries_per_round: 2
+
+# ---- downstream/ (reserved; task type TBD — no switches yet) ----
+
+# ---- llm (DeepSeek by default, OpenAI-compatible; key in .env) ----
+llm:
+  model: ${LLM_MODEL}           # default deepseek-chat (overridden by .env)
+  base_url: ${LLM_BASE_URL}
+  retries: 3
+  max_tokens: 1024
+  temperature: 0.2
+
+# ---- eval/ evaluation ----
+eval:
+  dev_ratio: 0.1                # dev/eval split
+  # (bertscore / ragas config sections return with the downstream task — see eval/README.md)
+
+# ---- ui/ ----
+ui:
+  title: "PaperOdyssey — arXiv Paper RAG"
+  example_inputs:               # Q2: 5 example inputs
+    - "Compare LoRA and full fine-tuning for large language models: methods, trade-offs, and recent variants."
+    - "What techniques improve long-context transformer efficiency since 2023?"
+    - "Summarize approaches to RAG evaluation, including faithfulness and retrieval metrics."
+    - "Which papers propose training-free model merging or ensemble methods?"
+    - "Find recent work on mitigating hallucination in LLM generation."

@@ -1,0 +1,62 @@
+# retrieval/ Retrieval core (Assignment Q2/Q3, 40 points)
+
+## Goal
+
+Each sub-query goes through: `BM25 ∥ BGE dense → RRF → cross-encoder reranking → top-10`.
+Supports metadata filtering (year/category). The four ablation configurations are
+toggleable (EVALUATION.md §2).
+
+## Implementation Requirements
+
+### types.py — Type contracts (read SCHEMA.md first)
+- `ScoredPassage`: passage_id / paper_id / text / score / rank / source stage / metadata (title/year/categories)
+- `RetrievalFilters`: year_min / year_max / categories
+- `RetrieveResult`: hits + latency_ms + per-stage breakdown (needed for Q2 timing and report performance)
+
+### sparse.py — Sparse (D5)
+- Build a Lucene BM25 index with Pyserini (`data/indices/bm25/`); indexed fields: text + metadata
+  (year/categories as filter fields)
+- Query: BM25 scoring + filters (add year/category constraints to the Lucene query)
+- Return top-k (default 50, before reranking) with raw BM25 scores
+- Fallback: if Java is unavailable → rank-bm25 (already listed in `requirements.txt`), note it in the report
+- Forbidden: SQL-LIKE retrieval
+
+### dense.py — Dense (D6)
+- Encoding model: BGE-large-en-v1.5 (sentence-transformers); the model name is config-replaceable
+- **The query side must prepend the instruction prefix**: "Represent this sentence for searching relevant passages: "
+  (BGE retrieval convention; omitting it significantly hurts scores)
+- Index: FAISS HNSW (M=32, efConstruction=200, efSearch config-adjustable),
+  vectors saved under `data/indices/faiss/`; the passage_id ↔ vector-row mapping is stored separately (JSON/parquet)
+- Encoding: batched (config `retrieval.dense.batch_size`); fp16 available on A40; record total encoding time
+- Query: encode the query (same model, same prefix) → FAISS search → cosine similarity scores
+
+### fusion.py — Hybrid fusion (D7)
+- RRF: `score = Σ 1/(k + rank_i)`, k=60 (config-adjustable); sparse and dense each feed in their top-50
+- Support a weighted variant (config `fusion.weights`) as an ablation comparison
+- Output the sorted, deduplicated top-50 (cross-path merging happens here; see pipeline)
+
+### rerank.py — Reranking (D8)
+- BGE-reranker-v2-m3 cross-encoder; top-50 → top-10
+- Scoring pairs: (query, passage.text); output the reranked list + rerank scores
+- Record latency (~100–300ms for 50 pairs on A40)
+
+### pipeline.py — Unified entry point (interface discipline)
+```python
+def retrieve(query: str, filters: RetrievalFilters | None = None,
+             top_k: int = 10) -> RetrieveResult
+```
+- Internally: run sparse/dense in parallel (threads/asyncio) → fusion → (optional) rerank
+- All toggles come from config: `retrieval.{sparse,dense,fusion,rerank}.enabled` (ablation matrix)
+- Must record per-stage latency (sparse_ms/dense_ms/fusion_ms/rerank_ms/total_ms)
+- The orchestration layer may only call `retrieve()`; evaluation scripts may only call it too (to keep ablations fair)
+
+## Ablation Checklist (EVALUATION.md §2–§3)
+1. Four-level matrix: bm25 / dense / hybrid / hybrid+rerank
+2. Parent-document retrieval toggle: `retrieval.parent_doc.enabled` (on a child hit, return the parent text; SCHEMA.md §2)
+3. Metadata filtering toggle: `retrieval.filters.enabled`
+4. HyDE is implemented in the orchestration layer (this package only gets called)
+
+## Definition of Done (see README: Definition of Done)
+- Sanity: ScoredPassage/RetrieveResult round-trip covered by `scripts/sanity_check.py`
+- Smoke: sparse/dense/fusion/rerank each runnable end-to-end on a small corpus (offline)
+- Integration: real index build and query verified with small `--limit` runs
