@@ -57,14 +57,18 @@ Table `papers`:
 {
   "input_text": "the user's input paragraph",
   "sub_queries": [
-    {"query": "natural-language sub-query 1", "keywords": ["kw1", "kw2"], "filters": {"year_min": 2023, "categories": ["cs.CL"]}}
+    {"query": "natural-language sub-query 1", "keywords": "kw1 kw2", "filters": {"year_min": 2023, "categories": ["cs.CL"]}}
   ],
   "criteria": [
     {"criterion": "must be a LoRA variant method", "source": "extracted"},
-    {"criterion": "published after 2023", "source": "fixed_recency"}
+    {"criterion": "published after 2023", "source": "extracted"}
   ]
 }
 ```
+
+Fixed review rubric entries are configuration-driven scoring dimensions and are merged into the
+review prompt; they are not counted as input coverage aspects. With HyDE enabled, the generated
+hypothetical document is appended as one additional `SubQuery` with empty `keywords`.
 
 ## 5. Review Record
 
@@ -94,9 +98,9 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
   "query_id": "Q0001",
   "input_text": "...",
   "query_plan": { ... see §4 ... },
-  "papers": [ {"paper_id": "...", "score": 4, "verdict": "pass", "title": "...", "arxiv_id": "...", "year": 2024, "url": "https://arxiv.org/abs/..."} ],
-  "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "rounds": 2, "papers_reviewed": 12},
-  "latency_by_stage": {"understanding_ms": 1500, "retrieval_ms": 420, "review_ms": 3800, "rewrite_ms": 600, "total_ms": 6500}
+  "papers": [ {"paper_id": "...", "verdict": "pass", "score": 4, "reasons": "...", "covered": ["..."], "missing": [], "round": 1, "evidence": {"title": "...", "top_passages": ["P1234_0007"]}} ],
+  "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0"},
+  "latency_by_stage": {"understanding_ms": 1500, "hyde_ms": 0, "retrieval_ms": 420, "review_ms": 3800, "rewrite_ms": 600, "total_ms": 6500}
 }
 ```
 
