@@ -21,12 +21,15 @@ parent-document ablation run without rebuilding the KB). Parent texts come from
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
+
+from config import PROJECT_ROOT
 
 DEFAULT_PREFIX = "[{title}] {section}"
 
@@ -56,6 +59,9 @@ def get_tokenizer(kind: str = "tiktoken", model_name: str = "cl100k_base") -> To
     if kind == "tiktoken":
         import tiktoken
 
+        # tiktoken downloads its BPE file once; keep it in the repo's gitignored .cache/ (also
+        # bind-mounted in Docker) instead of the system temp dir, so containers/offline runs reuse it.
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(PROJECT_ROOT / ".cache" / "tiktoken"))
         enc = tiktoken.get_encoding(model_name if model_name else "cl100k_base")
         return Tokenizer(f"tiktoken:{enc.name}", lambda t: enc.encode(t, disallowed_special=()), enc.decode)
     if kind == "transformers":
