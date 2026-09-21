@@ -4,36 +4,39 @@
 font size/weight are available) and returns `[{"section": str, "text": str}, ...]`.
 
 Cleaning rules (enumerable; all thresholds live in config `kb.parse.*` and are reported):
-  R1  Reference truncation — stop at the first "References"/"Bibliography" heading (incl. variants
+  R1  Reference truncation: stop at the first "References"/"Bibliography" heading (incl. variants
       such as "Bibliographical References"; or a bare "References" line in any style); everything
       after it (incl. appendices) is discarded.
-  R2  Header/footer removal — lines starting/ending in the top/bottom `margin_ratio` of the page whose
+  R2  Header/footer removal: lines starting/ending in the top/bottom `margin_ratio` of the page whose
       digit-normalized text repeats on >= `header_footer_min_ratio` of pages; bare page
       numbers in the margins; the rotated arXiv sidebar stamp (non-horizontal text) and
       "arXiv:XXXX.XXXXXvN [cs.XX] date" lines.
-  R3  Formula/figure/table noise — lines whose letter ratio (letters / non-space chars) is below
+  R3  Formula/figure/table noise: lines whose letter ratio (letters / non-space chars) is below
       `min_alpha_ratio` and that do not end a sentence; lines set in a font smaller than
       `min_font_ratio` x body size (footnotes, figure labels, small tables); fragments of < 4
       words; table-like blocks (>= 3 lines averaging < 3.5 words, no real sentence, not a caption).
-  R4  URLs/DOIs — URL-only and DOI-only lines are dropped; inline URLs are removed.
-  R5  Front matter — text before the first detected heading (title/authors/affiliations) is
+  R4  URLs/DOIs: URL-only and DOI-only lines are dropped; inline URLs are removed.
+  R5  Front matter: text before the first detected heading (title/authors/affiliations) is
       dropped when at least one heading exists, unless it exceeds `front_matter_max_words`
       (a missed first heading), in which case it is kept as an unnamed section.
-  R6  Dropped sections — headings listed in `drop_sections` (e.g. acknowledgments) and
+  R6  Dropped sections: headings listed in `drop_sections` (e.g. acknowledgments) and
       their text are skipped.
-  R7  Captions — "Figure N:"/"Table N:" blocks are kept or dropped per `keep_captions`.
-  R8  Repair — NFKC normalization (ligatures ﬁ→fi), "(cid:N)" glyph garbage removed,
+  R7  Captions: "Figure N:"/"Table N:" blocks are kept or dropped per `keep_captions`.
+  R8  Repair: NFKC normalization (the ligature "ﬁ" becomes "fi"), "(cid:N)" glyph garbage removed,
       end-of-line hyphenation joined, paragraphs split across columns/pages merged when the
       first does not end a sentence and the next starts lowercase.
 
-Section-title detection: a line is a heading when it is short, does not end with a period,
-starts (its first letter) with a capital,
-is visually emphasized (bold, font >= body + `heading_size_delta`, or — for IEEE/Springer styles —
-a numbered line alone in its block or in ALL CAPS), is not set smaller than body
-text, does not sit mid-way in a multi-line block (bold paragraphs), and either is numbered
-("3", "3.2", "A.1", "IV.") or is a well-known heading word ("Introduction", "Related Work", …).
+Section-title detection: a line is a heading when it
+- is short, does not end with a period and starts with a capital letter;
+- is visually emphasized: bold, or font >= body + `heading_size_delta`, or (IEEE/Springer styles)
+  a numbered line that is alone in its block or written in ALL CAPS;
+- is not set smaller than body text and does not sit in the middle of a multi-line block
+  (that would be a bold paragraph);
+- is numbered ("3", "3.2", "A.1", "IV.") or is a well-known heading word ("Introduction",
+  "Related Work", ...).
 SIAM-style run-in headings (bold "2.1. Title." followed by body text on the same line) are split
 into heading + body.
+
 Section numbers set on their own line at the same baseline as the title are merged. Numbers are
 stripped; subsections are named "Parent / Child" (top two levels) so repeated subsection
 titles stay distinguishable; ALL-CAPS/small-caps names are title-cased; headings wrapped onto
@@ -117,7 +120,8 @@ UNNUMBERED_OK = REFERENCE_HEADINGS | {
     "supplementary material",
 }
 
-# "3", "3.2.", "A.", "A.1", "IV." — single letters need a period so titles starting "A ..." are not headings
+# Section numbers such as "3", "3.2.", "A.", "A.1", "IV.". A lone letter needs a period, so a title
+# like "A Survey of ..." is not mistaken for a numbered heading.
 _SECNUM = r"(?:\d{1,2}(?:\.\d{1,2}){0,3}\.?|[A-H](?:\.\d{1,2}){1,3}\.?|[A-H]\.|[IVX]{1,5}\.)"
 _NUMBERED_RE = re.compile(rf"^{_SECNUM}\s+(?P<title>\S.*)$")
 _NUMBER_ONLY_RE = re.compile(rf"^{_SECNUM}$")
@@ -235,7 +239,7 @@ def _heading_name(
 
     level = 1 + number of dots in the section number ("3" -> 1, "3.2" -> 2); unnumbered -> 1.
     In numbered_mode (the paper numbers its sections), unnumbered headings are accepted only
-    for UNNUMBERED_OK names — this rejects bold table cells such as "Training".
+    for UNNUMBERED_OK names. This rejects bold table cells such as "Training".
     """
     text = " ".join(ln.text.split())
     if not text or len(text) > 100 or len(text.split()) > 12:
@@ -411,7 +415,7 @@ def parse_pdf(pdf_path: str | Path, options: ParseOptions | None = None) -> list
     opts = options or ParseOptions()
     try:
         doc = pymupdf.open(str(pdf_path))
-    except Exception as exc:  # noqa: BLE001 — pymupdf raises several exception types
+    except Exception as exc:  # noqa: BLE001 (pymupdf raises several exception types)
         raise PDFParseError(f"cannot open {pdf_path}: {exc}") from exc
     try:
         if doc.needs_pass:
@@ -533,7 +537,7 @@ def parse_pdf(pdf_path: str | Path, options: ParseOptions | None = None) -> list
         block_lines.append(ln.text)
     flush_section()
 
-    # R5: text before the first heading is title/authors/affiliations — drop it, unless it is long
+    # R5: text before the first heading is title/authors/affiliations. Drop it unless it is long
     # (the first real heading was missed), in which case keep it as an unnamed section.
     if len(sections) > 1 and sections[0][0] == "":
         front_words = sum(len(p.split()) for p in sections[0][1])

@@ -9,7 +9,7 @@
   (parent-document units, D22).
 - `iter_passages(path)`: generator (retrieval builds its indices from this).
 - `init_sqlite` / `upsert_papers` / `load_paper` / `set_num_chunks`: papers table per
-  SCHEMA.md §3; upsert keyed on paper_id and only overwrites the columns provided, so
+  SCHEMA.md section 3; upsert keyed on paper_id and only overwrites the columns provided, so
   metadata upserts never reset num_chunks and vice versa. Batched executemany transactions.
 
 Constraints: this module is the only persistence layer for passage/paper data; other modules
@@ -128,7 +128,7 @@ def iter_passages(path: str | Path) -> Iterator[dict]:
     """Read passages line by line (generator).
 
     Yields:
-        Passage dicts (SCHEMA.md §2).
+        Passage dicts (SCHEMA.md section 2).
     """
     yield from _iter_jsonl(path)
 
@@ -171,7 +171,7 @@ def _connect(path: str | Path) -> Iterator[sqlite3.Connection]:
 
 
 def init_sqlite(path: str | Path) -> None:
-    """Create the papers table (SCHEMA.md §3)."""
+    """Create the papers table (SCHEMA.md section 3)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with _connect(path) as conn:
         conn.executescript(_SCHEMA)

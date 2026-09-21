@@ -4,14 +4,14 @@ Counting conventions (state them in the report):
 - n_documents: distinct paper_id in passages.jsonl.
 - n_chunks: passages in passages.jsonl.
 - n_words: whitespace-separated words of the **cleaned corpus text**, i.e. the parsed section
-  texts in sections.jsonl without the "[title] section" prefix — chunk overlap and prefixes
+  texts in sections.jsonl without the "[title] section" prefix, because chunk overlap and prefixes
   would otherwise double-count words. If sections.jsonl is unavailable, words are counted over
   passages with the prefix line stripped (overlap still included; flagged in the report as
   `word_source`).
 - n_types: unique words after lowercasing and stripping surrounding punctuation
   (tokens with no letter or digit are ignored).
 - Also reported: words per chunk (with overlap) and per document, and distributions by
-  year / primary category / section-count — for report figures.
+  year / primary category / section-count (for report figures).
 
 Every statistic is deterministic for the same input files.
 """

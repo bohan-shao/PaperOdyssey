@@ -58,7 +58,7 @@ def process_paper(row: dict, raw_dir: str, cfg: dict, mode: str) -> dict:
         sections = parse_pdf(pdf, opts)
     except PDFParseError as exc:
         return {"paper_id": row["paper_id"], "error": f"parse: {exc}"}
-    except Exception as exc:  # noqa: BLE001 — never let one PDF kill the build
+    except Exception as exc:  # noqa: BLE001 (one bad PDF must not stop the build)
         return {"paper_id": row["paper_id"], "error": f"parse: {type(exc).__name__}: {exc}"}
     quality = {"paper_id": row["paper_id"], **quality_check(row["pdf_path"], sections, opts)}
     if not quality["ok"]:
@@ -86,7 +86,7 @@ def process_paper(row: dict, raw_dir: str, cfg: dict, mode: str) -> dict:
                 min_new_tokens=ch.get("min_new_tokens", 50),
             )
         parents = chunk.build_parent_records(row["paper_id"], sections, meta=meta, prefix_fmt=ch["prefix"])
-    except Exception as exc:  # noqa: BLE001 — never let one paper kill the build
+    except Exception as exc:  # noqa: BLE001 (one bad paper must not stop the build)
         return {"paper_id": row["paper_id"], "error": f"chunk: {type(exc).__name__}: {exc}", "quality": quality}
     return {"paper_id": row["paper_id"], "passages": passages, "parents": parents,
             "quality": quality, "sections": sections}

@@ -1,7 +1,7 @@
 """Chunking: section-aware fixed-size chunking (baseline) + semantic chunking / parent-document mapping (ablation).
 
 Conventions (documented in kb/README.md; state them in the report):
-- **Token counting**: config `kb.chunk.tokenizer` — `tiktoken` (cl100k_base, default) or
+- **Token counting**: config `kb.chunk.tokenizer`, either `tiktoken` (cl100k_base, default) or
   `transformers` (the dense model's tokenizer, `retrieval.dense.model_name`). Budgets
   (chunk_tokens / overlap_tokens / min/max) count **body tokens only**; the prefix is extra.
 - **Prefix**: embedded as the first line of `text` ("[{title}] {section}\\n<body>"), so both
@@ -13,9 +13,9 @@ Conventions (documented in kb/README.md; state them in the report):
   would add fewer than `min_new_tokens` new tokens is folded into the previous one's overlap.
 - Chunks never cross section or paper boundaries; `chunk_index` is monotonic per paper.
 
-Output: list[dict] per SCHEMA.md §2 (passage_id/paper_id/arxiv_id/title/section/year/
-categories/chunk_index/text) + `parent_section_id` (always attached, D22 — lets the
-parent-document ablation run without rebuilding the KB). Parent texts come from
+Output: list[dict] per SCHEMA.md section 2 (passage_id/paper_id/arxiv_id/title/section/year/
+categories/chunk_index/text) + `parent_section_id` (always attached, D22, so the
+parent-document ablation can run without rebuilding the KB). Parent texts come from
 `build_parent_records()` and are stored in `processed/sections.jsonl`.
 """
 
@@ -236,7 +236,7 @@ def chunk_section_fixed(
         min_new_tokens: a final chunk adding fewer new tokens is merged into the previous one.
 
     Returns:
-        A list of passage dicts (SCHEMA.md §2 + parent_section_id).
+        A list of passage dicts (SCHEMA.md section 2 + parent_section_id).
     """
     if overlap_tokens >= chunk_tokens:
         raise ValueError("overlap_tokens must be smaller than chunk_tokens")
@@ -331,7 +331,7 @@ def build_parent_records(
     """Parent units (one per parsed section) for `processed/sections.jsonl`.
 
     Record: {parent_section_id, paper_id, arxiv_id, title, section, year, categories,
-             section_index, text} — `text` carries the same prefix as passages.
+             section_index, text}. `text` carries the same prefix as passages.
     """
     m = _meta(meta)
     records = []

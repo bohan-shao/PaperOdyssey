@@ -292,7 +292,7 @@ def fetch_arxiv_metadata(
             else:
                 try:
                     records = _fetch_slice(client, limiter, category, year, month, per_slice, page_size)
-                except Exception as exc:  # noqa: BLE001 — log the slice and keep going
+                except Exception as exc:  # noqa: BLE001 (log the slice and keep going)
                     failed += 1
                     logger.warning("arXiv slice %s %d-%02d failed: %s", category, year, month, exc)
                     continue
@@ -426,7 +426,7 @@ def enrich_citations(
                         found = lookup(client, batch)
                     except OpenAlexQuotaError:
                         raise
-                    except Exception as exc:  # noqa: BLE001 — leave batch unresolved, retry next run
+                    except Exception as exc:  # noqa: BLE001 (leave the batch for the next run)
                         failed_batches += 1
                         logger.warning("OpenAlex batch failed (%d ids): %s", len(batch), exc)
                         continue
@@ -559,7 +559,7 @@ def download_pdfs(
                 try:
                     fut.result()
                     paths[pid] = str(dest.relative_to(raw))
-                except Exception as exc:  # noqa: BLE001 — record (immediately, survives Ctrl+C) and continue
+                except Exception as exc:  # noqa: BLE001 (log it now so it survives Ctrl+C, then continue)
                     n_failed += 1
                     if failures_path and fail_fh is None:
                         fail_fh = Path(failures_path).open("a", encoding="utf-8")

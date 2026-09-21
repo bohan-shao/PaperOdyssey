@@ -6,7 +6,7 @@
 | Script | Purpose |
 |---|---|
 | `download_papers.py` | metadata fetch + OpenAlex citations + filtering + PDF download (resumable, `--shard I/N`) |
-| `build_kb.py` | parse + clean + chunk PDFs → passages.jsonl / sections.jsonl / papers.sqlite + corpus stats (resumable) |
+| `build_kb.py` | parse + clean + chunk PDFs into passages.jsonl / sections.jsonl / papers.sqlite + corpus stats (resumable) |
 | `build_indexes.py` | build BM25 + FAISS indexes from passages.jsonl |
 | `run_eval.py` | unified evaluation entry point (--stage retrieval/review/all) |
 | `sanity_check.py` | dependency-free sanity checks: config loads, packages import, schema round-trips (see README: Sanity checks) |
