@@ -27,7 +27,7 @@ The **LLM layer of the whole system** — every LLM call goes through `llm/clien
 - Record `TEMPLATE_VERSION`; the report cites template versions for reproducibility
 - (Task-specific prompts — generation/self-check — are defined later with the downstream task)
 
-## Implementation Notes — client.py (status: implemented)
+## Implementation Notes: client.py (status: implemented)
 
 ```python
 from llm.client import get_client, LLMError
@@ -40,7 +40,7 @@ client.usage_summary()                                 # {calls, prompt_tokens, 
 
 - **Key**: `DEEPSEEK_API_KEY` (DeepSeek base URL), `OPENAI_API_KEY` (api.openai.com), or `LLM_API_KEY`
   for any other OpenAI-compatible provider (`LLM_API_KEY` also overrides the other two). A missing
-  key, or the `.env.example` placeholder `sk-xxxx`, raises `LLMError` at the first call — never at import.
+  key, or the `.env.example` placeholder `sk-xxxx`, raises `LLMError` at the first call, never at import.
 - **Retries**: 429 / timeout / connection error / 5xx are retried with exponential backoff
   (`llm.retries` extra attempts); 400/401/403/404 fail immediately with `LLMError`.
   The SDK's internal retries are disabled, so this is the only retry policy.
@@ -51,7 +51,7 @@ client.usage_summary()                                 # {calls, prompt_tokens, 
   is forced because the review prompt expects a top-level array.
 - **Cost reporting**: one line per call in `data/results/metrics/llm_usage.jsonl`
   (`time, model, kind, prompt_tokens, completion_tokens, latency_ms`).
-- **Tests**: `python -m unittest tests.test_llm` — the real OpenAI SDK against a mocked HTTP
+- **Tests**: `python -m unittest tests.test_llm` runs the real OpenAI SDK against a mocked HTTP
   transport (retries, JSON repair, truncation, auth errors, streaming, usage). Verified end to end
   with the orchestration loop (PR #1) and the KB store (PR #4) against a fake OpenAI server.
 
