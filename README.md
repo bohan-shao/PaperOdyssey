@@ -60,8 +60,29 @@ Detailed design and decision log: see [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Quick Start (Skeleton Phase)
 
+### Option A — Docker (recommended; bundles the JDK that Pyserini needs)
+
+```bash
+./run_docker.sh build            # one-time (~10 GB image: Temurin 21 + CUDA torch + requirements)
+./run_docker.sh                  # interactive shell, repo bind-mounted at /workspace
+./run_docker.sh ui               # Streamlit on http://localhost:8501
+./run_docker.sh python scripts/sanity_check.py
+```
+
+The repo is bind-mounted, so **code edits need no rebuild** — rebuild only when
+`requirements.txt` or the `Dockerfile` changes. Model weights and HF caches land in
+`.cache/` (gitignored) and survive rebuilds. GPU is passed through automatically when the
+NVIDIA container runtime is present; `NO_GPU=1` forces CPU. Build with `TORCH_VARIANT=cpu`
+on a machine without an NVIDIA card, or `INSTALL_PYSERINI=0` to skip the JVM path and use
+the rank-bm25 fallback.
+
+### Option B — local venv
+
 ```bash
 # 1. Environment (Python ≥ 3.11)
+#    Note: current Pyserini declares requires-python >= 3.12, so on 3.11 pip either fails
+#    or silently backtracks to a very old release. Pyserini also needs a JDK 21 on PATH.
+#    Use Option A, or set retrieval.sparse.backend=rankbm25, if that bites.
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
