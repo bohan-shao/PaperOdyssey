@@ -351,6 +351,42 @@ class LoopTests(unittest.TestCase):
             self.assertEqual(understand_calls["count"], 1)
             self.assertEqual(json.loads(cache_file.read_text(encoding="utf-8"))["query_id"], "first")
 
+    def test_cache_key_depends_on_settings_but_query_id_does_not(self) -> None:
+        from orchestration import loop
+
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["cache"] = True
+        calls = {"understand": 0}
+
+        def fake_understand(text: str) -> QueryPlan:
+            calls["understand"] += 1
+            return QueryPlan(text, [SubQuery("q1")], [Criterion("aspect")])
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("orchestration.loop.get_config", side_effect=lambda: cfg),
+                patch("orchestration.loop._cache_path", side_effect=lambda digest: Path(directory) / f"{digest}.json"),
+                patch("orchestration.loop._paper_database_path", return_value=Path("papers.sqlite")),
+                patch("orchestration.loop.understand", side_effect=fake_understand),
+                patch("orchestration.loop.retrieve", return_value=RetrieveResult([hit("P1")], 1)),
+                patch("orchestration.loop.load_paper", return_value={"abstract": "A"}),
+                patch(
+                    "orchestration.loop.batch_review",
+                    side_effect=lambda candidates, criteria, text, round_no: [
+                        ReviewRecord("P1", "pass", 5, covered=["aspect"], round=round_no)
+                    ],
+                ),
+            ):
+                loop_on = loop.run_query("same request")
+                cfg["orchestration"]["loop"]["enabled"] = False
+                loop_off = loop.run_query("same request")
+                loop_off_again = loop.run_query("same request")
+            self.assertFalse(loop_off.coverage_report["cache_hit"])
+            self.assertTrue(loop_off_again.coverage_report["cache_hit"])
+            self.assertEqual(calls["understand"], 2)
+            self.assertEqual(loop_on.query_id, loop_off.query_id)
+            self.assertEqual(len(list(Path(directory).glob("*.json"))), 2)
+
     def test_corrupt_cache_is_rebuilt_and_failure_is_not_cached(self) -> None:
         from orchestration import loop
 
