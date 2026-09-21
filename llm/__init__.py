@@ -10,6 +10,6 @@ and later the downstream task). Do not instantiate a raw OpenAI client anywhere 
 
 from __future__ import annotations
 
-from .client import LLMClient, get_client
+from .client import LLMClient, LLMError, get_client
 
-__all__ = ["LLMClient", "get_client"]
+__all__ = ["LLMClient", "LLMError", "get_client"]
