@@ -9,7 +9,7 @@
 ```
 data/
 ├── raw/          # downloaded metadata, PDFs (not committed)
-├── processed/    # passages.jsonl, papers.sqlite (KB outputs)
+├── processed/    # passages.jsonl, sections.jsonl, papers.sqlite (KB outputs)
 ├── indices/      # bm25/ (Pyserini), faiss/ (FAISS index + vectors)
 ├── eval/         # eval_set.jsonl (evaluation set), annotation/ (annotation intermediates)
 └── results/      # per-stage results: retrieval_results/, final_results/, metrics/*.json
@@ -27,10 +27,15 @@ data/
 | `year` | int | Year |
 | `categories` | list[str] | Categories, e.g. `["cs.CL"]` |
 | `chunk_index` | int | Chunk index within the paper |
-| `text` | str | Chunk text (whether the "title+section" prefix is embedded or stored as a separate field is up to kb; must be documented in kb/README.md) |
+| `text` | str | Chunk text. The prefix `[{title}] {section}` is **embedded as the first line** (`"[Title] Section\n<body>"`), see kb/README.md |
+| `parent_section_id` | str | Parent unit = the whole parsed section, format `{paper_id}_S{section_index:03d}`; always present (lets the parent-document ablation run without rebuilding) |
 
-**Parent-document retrieval addition** (enabled when running the Q3 ablation):
-`parent_section_id: str` — the parent unit it belongs to (e.g. the ID of the whole section); `child_of: passage_id | null`.
+`section` is the parsed heading without its number; subsections are `"Parent / Child"` (top two levels).
+
+**Parent-document retrieval** (Q3 ablation, D22): parent texts live in
+`data/processed/sections.jsonl`, one record per parent:
+`{parent_section_id, paper_id, arxiv_id, title, section, year, categories, section_index, text}`
+(`text` carries the same prefix line). Read via `kb.store.iter_parents()` / `kb.store.load_parents(ids)`.
 
 ## 3. Paper Metadata (`data/processed/papers.sqlite`)
 

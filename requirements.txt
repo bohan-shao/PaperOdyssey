@@ -20,6 +20,7 @@ httpx>=0.27            # async HTTP (parallel downloads, OpenAI-compatible clien
 
 # ---- kb/ knowledge base ----
 pymupdf>=1.24          # PDF full-text extraction
+tiktoken>=0.7          # token counting for chunking (kb.chunk.tokenizer=tiktoken)
 # Optional: S2ORC fallback requires the datasets package (HuggingFace)
 
 # ---- retrieval/ ----
