@@ -8,6 +8,11 @@ The **LLM layer of the whole system** — every LLM call goes through `llm/clien
 - the **downstream task** (reserved folder, TBD) will use it when defined
 - **eval** (RAGAS) uses it for metric computation
 
+`llm/jev.py` is the one exception: an optional client for TypeSafe's Jev, a decision-only model
+that returns typed answers (choice / score / yes-no probability) instead of text. It is used only
+by the optional Jev reviewer (`orchestration.review.backend: jev`); everything that generates text
+still goes through `llm/client.py`.
+
 ## Implementation requirements
 
 ### client.py — the single LLM client

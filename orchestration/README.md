@@ -50,6 +50,13 @@ input_text
 - Deduplication: a paper hit by multiple paths is reviewed only once (by paper_id)
 - Outputs a list of ReviewRecord; papers with `verdict="reject"` do not enter the candidate set
 - Invalid or unavailable review output is retried once, then fails the query with `OrchestrationError`
+- Reviewer backend (config `review.backend`): `llm` (default) or `jev` (TypeSafe Jev, `llm/jev.py`).
+  Jev reviews one paper per call with typed questions: pass/reject (choice), the 1-5 score (a
+  5-level score question) and one yes/no question per extracted criterion. `review.jev.pass_threshold`
+  and `covered_threshold` turn its probabilities into verdict/covered/missing. Jev cannot write
+  text, so `reasons` is a one-line summary of its answers, and the raw probabilities are kept in
+  `evidence["jev"]`. `coverage_report["review_backend"]` records which reviewer produced a result,
+  for the Q5 LLM-vs-Jev comparison (run the same queries once per backend).
 
 ### rewrite.py — Feedback-based rewriting
 - Input: list of missing aspects (missing[], possibly accumulated across multiple papers)

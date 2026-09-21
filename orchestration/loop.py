@@ -377,6 +377,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
         "termination_reason": termination_reason,
         "cache_hit": False,
         "template_version": TEMPLATE_VERSION,
+        "review_backend": str(orchestration_cfg.get("review", {}).get("backend", "llm")),
     }
     return FinalResult(
         query_id=query_id,
