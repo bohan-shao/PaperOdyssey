@@ -73,6 +73,7 @@ orchestration:
     enabled: false              # Q3 innovation: HyDE query expansion (on = one extra LLM call)
   review:
     batch_size: 5
+    max_concurrency: 2          # concurrent LLM review workers
     max_tokens_per_paper: 1500  # token budget fed to the reviewer per paper (title + abstract + top passages)
     rubric:                     # fixed scoring dimensions (D10)
       - relevance              # relevance to the need
