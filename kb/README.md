@@ -72,6 +72,9 @@ python scripts/build_kb.py --chunk-mode semantic --passages-file passages_semant
 
 Budget: ~20k PDFs at 3 s each is about 17 h from one IP, ~30 GB of PDFs. The candidate pool
 (~45-55k papers) needs ~1000 OpenAlex calls, which is the whole anonymous daily cap, so set `OPENALEX_API_KEY` for full runs.
+Downloads use one connection (`kb.download.max_concurrency: 1`), as arXiv's terms ask. For a
+bulk run of this size, arXiv's official bulk PDF access on S3 (requester pays) is the sanctioned
+alternative to splitting the download across IPs.
 
 **Failure handling.** Everything is cached and resumable (arXiv slices, OpenAlex lookups, PDFs,
 built papers). arXiv/OpenAlex 429s back off for up to ~10 min. If any arXiv slice or OpenAlex

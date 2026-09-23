@@ -146,7 +146,7 @@ def main() -> None:
 
     done = fetch.download_pdfs(
         todo, raw,
-        max_concurrency=dl.get("max_concurrency", 4),
+        max_concurrency=dl.get("max_concurrency", 1),
         request_interval_s=dl.get("request_interval_s", 3.0),
         contact_email=contact,
         failures_path=raw / "download_failures.jsonl",

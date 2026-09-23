@@ -402,9 +402,14 @@ def enrich_citations(
                 )
         _retryable_status(resp, "OpenAlex")
         resp.raise_for_status()
+        body = resp.json()
+        count = (body.get("meta") or {}).get("count") or 0
+        if count > int(params_base["per-page"]):
+            logger.warning("OpenAlex matched %d works for a batch of %d ids; only the first %s are read",
+                           count, len(batch), params_base["per-page"])
         wanted = set(batch)
         found: dict[str, int] = {}
-        for work in resp.json().get("results", []):
+        for work in body.get("results", []):
             for loc in work.get("locations") or []:
                 url = loc.get("landing_page_url") or ""
                 if "arxiv.org/abs/" not in url:
@@ -503,7 +508,7 @@ def download_pdfs(
     df: pd.DataFrame,
     raw_dir: str | Path,
     *,
-    max_concurrency: int = 4,
+    max_concurrency: int = 1,
     request_interval_s: float = 3.0,
     contact_email: str = "",
     failures_path: str | Path | None = None,

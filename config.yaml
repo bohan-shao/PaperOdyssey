@@ -31,7 +31,7 @@ kb:
     contact_email: ${KB_CONTACT_EMAIL}      # optional; User-Agent / OpenAlex polite pool
     citation_default: 0        # citation count for papers OpenAlex does not know
   download:
-    max_concurrency: 4
+    max_concurrency: 1         # arXiv terms: a single connection at a time
     request_interval_s: 3.0    # arXiv rate limiting (global: one request start per interval)
   parse:
     workers: 4                 # parallel PDF parsing processes

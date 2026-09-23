@@ -20,7 +20,8 @@ Resumable: papers already in passages.jsonl are skipped unless --rebuild; papers
 before (raw/parse_failures.jsonl) are skipped unless --retry-failed. The corpus funnel
 (selected -> PDFs -> built/failed, failure rate and reasons) is written into corpus_stats.json.
 Ablation (D21): `--chunk-mode semantic --passages-file passages_semantic.jsonl` builds a
-separate passages file without touching the baseline.
+separate passages file without touching the baseline: papers.sqlite num_chunks, sections.jsonl
+and the parse quality/QA files keep the baseline's values.
 """
 
 from __future__ import annotations
@@ -203,12 +204,16 @@ def main() -> None:
     failures_path = raw / "parse_failures.jsonl"
     qa_path = results / "parse_qa_sample.jsonl"
 
+    # an ablation (--passages-file) writes only its own passages file; the shared outputs
+    # (papers.sqlite num_chunks, parse quality/QA files, sections.jsonl) stay the baseline's
+    ablation = args.passages_file is not None
+
     if not args.stats_only:
         meta = read_metadata_csv(raw / "metadata.csv")
         meta = meta[meta["pdf_path"] != ""]
         if args.rebuild:
             store.reset_jsonl(passages_path)
-            if args.passages_file is None:  # an ablation rebuild must not wipe the baseline's shared outputs
+            if not ablation:  # an ablation rebuild must not wipe the baseline's shared outputs
                 store.reset_jsonl(sections_path)
                 for f in (failures_path, results / "parse_quality.jsonl", qa_path):
                     f.unlink(missing_ok=True)
@@ -225,7 +230,7 @@ def main() -> None:
         store.upsert_papers([{**r, "source": "arxiv"} for r in meta.to_dict("records")], sqlite_path)
         sections_done = store.stored_paper_ids(sections_path)
         workers = args.workers or kb.get("parse", {}).get("workers", 4)
-        qa_need = max(0, kb.get("parse", {}).get("qa_sample", 50) - len(_read_jsonl(qa_path)))
+        qa_need = 0 if ablation else max(0, kb.get("parse", {}).get("qa_sample", 50) - len(_read_jsonl(qa_path)))
         rng = random.Random(cfg.get("seed", 42))
         qa_ids = set(rng.sample(sorted(todo["paper_id"]), min(qa_need, len(todo))))
         n_ok = n_fail = n_chunks = 0
@@ -236,7 +241,7 @@ def main() -> None:
             for fut in tqdm(as_completed(futures), total=len(futures), desc="parse+chunk", unit="paper"):
                 res = fut.result()
                 pid = res["paper_id"]
-                if "quality" in res:
+                if "quality" in res and not ablation:
                     _append_jsonl(results / "parse_quality.jsonl", [res["quality"]])
                 if "error" not in res and not res["passages"]:
                     res["error"] = "chunk: no passages produced"
@@ -250,7 +255,8 @@ def main() -> None:
                 if pid not in sections_done:
                     store.write_parents(res["parents"], sections_path)  # same parse in every chunk mode
                 store.write_passages(res["passages"], passages_path)
-                store.set_num_chunks({pid: len(res["passages"])}, sqlite_path)
+                if not ablation:
+                    store.set_num_chunks({pid: len(res["passages"])}, sqlite_path)
                 n_ok += 1
                 n_chunks += len(res["passages"])
                 if pid in qa_ids:
