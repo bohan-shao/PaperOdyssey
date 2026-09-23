@@ -32,7 +32,7 @@ sentence-transformers>=3.0   # BGE-large-en-v1.5 encoding
 faiss-cpu>=1.8          # for GPU-accelerated search on A40, use faiss-gpu
 
 # ---- orchestration/ (LLM via OpenAI-compatible protocol) ----
-openai>=1.30           # works with DeepSeek/OpenAI
+openai>=3.0            # works with DeepSeek/OpenAI; 3.x uses httpx2 (tests/test_llm.py)
 
 # ---- llm/ ----
 # depends on openai (above)

@@ -36,19 +36,13 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
-
-import openai
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from typing import TYPE_CHECKING, Any
 
 from config import get_config, get_path
 
-_TRANSIENT = (
-    openai.RateLimitError,
-    openai.APITimeoutError,
-    openai.APIConnectionError,
-    openai.InternalServerError,
-)
+if TYPE_CHECKING:
+    import openai
+
 _PLACEHOLDER_KEYS = {"", "sk-xxxx"}
 _MAX_TOKENS_CAP = 8192
 _ECHO_LIMIT = 4000  # characters of a bad JSON reply shown back to the model on retry
@@ -56,6 +50,18 @@ _ECHO_LIMIT = 4000  # characters of a bad JSON reply shown back to the model on 
 
 class LLMError(RuntimeError):
     """Unrecoverable LLM failure (retries exhausted, invalid JSON, missing key, auth error)."""
+
+
+def _openai() -> Any:
+    """Import the SDK on first use, so `import llm` (and scripts/sanity_check.py) needs only pyyaml."""
+    import openai
+
+    return openai
+
+
+def _transient() -> tuple[type[Exception], ...]:
+    sdk = _openai()
+    return (sdk.RateLimitError, sdk.APITimeoutError, sdk.APIConnectionError, sdk.InternalServerError)
 
 
 def _env_key(base_url: str) -> tuple[str, str]:
@@ -137,7 +143,7 @@ class LLMClient:
         self._api_key = api_key
         self._usage_path = Path(usage_path) if usage_path else get_path("results") / "metrics" / "llm_usage.jsonl"
         self._http_client = http_client
-        self._retry_wait = retry_wait or wait_exponential(multiplier=1, min=1, max=30)
+        self._retry_wait = retry_wait  # None: exponential 1-30 s, built on the first call
         self._sdk: openai.OpenAI | None = None
         self._lock = threading.Lock()
         self._totals = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
@@ -152,7 +158,7 @@ class LLMClient:
                     raise LLMError(
                         f"no API key for {self.base_url}: set {source} in .env (see .env.example)"
                     )
-                self._sdk = openai.OpenAI(
+                self._sdk = _openai().OpenAI(
                     api_key=key,
                     base_url=self.base_url,
                     timeout=self.timeout_s,
@@ -163,20 +169,23 @@ class LLMClient:
 
     def _call(self, fn: Callable[[], Any]) -> Any:
         """Run one API call with transport retries; map terminal errors to LLMError."""
+        from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+        sdk, transient = _openai(), _transient()
         try:
             for attempt in Retrying(
-                retry=retry_if_exception_type(_TRANSIENT),
+                retry=retry_if_exception_type(transient),
                 stop=stop_after_attempt(self.retries + 1),
-                wait=self._retry_wait,
+                wait=self._retry_wait or wait_exponential(multiplier=1, min=1, max=30),
                 reraise=True,
             ):
                 with attempt:
                     return fn()
-        except openai.AuthenticationError as exc:
+        except sdk.AuthenticationError as exc:
             raise LLMError(f"authentication failed for {self.base_url} (check the API key): {exc}") from exc
-        except _TRANSIENT as exc:
+        except transient as exc:
             raise LLMError(f"LLM call failed after {self.retries + 1} attempts: {exc}") from exc
-        except openai.APIError as exc:
+        except sdk.APIError as exc:
             raise LLMError(f"LLM request rejected: {exc}") from exc
         raise LLMError("LLM call made no attempt")  # unreachable; keeps type checkers happy
 
@@ -293,7 +302,7 @@ class LLMClient:
                     delta = getattr(choice.delta, "content", None)
                     if delta:
                         yield delta
-        except openai.APIError as exc:
+        except _openai().APIError as exc:
             raise LLMError(f"LLM stream failed: {exc}") from exc
         finally:
             self._record("stream", usage, round((time.perf_counter() - started) * 1000))
