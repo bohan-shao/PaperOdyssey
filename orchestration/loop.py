@@ -41,6 +41,28 @@ def _auto_query_id(digest: str) -> str:
     return f"Q{digest[:12].upper()}"
 
 
+def _config_fingerprint(cfg: dict[str, Any]) -> str:
+    """The settings that can change a search result, as a stable string.
+
+    It is part of the cache key, so flipping an ablation switch (loop on/off, HyDE, reviewer,
+    retrieval settings, LLM model, chunking) or a prompt template change never returns a
+    result that was computed under different settings.
+    """
+    kb_cfg = cfg.get("kb", {})
+    relevant = {
+        "orchestration": cfg.get("orchestration", {}),
+        "retrieval": cfg.get("retrieval", {}),
+        "llm": cfg.get("llm", {}),
+        "kb": {"chunk": kb_cfg.get("chunk", {}), "store": kb_cfg.get("store", {})},
+        "template_version": TEMPLATE_VERSION,
+    }
+    return json.dumps(relevant, sort_keys=True, default=str)
+
+
+def _cache_digest(input_text: str, cfg: dict[str, Any]) -> str:
+    return _input_digest(f"{input_text}\x00{_config_fingerprint(cfg)}")
+
+
 def _cache_path(digest: str) -> Path:
     return get_path("results") / "final_results" / f"{digest}.json"
 
@@ -415,7 +437,7 @@ def run_query(input_text: str, query_id: str | None = None) -> FinalResult:
     cfg = get_config()
     loop_cfg = cfg["orchestration"].get("loop", {})
     cache_enabled = bool(loop_cfg.get("cache", True))
-    path = _cache_path(digest) if cache_enabled else None
+    path = _cache_path(_cache_digest(input_text, cfg)) if cache_enabled else None
     if cache_enabled:
         assert path is not None
         cached = _read_cache(path, input_text, resolved_query_id)

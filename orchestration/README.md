@@ -67,9 +67,13 @@ input_text
 - Latency: record understanding/retrieval/review/rewrite/total (`latency_by_stage`)
 - Coverage applies only to input-extracted criteria. Fixed rubric entries are scoring dimensions,
   not content aspects. A started round finishes before a termination condition is evaluated.
-- Cache identity is SHA-256 over whitespace-normalized input under `data/results/final_results/`.
-  Auto-generated query IDs are stable; an explicitly supplied query ID overrides the returned ID
-  while reusing cached content. Writes are atomic and failed queries are never cached.
+- Cache identity is SHA-256 over the whitespace-normalized input plus the settings that can change
+  the result (`orchestration.*`, `retrieval.*`, `llm.*`, `kb.chunk` / `kb.store` and
+  `TEMPLATE_VERSION`), stored under `data/results/final_results/`. Flipping an ablation switch
+  therefore runs the search again instead of returning a result made under other settings.
+  Auto-generated query IDs depend on the input only, so they stay stable across settings; an
+  explicitly supplied query ID overrides the returned ID while reusing cached content. Writes are
+  atomic and failed queries are never cached.
 
 ## Interface
 ```python
