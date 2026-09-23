@@ -22,18 +22,48 @@ kb:
     year_max: 2025
     citation_min: 0            # OpenAlex citation-count lower bound (raise for quality, lower for quantity)
     target_papers: 20000       # target paper count (15k-30k)
+  fetch:
+    per_slice: 150             # max arXiv records per (category, year, month) slice -> candidate pool
+    page_size: 100             # records per arXiv API request
+    request_interval_s: 3.0    # arXiv API: >= 3 s between requests
+    openalex_batch: 50         # arXiv ids per OpenAlex request
+    openalex_api_key: ${OPENALEX_API_KEY}   # optional; anonymous use is capped at ~1000 calls/day
+    contact_email: ${KB_CONTACT_EMAIL}      # optional; User-Agent / OpenAlex polite pool
+    citation_default: 0        # citation count for papers OpenAlex does not know
   download:
-    max_concurrency: 4
-    request_interval_s: 3.0    # arXiv rate limiting
+    max_concurrency: 1         # arXiv terms: a single connection at a time
+    request_interval_s: 3.0    # arXiv rate limiting (global: one request start per interval)
+  parse:
+    workers: 4                 # parallel PDF parsing processes
+    keep_captions: true        # R7: keep "Figure N:/Table N:" caption text
+    min_alpha_ratio: 0.55      # R3: drop lines with fewer letters (formula/table noise)
+    min_font_ratio: 0.9        # R3: drop lines smaller than this x body font (footnotes, figure labels)
+    heading_size_delta: 0.8    # heading = bold or font >= body + delta (plus numbered/known-word pattern)
+    header_footer_min_ratio: 0.3   # R2: margin lines repeated on >= this share of pages (0.3 catches odd/even headers)
+    margin_ratio: 0.1          # R2: top/bottom page share treated as header/footer zone
+    drop_sections: [acknowledgments, acknowledgements, acknowledgment, acknowledgement,
+                    author contributions, funding, ethics statement, broader impact,
+                    reproducibility statement]
+    front_matter_max_words: 400   # R5: longer text before the first heading is kept, not dropped
+    min_words: 500             # quality check: fewer words -> paper excluded
+    max_bad_char_ratio: 0.02   # quality check: broken-glyph share above this -> excluded
+    qa_sample: 50              # papers sampled for manual parse-quality review
   chunk:
     mode: section_fixed        # section_fixed | semantic (Q3 ablation)
-    chunk_tokens: 350
+    chunk_tokens: 350          # body tokens per chunk (prefix not counted)
     overlap_tokens: 100
+    min_new_tokens: 50         # a tail chunk adding fewer new tokens is merged into the previous one
     tokenizer: tiktoken        # tiktoken | transformers (measurement convention, note in the report)
-    semantic_threshold: 0.8    # semantic chunking similarity threshold (active when mode=semantic)
-    prefix: "[{title}] {section}"   # chunk prefix format
+    tiktoken_encoding: cl100k_base
+    semantic_threshold: 0.55   # cut where adjacent-sentence cosine < this (mode=semantic). Calibrated on
+                               # 2.5k sentence pairs with bge-small: median 0.65, 10th pct 0.53
+    semantic_model: BAAI/bge-small-en-v1.5  # sentence encoder for semantic chunking
+    semantic_min_tokens: 100
+    semantic_max_tokens: 500
+    prefix: "[{title}] {section}"   # chunk prefix format (embedded as the first line of `text`)
   store:
     passages_file: passages.jsonl
+    sections_file: sections.jsonl   # parent-section units (D22 parent-document retrieval)
     sqlite_file: papers.sqlite
   stats:
     out_file: corpus_stats.json
