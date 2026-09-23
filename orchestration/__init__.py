@@ -13,6 +13,7 @@ through llm.client (this package must not instantiate a raw OpenAI client).
 
 from __future__ import annotations
 
+from .errors import OrchestrationError
 from .loop import run_query
 
-__all__ = ["run_query"]
+__all__ = ["OrchestrationError", "run_query"]
