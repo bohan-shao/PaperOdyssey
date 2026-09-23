@@ -11,6 +11,11 @@ Implementation requirements (see orchestration/README.md for details, D10):
   this module only reviews the batch it is given.
 - verdict="reject" papers do not enter the candidate set; covered/missing are aggregated into the coverage_report (used by loop).
 - Record the review-stage latency.
+- Reviewer backend (config `review.backend`): "llm" (default, the prompt above) or "jev"
+  (TypeSafe Jev via llm/jev.py, one call per paper: pass/reject as a choice question, the
+  1-5 score as a score question, each extracted criterion as a yes/no question). Jev cannot
+  write text, so its `reasons` are a short summary of its answers; the probabilities are kept
+  in `evidence["jev"]` for the Q5 comparison of the two reviewers.
 
 Constraints: does not call retrieval directly; input comes from retrieval hits aggregated by loop.
 """
@@ -22,6 +27,7 @@ from typing import Any
 
 from config import get_config
 from llm.client import get_client
+from llm.jev import JevError, choice, get_jev_client, noul, score
 from llm.prompt import build_review_prompt
 
 from .errors import OrchestrationError
@@ -31,6 +37,18 @@ _SCHEMA_DESC = (
     "array with exactly one object per candidate: paper_id, verdict ('pass'|'reject'), "
     "integer score 1..5, reasons, covered, missing"
 )
+
+
+_BACKENDS = {"llm", "jev"}
+
+# Jev score levels, lowest first; level i maps to review score i + 1.
+_JEV_SCORE_LEVELS = [
+    "Not useful for this requirement",
+    "Marginally useful: touches the topic but misses what the user needs",
+    "Partly useful: relevant to some of the requirement",
+    "Useful: relevant and addresses most of the requirement",
+    "Highly useful: directly addresses the requirement with solid technical content",
+]
 
 
 def _normalise_candidate(candidate: dict[str, Any], max_tokens: int) -> dict[str, Any]:
@@ -114,14 +132,7 @@ def _validate_reviews(
         if not set(covered).issubset(extracted) or not set(missing).issubset(extracted):
             raise ValueError("covered and missing values must copy extracted criteria verbatim")
 
-        candidate = candidate_by_id[paper_id]
-        evidence = {
-            "title": candidate["title"],
-            "abstract_snippet": candidate["abstract"],
-            "top_passages": [
-                passage["passage_id"] for passage in candidate["top_passages"]
-            ],
-        }
+        evidence = _evidence(candidate_by_id[paper_id])
         records.append(
             ReviewRecord(
                 paper_id=paper_id,
@@ -130,6 +141,109 @@ def _validate_reviews(
                 reasons=reasons.strip(),
                 covered=list(dict.fromkeys(covered)),
                 missing=list(dict.fromkeys(missing)),
+                round=round_no,
+                evidence=evidence,
+            )
+        )
+    return records
+
+
+def _evidence(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": candidate["title"],
+        "abstract_snippet": candidate["abstract"],
+        "top_passages": [passage["passage_id"] for passage in candidate["top_passages"]],
+    }
+
+
+def _jev_questions(rubric: list[str], aspects: list[str]) -> dict[str, dict[str, Any]]:
+    dimensions = ", ".join(item.replace("_", " ") for item in rubric) or "relevance"
+    questions = {
+        "verdict": choice(
+            "Should this paper be kept as a candidate for the user's research requirement? "
+            f"Judge it on: {dimensions}.",
+            {
+                "pass": "Relevant to the requirement and worth showing to the user",
+                "reject": "Off-topic, too weak, or does not help with the requirement",
+            },
+        ),
+        "score": score(
+            f"Overall, how useful is this paper for the user's research requirement? Consider: {dimensions}.",
+            _JEV_SCORE_LEVELS,
+        ),
+    }
+    for index, aspect in enumerate(aspects):
+        questions[f"aspect_{index}"] = noul(
+            f"Does this paper address this part of the requirement: {aspect}?",
+            true="The paper directly addresses it",
+            false="The paper does not address it",
+        )
+    return questions
+
+
+def _jev_review(
+    candidates: list[dict[str, Any]],
+    rubric: list[str],
+    criteria: list[Criterion],
+    input_text: str,
+    round_no: int,
+    cfg: dict[str, Any],
+) -> list[ReviewRecord]:
+    """Review each paper with Jev: typed answers instead of a JSON reply to parse."""
+    jev_cfg = cfg.get("jev", {})
+    pass_threshold = float(jev_cfg.get("pass_threshold", 0.5))
+    covered_threshold = float(jev_cfg.get("covered_threshold", 0.5))
+    aspects = list(dict.fromkeys(c.criterion for c in criteria if c.source == "extracted"))
+    questions = _jev_questions(rubric, aspects)
+    client = get_jev_client()
+    records: list[ReviewRecord] = []
+    for candidate in candidates:
+        state = {
+            "research_requirement": input_text,
+            "paper": {
+                "title": candidate["title"],
+                "abstract": candidate["abstract"],
+                "year": candidate["year"],
+                "categories": candidate["categories"],
+                "key_passages": [passage["text"] for passage in candidate["top_passages"]],
+            },
+        }
+        try:
+            answers = client.ask(state, questions)
+        except JevError as exc:
+            raise OrchestrationError(f"Jev review failed for {candidate['paper_id']}: {exc}") from exc
+
+        verdict_answer = answers["verdict"]
+        probabilities = verdict_answer.get("probabilities") or {}
+        p_pass = float(probabilities.get("pass", 1.0 if verdict_answer["choice"] == "pass" else 0.0))
+        verdict = "pass" if p_pass >= pass_threshold else "reject"
+        raw_score = float(answers["score"]["score"])
+        review_score = min(5, max(1, int(raw_score + 0.5) + 1))
+        aspect_probs = {aspect: float(answers[f"aspect_{i}"]["noul"]) for i, aspect in enumerate(aspects)}
+        covered = [aspect for aspect, prob in aspect_probs.items() if prob >= covered_threshold]
+        missing = [aspect for aspect, prob in aspect_probs.items() if prob < covered_threshold]
+
+        reasons = f"Jev: {verdict} (pass probability {p_pass:.2f}), score {review_score}/5."
+        if covered:
+            reasons += " Covers: " + "; ".join(covered) + "."
+        if missing:
+            reasons += " Not covered: " + "; ".join(missing) + "."
+        evidence = _evidence(candidate)
+        evidence["jev"] = {
+            "pass_probability": round(p_pass, 4),
+            "verdict_confidence": verdict_answer.get("confidence"),
+            "score_raw": round(raw_score, 4),
+            "score_confidence": answers["score"].get("confidence"),
+            "aspect_probabilities": {aspect: round(prob, 4) for aspect, prob in aspect_probs.items()},
+        }
+        records.append(
+            ReviewRecord(
+                paper_id=candidate["paper_id"],
+                verdict=verdict,
+                score=review_score,
+                reasons=reasons,
+                covered=covered,
+                missing=missing,
                 round=round_no,
                 evidence=evidence,
             )
@@ -160,6 +274,9 @@ def batch_review(
         raise ValueError("round_no must be at least 1")
 
     cfg = get_config()["orchestration"].get("review", {})
+    backend = str(cfg.get("backend", "llm")).strip().lower()
+    if backend not in _BACKENDS:
+        raise OrchestrationError(f"unknown orchestration.review.backend {backend!r} (use 'llm' or 'jev')")
     batch_size = max(1, int(cfg.get("batch_size", 5)))
     max_tokens = max(100, int(cfg.get("max_tokens_per_paper", 1500)))
     rubric = cfg.get("rubric", [])
@@ -173,6 +290,8 @@ def batch_review(
             merged.append(criterion)
 
     normalised = [_normalise_candidate(candidate, max_tokens) for candidate in candidates]
+    if backend == "jev":
+        return _jev_review(normalised, [str(item) for item in rubric], criteria, input_text, round_no, cfg)
     client = get_client()
     records: list[ReviewRecord] = []
     for offset in range(0, len(normalised), batch_size):

@@ -72,6 +72,10 @@ orchestration:
   hyde:
     enabled: false              # Q3 innovation: HyDE query expansion (on = one extra LLM call)
   review:
+    backend: llm                # llm | jev (Q5 comparison: LLM reviewer vs TypeSafe Jev, llm/jev.py)
+    jev:
+      pass_threshold: 0.5       # keep a paper when Jev's P(pass) >= this (tune on the dev split)
+      covered_threshold: 0.5    # an aspect counts as covered when Jev's P(yes) >= this
     batch_size: 5
     max_concurrency: 2          # concurrent LLM review workers
     max_tokens_per_paper: 1500  # token budget fed to the reviewer per paper (title + abstract + top passages)
@@ -98,6 +102,11 @@ llm:
   retries: 3
   max_tokens: 1024
   temperature: 0.2
+  jev:                          # TypeSafe Jev: typed decisions only, no text (used when orchestration.review.backend = jev)
+    model: jev-latest           # key: TYPESAFE_API_KEY in .env
+    base_url: https://api.typesafe.ai
+    retries: 3                  # 429 / 529 / 5xx / network errors, exponential backoff
+    timeout_s: 30
 
 # ---- eval/ evaluation ----
 eval:
