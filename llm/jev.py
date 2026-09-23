@@ -31,13 +31,15 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
-
-import httpx
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from typing import TYPE_CHECKING, Any
 
 from config import get_config, get_path
 
+if TYPE_CHECKING:
+    import httpx
+
+# httpx and tenacity are imported on first use, so `import orchestration` (and
+# scripts/sanity_check.py) needs only pyyaml.
 _RETRY_STATUS = {429, 500, 502, 503, 504, 529}
 _ENDPOINT = "/v1/systemone"
 
@@ -102,7 +104,7 @@ class JevClient:
         self._api_key = api_key
         self._usage_path = Path(usage_path) if usage_path else get_path("results") / "metrics" / "llm_usage.jsonl"
         self._transport = transport
-        self._retry_wait = retry_wait or wait_exponential(multiplier=1, min=1, max=30)
+        self._retry_wait = retry_wait  # None: exponential 1-30 s, built on the first call
         self._http: httpx.Client | None = None
         self._lock = threading.Lock()
         self._totals = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
@@ -113,6 +115,8 @@ class JevClient:
                 key = (self._api_key or os.environ.get("TYPESAFE_API_KEY", "")).strip()
                 if not key:
                     raise JevError("no Jev API key: set TYPESAFE_API_KEY in .env (see .env.example)")
+                import httpx
+
                 self._http = httpx.Client(
                     base_url=self.base_url,
                     timeout=self.timeout_s,
@@ -122,6 +126,8 @@ class JevClient:
             return self._http
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        import httpx
+
         try:
             resp = self._client().post(_ENDPOINT, json=payload)
         except httpx.TransportError as exc:  # timeouts and connection errors
@@ -180,12 +186,14 @@ class JevClient:
         if not questions:
             raise ValueError("ask() needs at least one question")
         payload = {"state": state, "model": self.model, "questions": dict(questions)}
+        from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
         started = time.perf_counter()
         try:
             for attempt in Retrying(
                 retry=retry_if_exception_type(_Transient),
                 stop=stop_after_attempt(self.retries + 1),
-                wait=self._retry_wait,
+                wait=self._retry_wait or wait_exponential(multiplier=1, min=1, max=30),
                 reraise=True,
             ):
                 with attempt:
