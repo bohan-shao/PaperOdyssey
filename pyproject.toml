@@ -1,6 +1,6 @@
 [project]
 name = "paperodyssey"
 version = "0.1.0"
-description = "AI6127 RAG system over arXiv papers: hybrid sparse/dense retrieval + agentic Paper Search (review loop); downstream task reserved (TBD)"
+description = "AI6127 RAG system over arXiv papers: agentic Paper Search and question answering with evidence citations"
 requires-python = ">=3.11"
 dependencies = []  # dependencies are maintained centrally in requirements.txt (grouped by module for parallel installs)

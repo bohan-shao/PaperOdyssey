@@ -1,7 +1,8 @@
 # PaperOdyssey — AI6127 Paper-QA RAG System
 
 > Course assignment: AI6127 Deep Neural Networks for NLP (2026). Deadline **2026-11-07 23:59 SGT**, submit via Blackboard.
-> Current status: **skeleton repository** (interface contracts and implementation requirements are fixed; the concrete logic is a placeholder stub, to be implemented).
+> Current status: KB, LLM client, orchestration, cited paper QA, and a minimal UI are implemented.
+> Retrieval and evaluation still contain stubs; real indexed end-to-end QA awaits retrieval integration.
 
 ## What the System Does
 
@@ -14,9 +15,11 @@ The user enters **a research requirement** (a paragraph) and gets relevant paper
 2. **Parallel retrieval**: the sub-queries run in parallel through the retrieval core (BM25 ∥ dense → RRF → rerank)
 3. **Review loop**: a review LLM judges each paper against a **fixed rubric + input-extracted criteria** (pass/reject, 1–5 score, reasons, covered/missing aspects); if coverage is insufficient, feedback-based rewriting triggers supplementary retrieval (at most 2–3 rounds)
 
-**Tab 2 — Downstream task** (`downstream.run()`): **calls Paper Search** (Tab 1) and then produces
-the task output from the evidence. Task type TBD (QA with cited answers / summarization / classification);
-only this part changes when the task is decided (Q4/Q5).
+**Paper QA** (`downstream.run()`): **calls Paper Search**, reads the retrieved paper passages,
+and generates a concise answer with numbered evidence citations. Expand a citation to read
+the exact excerpt and open the paper on arXiv. Insufficient evidence is stated explicitly.
+The UI shares one question box and offers **Ask** and **Search papers only** actions; an Ask
+request populates both tabs from the same search. See [downstream/README.md](downstream/README.md).
 
 ## Architecture Overview
 
@@ -50,15 +53,15 @@ Detailed design and decision log: see [docs/DESIGN.md](docs/DESIGN.md).
 | `kb/` | Knowledge base construction: acquisition/parsing/cleaning/chunking/storage/statistics (assignment Q1, 20 points) |
 | `retrieval/` | Retrieval core: BM25/dense/RRF/rerank/unified entry point (assignment Q2/Q3, 40 points) |
 | `orchestration/` | Orchestration layer (Paper Search): query understanding/parallel retrieval/review/rewriting loop (agentic RAG, Q3/Q5 innovation) |
-| `downstream/` | Downstream task (reserved folder; calls Paper Search — task type TBD, Q4/Q5, 40 points) |
-| `llm/` | LLM layer: single LLM client + prompt templates (used by orchestration and, later, the downstream task) |
-| `eval/` | Evaluation: retrieval/review metrics + annotation tooling (Q3); generation/RAGAS metrics come with the downstream task (Q4) |
+| `downstream/` | Cited paper QA: calls Paper Search, reads evidence, generates an answer (Q4/Q5) |
+| `llm/` | Shared LLM client and orchestration prompts; answer prompts live in `downstream/` |
+| `eval/` | Retrieval/review evaluation and annotation tooling; generation/RAGAS evaluation remains pending |
 | `ui/` | Streamlit interface (Q2) |
 | `scripts/` | One-click scripts: download/build index/run evaluation/sanity checks |
 | `docs/` | Architecture, schema, conventions, evaluation plan, decision records |
 | `data/` | Data and indices (gitignored, distributed via Dropbox) |
 
-## Quick Start (Skeleton Phase)
+## Quick Start
 
 ### Option A — Docker (recommended; bundles the JDK that Pyserini needs)
 
@@ -95,7 +98,10 @@ docs/DESIGN.md          # system design and decision log
 README.md               # conventions / git workflow / Definition of Done (below)
 ```
 
-Each module's `README.md` states that module's **implementation requirements and constraints**; the `.py` files are contract-bearing placeholder stubs (`NotImplementedError` + TODO markers) — implement them according to the contract.
+Each module's `README.md` states its **implementation requirements, constraints, and status**.
+Remaining `NotImplementedError` stubs must be completed according to those contracts.
+Start the minimal UI with `bash scripts/run_ui.sh`; live questions require the retrieval
+implementation, built indices, processed passages, and a configured LLM key.
 
 ## Conventions
 
@@ -126,7 +132,7 @@ Each module's `README.md` states that module's **implementation requirements and
 
 | Decision | Conclusion |
 |---|---|
-| Downstream task | **TBD** — calls Paper Search (D24); candidates: QA with cited answers / summarization / classification |
+| Downstream task | Simple cited paper QA: Paper Search → original passages → one answer-generation call (D28) |
 | Corpus | arXiv cs.CL/cs.AI/cs.LG, 15k–30k papers, 2015–2025, OpenAlex citation filter |
 | Sparse/dense | Pyserini BM25 / BGE-large-en-v1.5 + FAISS HNSW |
 | Fusion/rerank | RRF(k=60) → BGE-reranker-v2-m3 (top-50 → top-10) |

@@ -5,7 +5,7 @@
 The **LLM layer of the whole system** — every LLM call goes through `llm/client.py`:
 
 - **orchestration** uses it for query understanding / review / rewriting (Paper Search's own LLM calls)
-- the **downstream task** (reserved folder, TBD) will use it when defined
+- **downstream paper QA** uses `chat()` for one cited answer-generation call
 - **eval** (RAGAS) uses it for metric computation
 
 `llm/jev.py` is the one exception: an optional client for TypeSafe's Jev, a decision-only model
@@ -31,7 +31,9 @@ still goes through `llm/client.py`.
 - `build_review_prompt(candidates, criteria, input_text)` — review (used by orchestration)
 - `build_rewrite_prompt(missing, existing)` — feedback-based rewriting (used by orchestration)
 - Record `TEMPLATE_VERSION`; the report cites template versions for reproducibility
-- (Task-specific prompts — generation/self-check — are defined later with the downstream task)
+- The answer prompt and its independent version live in `downstream/prompts.py`.
+  QA uses `chat(..., max_tokens=downstream.max_tokens)` and `parse_json_reply()`;
+  it validates citations locally and does not run an additional self-check model.
 
 ## Implementation Notes: client.py (status: implemented)
 

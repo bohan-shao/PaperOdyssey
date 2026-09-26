@@ -8,6 +8,7 @@ Checks, in order; exits non-zero on the first failure:
 3. schema round-trips (keeps SCHEMA.md and types.py in sync):
    - retrieval.types: ScoredPassage / RetrieveResult → dict → JSON → back, fields identical
    - orchestration.types: QueryPlan / ReviewRecord / FinalResult → dict → JSON → back, fields identical
+   - downstream.types: EvidenceSource / DownstreamResult → dict → JSON → back, fields identical
 
 Constraints:
 - No heavy dependencies: no test framework, no model/vector libraries (pyserini/faiss/transformers...).
@@ -66,6 +67,7 @@ def check_schema_roundtrips() -> None:
     """Check 3: schema types serialize and read back with identical fields."""
     rt = importlib.import_module("retrieval.types")
     ot = importlib.import_module("orchestration.types")
+    dt = importlib.import_module("downstream.types")
 
     _roundtrip(
         "ScoredPassage", rt,
@@ -82,6 +84,16 @@ def check_schema_roundtrips() -> None:
         lambda c: c(
             query_id="Q1", input_text="q", query_plan=ot.QueryPlan(input_text="q"),
             papers=[], coverage_report={"total_aspects": 0},
+        ),
+    )
+    source = dt.EvidenceSource(1, "P1", "P1_0001", "Title", 2024, "Method", None, "Evidence")
+    _roundtrip("EvidenceSource", dt, lambda c: source)
+    _roundtrip(
+        "DownstreamResult", dt,
+        lambda c: c(
+            query_id="Q1", input_text="q", answer="Supported [1].", status="answered",
+            sources=[source], cited_source_numbers=[1],
+            search_result=ot.FinalResult("Q1", "q", ot.QueryPlan("q"), [], {}),
         ),
     )
 

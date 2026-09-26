@@ -28,12 +28,13 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are parked 
 - Output: `data/eval/eval_set.jsonl` (SCHEMA.md §7)
 - IAA computation: `eval/annotation/iaa.py` (Fleiss' kappa + percentage agreement)
 
-## Parked (come back with the downstream task, Q4)
+## Pending QA evaluation (Q4)
 
 - **Generation metrics** (ROUGE/BERTScore) and **RAGAS** (faithfulness / answer relevance /
-  context relevance) depend on the downstream task output schema — `downstream/` is an empty
-  reserved folder (task type TBD). Re-add `generation_metrics.py` and `rag_metrics.py`
-  (and the rouge-score / bert-score / ragas dependencies) when the task is decided.
+  context relevance) are not implemented in the minimal QA feature. The output contract is
+  now `DownstreamResult` in SCHEMA §10: answer text, all source excerpts, citations used,
+  nested search result, and timings. Implement metric runners and their dependencies as
+  separate evaluation work, using the manually labeled held-out dataset.
 - The evaluation plan for these is already written in docs/EVALUATION.md §5–§6.
 
 ## Ablation run conventions (Q3/Q5)

@@ -40,7 +40,7 @@ openai>=3.0            # works with DeepSeek/OpenAI; 3.x uses httpx2 (tests/test
 
 # ---- eval/ ----
 scikit-learn>=1.4      # IAA (Cohen/Fleiss kappa), classification metrics
-# (rouge-score / bert-score / ragas are re-added when the downstream task is decided — see eval/README.md)
+# Generation/RAGAS metric dependencies remain deferred — see eval/README.md.
 
 # ---- ui/ ----
 streamlit>=1.35

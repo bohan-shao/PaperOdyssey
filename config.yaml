@@ -123,7 +123,12 @@ orchestration:
   rewrite:
     max_queries_per_round: 2
 
-# ---- downstream/ (reserved; task type TBD — no switches yet) ----
+# ---- downstream/ cited paper question answering ----
+downstream:
+  max_papers: 5
+  passages_per_paper: 2
+  max_chars_per_passage: 2400   # source excerpts shown in the UI match this exact model context
+  max_tokens: 1024             # answer generation only; search uses llm.max_tokens
 
 # ---- llm (DeepSeek by default, OpenAI-compatible; key in .env) ----
 llm:

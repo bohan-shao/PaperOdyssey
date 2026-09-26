@@ -133,6 +133,24 @@ def iter_passages(path: str | Path) -> Iterator[dict]:
     yield from _iter_jsonl(path)
 
 
+def load_passages(passage_ids: Iterable[str], path: str | Path) -> dict[str, dict]:
+    """Read selected passages in one streaming pass; missing IDs are omitted.
+
+    Does not create or repair files. An empty selection needs no corpus file.
+    """
+    wanted = set(passage_ids)
+    found: dict[str, dict] = {}
+    if not wanted:
+        return found
+    for rec in iter_passages(path):
+        passage_id = rec["passage_id"]
+        if passage_id in wanted:
+            found[passage_id] = rec
+            if len(found) == len(wanted):
+                break
+    return found
+
+
 def write_parents(parents: list[dict], path: str | Path) -> None:
     """Append parent-section records (sections.jsonl), idempotent per paper_id."""
     _write_keyed_jsonl(parents, path)
