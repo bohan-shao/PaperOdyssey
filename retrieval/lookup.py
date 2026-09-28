@@ -8,8 +8,8 @@ sections.jsonl) by `scripts/build_indexes.py`; lives under `paths.indices`
 
 - `build_lookup(passages_path, sections_path, db_path)`: full rebuild into a temp file, then an
   atomic replace, so a crashed build never leaves a half-written store. Returns counts + time.
-- `LookupStore(db_path)`: read-only, one connection per thread (sparse and dense hydrate in
-  parallel threads).
+- `LookupStore(db_path)`: read-only, one connection shared by all threads under a lock (sparse
+  and dense hydrate in parallel threads; each lookup is a sub-millisecond primary-key query).
   - `get_passages(ids)` / `get_sections(ids)`: records by id, `categories` decoded to a list.
   - `hydrate(ranked, stage)`: (passage_id, score) pairs, best first -> ScoredPassages, rank 1..n.
   - `with_parent_text(hits)`: swap each hit's text for its parent section's text.
@@ -150,33 +150,32 @@ class LookupStore:
         self.path = Path(db_path).resolve()
         if not self.path.exists():
             raise RuntimeError(f"lookup store not found: {self.path} (run scripts/build_indexes.py)")
-        self._local = threading.local()
-        self._conns: list[sqlite3.Connection] = []
+        self._connection: sqlite3.Connection | None = None
         self._lock = threading.Lock()
 
     def _conn(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            # check_same_thread=False only so close() can close every thread's connection.
-            conn = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True,
-                                   check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            self._local.conn = conn
-            with self._lock:
-                self._conns.append(conn)
-        return conn
+        """The shared connection, opened on first use; callers hold `self._lock`."""
+        if self._connection is None:
+            # One connection for all threads, not one per thread: orchestration runs every query
+            # on fresh short-lived threads (asyncio.run per query, Streamlit reruns), and
+            # per-thread connections stayed open after their threads ended.
+            self._connection = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True,
+                                               check_same_thread=False)
+            self._connection.row_factory = sqlite3.Row
+        return self._connection
 
     def _fetch(self, table: str, key: str, ids: Iterable[str]) -> dict[str, dict]:
         wanted = list(dict.fromkeys(ids))
         found: dict[str, dict] = {}
-        conn = self._conn()
-        for i in range(0, len(wanted), _MAX_VARS):
-            chunk = wanted[i:i + _MAX_VARS]
-            sql = f"SELECT * FROM {table} WHERE {key} IN ({', '.join('?' * len(chunk))})"
-            for row in conn.execute(sql, chunk):
-                rec = dict(row)
-                rec["categories"] = json.loads(rec["categories"] or "[]")
-                found[rec[key]] = rec
+        with self._lock:
+            conn = self._conn()
+            for i in range(0, len(wanted), _MAX_VARS):
+                chunk = wanted[i:i + _MAX_VARS]
+                sql = f"SELECT * FROM {table} WHERE {key} IN ({', '.join('?' * len(chunk))})"
+                for row in conn.execute(sql, chunk):
+                    rec = dict(row)
+                    rec["categories"] = json.loads(rec["categories"] or "[]")
+                    found[rec[key]] = rec
         return found
 
     def get_passages(self, passage_ids: Iterable[str]) -> dict[str, dict]:
@@ -220,12 +219,11 @@ class LookupStore:
                 for h in hits]
 
     def close(self) -> None:
-        """Close the connections of every thread that used this store."""
+        """Close the connection; a later lookup opens a new one."""
         with self._lock:
-            for conn in self._conns:
-                conn.close()
-            self._conns.clear()
-        self._local = threading.local()
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
 
     def __enter__(self) -> LookupStore:
         return self

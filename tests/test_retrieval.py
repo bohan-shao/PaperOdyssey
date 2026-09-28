@@ -114,6 +114,17 @@ class LookupTest(unittest.TestCase):
             t.join()
         self.assertEqual(results, [4, 4, 4, 4])
 
+    def test_short_lived_threads_share_one_connection(self) -> None:
+        conns: list[sqlite3.Connection] = []
+        for _ in range(5):  # a fresh thread per query, as with asyncio.run or a Streamlit rerun
+            t = threading.Thread(target=lambda: (self.lookup.get_passages(["P2401.00001_0000"]),
+                                                 conns.append(self.lookup._conn())))
+            t.start()
+            t.join()
+        self.assertTrue(all(c is conns[0] for c in conns))
+        self.lookup.close()
+        self.assertEqual(len(self.lookup.get_passages(["P2401.00001_0000"])), 1)  # reopens
+
     def test_missing_store_raises(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "build_indexes"):
             LookupStore(Path(self._tmp.name) / "missing.sqlite")
