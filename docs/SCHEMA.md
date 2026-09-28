@@ -10,7 +10,7 @@
 data/
 ├── raw/          # downloaded metadata, PDFs (not committed)
 ├── processed/    # passages.jsonl, sections.jsonl, papers.sqlite (KB outputs)
-├── indices/      # bm25/ (Pyserini), faiss/ (FAISS index + vectors)
+├── indices/      # bm25/ (Pyserini), faiss/ (FAISS index + vectors), lookup.sqlite (passage/section records by id)
 ├── eval/         # eval_set.jsonl (evaluation set), annotation/ (annotation intermediates)
 └── results/      # per-stage results: retrieval_results/, final_results/, metrics/*.json
 ```

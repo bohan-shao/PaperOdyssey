@@ -13,6 +13,16 @@ toggleable (EVALUATION.md §2).
 - `RetrievalFilters`: year_min / year_max / categories
 - `RetrieveResult`: hits + latency_ms + per-stage breakdown (needed for Q2 timing and report performance)
 
+### lookup.py — Lookup store (D28)
+- `data/indices/lookup.sqlite` (config `retrieval.lookup.db_file`), built by `scripts/build_indexes.py`
+  from the same `passages.jsonl` + `sections.jsonl` as the indexes; rebuild = temp file + atomic replace
+- Tables `passages` (SCHEMA.md §2 columns, keyed by `passage_id`) and `sections` (keyed by `parent_section_id`)
+- `get_lookup_store().hydrate([(passage_id, score), ...], stage)` → `ScoredPassage` list, ranks 1..n;
+  sparse and dense both return hits through this
+- `with_parent_text(hits)`: parent-document mode, swaps in the section text, `passage_id` keeps the child
+- Primary-key lookups only (not retrieval); an id missing from the store raises (indexes and store out of sync)
+- Verified on the local KB sample (1,997 passages): build 0.03 s, 7 MB; hydrating 50 hits + 10 parent swaps ≈ 0.3 ms
+
 ### sparse.py — Sparse (D5)
 - Build a Lucene BM25 index with Pyserini (`data/indices/bm25/`); indexed fields: text + metadata
   (year/categories as filter fields)

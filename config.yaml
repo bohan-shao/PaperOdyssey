@@ -70,6 +70,8 @@ kb:
 
 # ---- retrieval/ retrieval core (ablation matrix changes go here) ----
 retrieval:
+  lookup:
+    db_file: lookup.sqlite      # passage/section records by id (under paths.indices), hydrates BM25/FAISS hits
   sparse:
     enabled: true
     backend: pyserini           # pyserini | rankbm25 (fallback if Java is unavailable)
