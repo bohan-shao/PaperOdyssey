@@ -16,13 +16,15 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import zlib
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from kb import store
-from retrieval import rerank, sparse
+from retrieval import pipeline, rerank, sparse
 from retrieval.fusion import reciprocal_rank_fusion
 from retrieval.lookup import LookupStore, build_lookup
 from retrieval.types import RetrievalFilters, ScoredPassage
@@ -489,6 +491,188 @@ class RealRerankerTest(unittest.TestCase):
         self.assertTrue(all(0.0 <= h.score <= 1.0 for h in out))
         self.assertGreater(out[0].score, 0.5)
         self.assertLess(out[-1].score, 0.1)
+
+
+def pipeline_cfg(overrides: dict[str, object]) -> dict:
+    """The retrieval config section with every stage on; overrides like {"rerank.enabled": False}."""
+    cfg = {
+        "sparse": {"enabled": True, "top_k": 50}, "dense": {"enabled": True, "top_k": 50},
+        "fusion": {"rrf_k": 60, "weights": [1.0, 1.0], "top_k": 50},
+        "rerank": {"enabled": True, "top_k": 10}, "parent_doc": {"enabled": False},
+        "filters": {"enabled": True}, "parallel": True,
+    }
+    for key, value in overrides.items():
+        section, _, name = key.rpartition(".")
+        (cfg[section] if section else cfg)[name] = value
+    return {"retrieval": cfg}
+
+
+class FakeStages:
+    """Records every stage call. sparse -> a, b, c; dense -> c, d; the reranker puts d first."""
+
+    def __init__(self, fail: dict[str, Exception] | None = None) -> None:
+        self.calls: list[dict] = []
+        self.fail = fail or {}
+
+    def _record(self, stage: str, **info: object) -> None:
+        self.calls.append({"stage": stage, "thread": threading.get_ident(), **info})
+        if stage in self.fail:
+            raise self.fail[stage]
+
+    def stages(self) -> list[str]:
+        return [c["stage"] for c in self.calls]
+
+    def call(self, stage: str) -> dict:
+        return next(c for c in self.calls if c["stage"] == stage)
+
+    def sparse(self, query: str, filters: RetrievalFilters | None, top_k: int) -> tuple[list[ScoredPassage], int]:
+        self._record("sparse", filters=filters, top_k=top_k)
+        return ranked("bm25", "a", "b", "c"), 3
+
+    def dense(self, query: str, filters: RetrievalFilters | None, top_k: int) -> tuple[list[ScoredPassage], int]:
+        self._record("dense", filters=filters, top_k=top_k)
+        return ranked("dense", "c", "d"), 7
+
+    def rerank(self, query: str, candidates: list[ScoredPassage], top_k: int) -> list[ScoredPassage]:
+        self._record("rerank", ids=[c.passage_id for c in candidates], texts=[c.text for c in candidates], top_k=top_k)
+        return rerank.rank_by_scores(candidates, [0.9 if c.passage_id == "d" else 0.1 for c in candidates], top_k)
+
+    def with_parent_text(self, hits: list[ScoredPassage]) -> list[ScoredPassage]:
+        self._record("parent")
+        return [replace(h, text=f"parent of {h.passage_id}") for h in hits]
+
+
+class PipelineTest(unittest.TestCase):
+    def run_pipeline(self, overrides: dict[str, object] | None = None, filters: RetrievalFilters | None = None,
+                     top_k: int | None = None, stages: FakeStages | None = None) -> tuple:
+        stages = stages or FakeStages()
+        with patch.object(pipeline, "get_config", return_value=pipeline_cfg(overrides or {})), \
+                patch.object(pipeline, "_ensure_loaded", lambda cfg: None), \
+                patch.object(pipeline, "_sparse_search", stages.sparse), \
+                patch.object(pipeline, "_dense_search", stages.dense), \
+                patch.object(pipeline, "_rerank", stages.rerank), \
+                patch.object(pipeline, "get_lookup_store", return_value=stages):
+            return pipeline.retrieve("low-rank adaptation", filters, top_k), stages
+
+    @staticmethod
+    def ids(result: object) -> list[str]:
+        return [h.passage_id for h in result.hits]
+
+    def test_default_config_is_hybrid_plus_rerank(self) -> None:
+        result, stages = self.run_pipeline()
+        self.assertEqual(stages.call("rerank")["ids"], ["c", "a", "b", "d"])  # fused order goes in
+        self.assertEqual(self.ids(result), ["d", "c", "a", "b"])  # reranked order comes out
+        self.assertEqual({h.stage for h in result.hits}, {"rerank"})
+        self.assertEqual(result.total_candidates, 4)
+        self.assertEqual((stages.call("sparse")["top_k"], stages.call("dense")["top_k"]), (50, 50))
+        self.assertEqual(set(result.latency_ms), {"sparse_ms", "dense_ms", "fusion_ms", "rerank_ms", "total_ms"})
+        self.assertEqual((result.latency_ms["sparse_ms"], result.latency_ms["dense_ms"]), (3, 7))
+
+    def test_ablation_matrix_is_config_only(self) -> None:
+        rows = {  # EVALUATION.md section 2
+            "bm25": ({"dense.enabled": False, "rerank.enabled": False}, ["a", "b", "c"], ["sparse"]),
+            "dense": ({"sparse.enabled": False, "rerank.enabled": False}, ["c", "d"], ["dense"]),
+            "hybrid": ({"rerank.enabled": False}, ["c", "a", "b", "d"], ["sparse", "dense"]),
+            "rerank": ({}, ["d", "c", "a", "b"], ["sparse", "dense", "rerank"]),
+        }
+        for stage, (overrides, expected_ids, expected_stages) in rows.items():
+            with self.subTest(row=stage):
+                result, stages = self.run_pipeline(overrides)
+                self.assertEqual(self.ids(result), expected_ids)
+                self.assertEqual({h.stage for h in result.hits}, {stage})
+                self.assertEqual(sorted(stages.stages()), sorted(expected_stages))
+                self.assertEqual("fusion_ms" in result.latency_ms, stage in ("hybrid", "rerank"))
+
+    def test_single_retriever_goes_to_rerank_without_fusion(self) -> None:
+        result, stages = self.run_pipeline({"dense.enabled": False})
+        self.assertEqual(stages.call("rerank")["ids"], ["a", "b", "c"])
+        self.assertNotIn("fusion_ms", result.latency_ms)
+
+    def test_top_k_default_and_override(self) -> None:
+        result, stages = self.run_pipeline({"rerank.top_k": 2})
+        self.assertEqual((len(result.hits), stages.call("rerank")["top_k"]), (2, 2))
+        self.assertEqual(len(self.run_pipeline(top_k=1)[0].hits), 1)
+        self.assertEqual(self.ids(self.run_pipeline({"rerank.enabled": False}, top_k=3)[0]), ["c", "a", "b"])
+
+    def test_filters_switch(self) -> None:
+        recent = RetrievalFilters(year_min=2020)
+        _, stages = self.run_pipeline(filters=recent)
+        self.assertEqual((stages.call("sparse")["filters"], stages.call("dense")["filters"]), (recent, recent))
+        _, stages = self.run_pipeline({"filters.enabled": False}, filters=recent)
+        self.assertEqual((stages.call("sparse")["filters"], stages.call("dense")["filters"]), (None, None))
+
+    def test_parent_doc_after_rerank_keeps_child_ids(self) -> None:
+        result, stages = self.run_pipeline({"parent_doc.enabled": True})
+        self.assertTrue(all(t.startswith("text of") for t in stages.call("rerank")["texts"]))  # child text scored
+        self.assertEqual([h.text for h in result.hits][:2], ["parent of d", "parent of c"])
+        self.assertEqual(self.ids(result), ["d", "c", "a", "b"])
+        self.assertIn("parent_ms", result.latency_ms)
+        _, stages = self.run_pipeline()
+        self.assertNotIn("parent", stages.stages())
+
+    def test_parallel_switch(self) -> None:
+        caller = threading.get_ident()
+        _, stages = self.run_pipeline()
+        self.assertNotEqual(stages.call("sparse")["thread"], caller)  # worker thread
+        self.assertEqual(stages.call("dense")["thread"], caller)
+        _, stages = self.run_pipeline({"parallel": False})
+        self.assertEqual(stages.call("sparse")["thread"], caller)
+
+    def test_fusion_settings_are_used(self) -> None:
+        result, stages = self.run_pipeline({"fusion.top_k": 2})
+        self.assertEqual((result.total_candidates, stages.call("rerank")["ids"]), (2, ["c", "a"]))
+        result, _ = self.run_pipeline({"fusion.weights": [1.0, 0.0], "rerank.enabled": False})
+        self.assertEqual(self.ids(result), ["a", "b", "c"])  # dense-only d gets no weight
+
+    def test_failures_name_the_stage(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "both disabled"):
+            self.run_pipeline({"sparse.enabled": False, "dense.enabled": False})
+        cases = {
+            "sparse": (ValueError("JVM crashed"), "sparse retrieval failed: JVM crashed"),
+            "dense": (RuntimeError("FAISS index not found"), "dense retrieval failed: FAISS index not found"),
+            "rerank": (OSError("model missing"), "rerank failed: model missing"),
+        }
+        for stage, (exc, message) in cases.items():
+            with self.subTest(stage=stage), self.assertRaisesRegex(RuntimeError, message):
+                self.run_pipeline(stages=FakeStages(fail={stage: exc}))
+
+    def test_components_load_once_one_at_a_time(self) -> None:
+        active, max_active, loads = [0], [0], []
+        lock = threading.Lock()
+
+        def loader(name: str):
+            def load() -> None:
+                with lock:
+                    active[0] += 1
+                    max_active[0] = max(max_active[0], active[0])
+                    loads.append(name)
+                time.sleep(0.02)  # long enough for the other threads to pile up
+                with lock:
+                    active[0] -= 1
+            return load
+
+        fakes = {name: loader(name) for name, _ in pipeline._COMPONENTS}
+        cfg = pipeline_cfg({})["retrieval"]
+        with patch.object(pipeline, "_loaders", return_value=fakes), patch.object(pipeline, "_LOADED", set()):
+            threads = [threading.Thread(target=pipeline._ensure_loaded, args=(cfg,)) for _ in range(4)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            self.assertEqual(loads, ["sparse", "dense", "rerank"])  # enabled ones, each once; parent_doc is off
+            self.assertEqual(max_active[0], 1)  # never two at the same time
+            pipeline._ensure_loaded(pipeline_cfg({"parent_doc.enabled": True})["retrieval"])
+            self.assertEqual(loads[-1], "parent_doc")  # switched on later: loaded then
+
+    def test_load_failure_names_the_component(self) -> None:
+        def missing() -> None:
+            raise RuntimeError("BM25 index not found")
+
+        fakes = {name: (missing if name == "sparse" else (lambda: None)) for name, _ in pipeline._COMPONENTS}
+        with patch.object(pipeline, "_loaders", return_value=fakes), patch.object(pipeline, "_LOADED", set()):
+            with self.assertRaisesRegex(RuntimeError, "loading sparse failed: BM25 index not found"):
+                pipeline._ensure_loaded(pipeline_cfg({})["retrieval"])
+            self.assertNotIn("sparse", pipeline._LOADED)  # retried on the next call
 
 
 class CategoryTokenTest(unittest.TestCase):

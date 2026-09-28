@@ -90,6 +90,7 @@ retrieval:
   fusion:
     rrf_k: 60
     weights: [1.0, 1.0]         # [sparse, dense]
+    top_k: 50                   # fused candidates kept (the reranker's input)
   rerank:
     enabled: true
     model_name: BAAI/bge-reranker-v2-m3

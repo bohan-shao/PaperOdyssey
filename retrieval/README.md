@@ -118,6 +118,27 @@ def retrieve(query: str, filters: RetrievalFilters | None = None,
 - Must record per-stage latency (sparse_ms/dense_ms/fusion_ms/rerank_ms/total_ms)
 - The orchestration layer may only call `retrieve()`; evaluation scripts may only call it too (to keep ablations fair)
 
+Implementation notes:
+- Switches are followed literally, with no hidden coupling: one retriever on → its list goes
+  straight to rerank / the top_k cut (so the BM25-only and dense-only rows also set
+  `rerank.enabled=false`, see EVALUATION.md §2); `fusion.top_k` (50) candidates go to the reranker;
+  `top_k` defaults to `rerank.top_k` (10); `filters.enabled=false` drops the filters argument
+- Parent-document mode is the last step (`lookup.with_parent_text`), after rerank or the cut, so
+  the cross-encoder scores child text and the swap works with rerank on or off
+- Hit stage = configuration level (`bm25` / `dense` / `hybrid` / `rerank`); `latency_ms` has
+  one entry per stage that ran (+ `parent_ms`, `total_ms`); `total_candidates` = list size before rerank
+- Sparse runs on a worker thread while dense runs on the calling thread (`retrieval.parallel`)
+- Enabled components are loaded one at a time under one lock on first use: pyserini and
+  sentence-transformers both import transformers, and two threads doing that at once fail with
+  `cannot import name 'AutoTokenizer'` (found on the real stack; orchestration's concurrent
+  first calls hit it too). `warm_up()` loads everything ahead of the first query
+- Any failure in an enabled stage raises RuntimeError naming the stage (no silent fallback that
+  would turn one ablation row into another)
+- Verified on the local KB sample (RTX 5070), median warm latency: BM25-only 4 ms, dense-only
+  11 ms, hybrid 14 ms (sparse and dense overlap), hybrid + rerank 413 ms (rerank 388 ms);
+  6 concurrent cold-start calls load everything once and match serial results. The reranker is
+  serialized by its lock, so concurrent sub-queries queue on it (6 warm calls: 2.3 s)
+
 ## Ablation Checklist (EVALUATION.md §2–§3)
 1. Four-level matrix: bm25 / dense / hybrid / hybrid+rerank
 2. Parent-document retrieval toggle: `retrieval.parent_doc.enabled` (on a child hit, return the parent text; SCHEMA.md §2)
