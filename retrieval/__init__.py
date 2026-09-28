@@ -2,6 +2,7 @@
 
 Submodules:
 - types:     type contracts for ScoredPassage / RetrievalFilters / RetrieveResult
+- lookup:    SQLite passage/section store keyed by id (hydrates BM25/FAISS hits, parent text)
 - sparse:    Pyserini (Lucene BM25) sparse retrieval
 - dense:     BGE-large-en-v1.5 encoding + FAISS HNSW dense retrieval
 - fusion:    RRF hybrid fusion

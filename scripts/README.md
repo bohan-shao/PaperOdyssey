@@ -7,7 +7,8 @@
 |---|---|
 | `download_papers.py` | metadata fetch + OpenAlex citations + filtering + PDF download (resumable, `--shard I/N`) |
 | `build_kb.py` | parse + clean + chunk PDFs into passages.jsonl / sections.jsonl / papers.sqlite + corpus stats (resumable) |
-| `build_indexes.py` | build BM25 + FAISS indexes from passages.jsonl |
+| `build_indexes.py` | build the lookup store + BM25 + FAISS indexes from passages.jsonl (`--only lookup\|sparse\|dense\|all`) |
+| `benchmark_retrieval.py` | retrieval-core latency benchmark (per-stage latency per config, throughput, efSearch and rerank-depth sweeps) → `metrics/latency_retrieval_<date>.json` |
 | `run_eval.py` | unified evaluation entry point (--stage retrieval/review/all) |
 | `sanity_check.py` | dependency-free sanity checks: config loads, packages import, schema round-trips (see README: Sanity checks) |
 | `run_ui.sh` | start Streamlit |
