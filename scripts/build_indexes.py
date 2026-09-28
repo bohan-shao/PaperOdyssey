@@ -7,7 +7,7 @@ Pipeline: kb.store passages/sections -> retrieval.lookup.build_lookup
     -> retrieval.sparse.build_index (optional) -> retrieval.dense.build_index (optional)
 All three read the same passages file, so hit ids always resolve in the lookup store.
 Constraints: rebuilding overwrites old indexes (delete first, then build); build time and scale
-are written to results/metrics/index_build_<date>.json.
+are merged into results/metrics/index_build_<date>.json.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def main() -> None:
     if not passages.exists():
         sys.exit(f"{passages} not found; build the KB first (scripts/build_kb.py)")
 
-    # retrieval.*.index_dir / faiss_dir ("indices/...") are relative to the data dir.
+    # retrieval.dense.faiss_dir ("indices/...") is relative to the data dir.
     data_dir = paths["indices"].parent
     report: dict = {"passages_file": str(passages)}
     if args.only in ("lookup", "all"):
@@ -54,9 +54,10 @@ def main() -> None:
     if args.only in ("sparse", "all"):
         from retrieval import sparse
 
-        t0 = time.perf_counter()
-        sparse.build_index(passages, data_dir / cfg["retrieval"]["sparse"]["index_dir"])
-        report["sparse"] = {"build_s": round(time.perf_counter() - t0, 3)}
+        bm25_dir, backend = sparse.index_path(cfg), cfg["retrieval"]["sparse"]["backend"]
+        log.info("building BM25 index (%s) -> %s", backend, bm25_dir)
+        report["sparse"] = sparse.build_index(passages, bm25_dir, backend=backend)
+        log.info("BM25 index: %s", report["sparse"])
     if args.only in ("dense", "all"):
         from retrieval import dense
 
@@ -64,8 +65,11 @@ def main() -> None:
         dense.build_index(passages, data_dir / cfg["retrieval"]["dense"]["faiss_dir"])
         report["dense"] = {"build_s": round(time.perf_counter() - t0, 3)}
 
+    # Merge into today's report, so an --only run keeps the other indexes' numbers.
     out = paths["results"] / "metrics" / f"index_build_{date.today().isoformat()}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists():
+        report = {**json.loads(out.read_text(encoding="utf-8")), **report}
     out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     log.info("build report -> %s", out)
 

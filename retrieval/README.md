@@ -31,6 +31,21 @@ toggleable (EVALUATION.md §2).
 - Fallback: if Java is unavailable → rank-bm25 (already listed in `requirements.txt`), note it in the report
 - Forbidden: SQL-LIKE retrieval
 
+Implementation notes:
+- Index layout: `data/indices/bm25/meta.json` (backend, doc count) + `lucene/` (Pyserini) or
+  `rankbm25.pkl`; opening an index built by the other backend raises
+- Pyserini: Anserini's default English analyzer (Porter, stopwords), BM25 `k1=0.9, b=0.4`
+  (config `retrieval.sparse.bm25`); queries go through Anserini's bag-of-words generator, so
+  punctuation in LLM-written sub-queries cannot break query parsing
+- Filters are Lucene FILTER clauses on the extra `year` / `categories` fields: they restrict the
+  candidates and leave scores unchanged. Categories are indexed as `cs_cl`-style tokens, because
+  the analyzer splits `q-bio.NC` at the hyphen and stems `eess.AS` to `eess.a`
+- rank-bm25: lowercase alphanumeric tokens, no stemming/stopwords (scores differ from Lucene);
+  the pickle is held in memory and every query scores all passages in Python, so it is only
+  practical on small corpora
+- Verified on the local KB sample (1,997 passages): Pyserini build 6.5 s, 444 KB;
+  warm top-50 query ≈ 2.6 ms including lookup hydration (first query ≈ 50 ms, JVM warm-up)
+
 ### dense.py — Dense (D6)
 - Encoding model: BGE-large-en-v1.5 (sentence-transformers); the model name is config-replaceable
 - **The query side must prepend the instruction prefix**: "Represent this sentence for searching relevant passages: "
