@@ -1,8 +1,9 @@
 """Offline tests for retrieval/ (no network). Run: python -m unittest tests.test_retrieval
 
 The Pyserini tests need Java, the rank-bm25 tests rank-bm25, the dense tests numpy + faiss (with a
-hashed bag-of-words encoder standing in for BGE), and the real-encoder test the cached
-all-MiniLM-L6-v2 model. Each is skipped when its dependency is missing, so run them in Docker
+hashed bag-of-words encoder standing in for BGE), the real-encoder test the cached
+all-MiniLM-L6-v2 model and the real-reranker test the cached bge-reranker-v2-m3. Each is skipped
+when its dependency is missing, so run them in Docker
 (./run_docker.sh python -m unittest tests.test_retrieval).
 """
 
@@ -21,7 +22,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from kb import store
-from retrieval import sparse
+from retrieval import rerank, sparse
 from retrieval.fusion import reciprocal_rank_fusion
 from retrieval.lookup import LookupStore, build_lookup
 from retrieval.types import RetrievalFilters, ScoredPassage
@@ -119,7 +120,7 @@ class LookupTest(unittest.TestCase):
 HAS_PYSERINI = importlib.util.find_spec("pyserini") is not None and shutil.which("java") is not None
 HAS_RANKBM25 = importlib.util.find_spec("rank_bm25") is not None
 HAS_DENSE = all(importlib.util.find_spec(m) is not None for m in ("numpy", "faiss"))
-HAS_MINILM = False
+HAS_MINILM = HAS_RERANKER = False
 if HAS_DENSE:
     import numpy as np
 
@@ -128,6 +129,7 @@ if importlib.util.find_spec("sentence_transformers") is not None:
     from huggingface_hub import try_to_load_from_cache
 
     HAS_MINILM = isinstance(try_to_load_from_cache("sentence-transformers/all-MiniLM-L6-v2", "config.json"), str)
+    HAS_RERANKER = isinstance(try_to_load_from_cache("BAAI/bge-reranker-v2-m3", "config.json"), str)
 
 # (passage_id suffix, year, categories, text): one passage per paper, distinct topics.
 CORPUS = [
@@ -421,6 +423,72 @@ class FusionTest(unittest.TestCase):
                 reciprocal_rank_fusion(hits, [], **kwargs)
         with self.assertRaisesRegex(ValueError, "1-based"):
             reciprocal_rank_fusion([replace(hits[0], rank=0)], [])
+
+
+class RankByScoresTest(unittest.TestCase):
+    def test_orders_by_new_score_and_keeps_passage_fields(self) -> None:
+        fused = reciprocal_rank_fusion(ranked("bm25", "a", "b", "c"), ranked("dense", "c", "d"))
+        out = rerank.rank_by_scores(fused, [0.2 if h.passage_id != "d" else 0.9 for h in fused], top_k=2)
+        self.assertEqual([h.passage_id for h in out], ["d", "c"])  # d: 0.9; then the 0.2 tie goes to fused rank
+        self.assertEqual([(h.rank, h.stage) for h in out], [(1, "rerank"), (2, "rerank")])
+        self.assertEqual([h.score for h in out], [0.9, 0.2])
+        self.assertEqual((out[0].text, out[0].paper_id, out[0].year), ("text of d", "d", 2020))
+
+    def test_top_k_and_length_mismatch(self) -> None:
+        hits = ranked("hybrid", "a", "b", "c")
+        self.assertEqual(len(rerank.rank_by_scores(hits, [0.1, 0.2, 0.3], top_k=10)), 3)
+        self.assertEqual(rerank.rank_by_scores(hits, [0.1, 0.2, 0.3], top_k=0), [])
+        with self.assertRaises(ValueError):
+            rerank.rank_by_scores(hits, [0.1, 0.2], top_k=2)
+
+
+class OverlapScorer:
+    """Stand-in for the cross-encoder: fraction of query words found in the passage."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def score(self, query: str, texts: list[str]) -> list[float]:
+        self.calls.append((query, list(texts)))
+        words = set(re.findall(r"[a-z]+", query.lower()))
+        return [len(words & set(re.findall(r"[a-z]+", t.lower()))) / len(words) for t in texts]
+
+    def rerank(self, query: str, candidates: list[ScoredPassage], top_k: int = 10) -> list[ScoredPassage]:
+        return rerank.Reranker.rerank(self, query, candidates, top_k)  # the real rerank logic
+
+
+class RerankerTest(unittest.TestCase):
+    def test_scores_query_with_child_text_and_reorders(self) -> None:
+        candidates = [replace(h, text=t) for h, t in zip(ranked("hybrid", "a", "b", "c"), [
+            "Gaussian processes for regression.",
+            "Speech recognition with recurrent networks.",
+            "Low-rank adaptation of large language models."])]
+        scorer = OverlapScorer()
+        out = scorer.rerank("low-rank adaptation for language models", candidates, top_k=2)
+        self.assertEqual(scorer.calls, [("low-rank adaptation for language models", [c.text for c in candidates])])
+        self.assertEqual([h.passage_id for h in out], ["c", "a"])  # c overlaps most; a's "for" beats b
+        self.assertEqual([h.rank for h in out], [1, 2])
+
+    def test_nothing_to_rerank(self) -> None:
+        scorer = OverlapScorer()
+        self.assertEqual(scorer.rerank("query", [], top_k=10), [])
+        self.assertEqual(scorer.rerank("query", ranked("hybrid", "a"), top_k=0), [])
+        self.assertEqual(scorer.calls, [])  # the model is not called at all
+
+
+@unittest.skipUnless(HAS_RERANKER, "needs sentence-transformers + cached bge-reranker-v2-m3 (run in Docker)")
+class RealRerankerTest(unittest.TestCase):
+    def test_relevant_passage_first_with_scores_in_unit_range(self) -> None:
+        texts = ["Photosynthesis converts light into chemical energy in plants.",
+                 "The Eiffel Tower is a landmark in Paris.",
+                 "Paris is the capital and largest city of France."]
+        candidates = [replace(h, text=t) for h, t in zip(ranked("hybrid", "bio", "tower", "capital"), texts)]
+        out = rerank.Reranker("BAAI/bge-reranker-v2-m3").rerank("What is the capital of France?", candidates, top_k=3)
+        self.assertEqual([h.passage_id for h in out][0], "capital")
+        self.assertEqual([h.passage_id for h in out][-1], "bio")
+        self.assertTrue(all(0.0 <= h.score <= 1.0 for h in out))
+        self.assertGreater(out[0].score, 0.5)
+        self.assertLess(out[-1].score, 0.1)
 
 
 class CategoryTokenTest(unittest.TestCase):

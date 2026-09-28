@@ -94,6 +94,9 @@ retrieval:
     enabled: true
     model_name: BAAI/bge-reranker-v2-m3
     top_k: 10
+    max_length: 512             # (query, passage) tokens per pair; longer pairs are truncated
+    batch_size: 64
+    fp16: true
   parent_doc:
     enabled: false              # Q3 ablation: parent-document retrieval
   filters:

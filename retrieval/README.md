@@ -94,6 +94,20 @@ Implementation notes:
 - Scoring pairs: (query, passage.text); output the reranked list + rerank scores
 - Record latency (~100–300ms for 50 pairs on A40)
 
+Implementation notes:
+- `Reranker`: sentence-transformers CrossEncoder, fp16 on CUDA, pairs truncated to
+  `retrieval.rerank.max_length` (512); score = sigmoid of the logit, in [0, 1]; model behind a
+  lock (tokenizers are not thread-safe); warm-up pair on load
+- `rank_by_scores` is the ordering step on its own: new score descending, ties by fused rank;
+  passage_id / paper_id / text / metadata kept, rank 1..k, stage `"rerank"`
+- Parent-document mode is applied by the pipeline after reranking (`lookup.with_parent_text`),
+  not inside rerank: the cross-encoder always scores the child text, and the swap also works in
+  the hybrid-without-rerank ablation row
+- Verified on the local KB sample (RTX 5070, fp16): pairs are ~400 tokens (p90 460, almost
+  never truncated); 50 pairs ≈ 380 ms, 10 pairs ≈ 76 ms (compute-bound, linear in pairs;
+  an A40 should land in the 100-300 ms budget). Reranking reorders strongly, e.g. fused rank
+  26 → 1 for an uncertainty-quantification query
+
 ### pipeline.py — Unified entry point (interface discipline)
 ```python
 def retrieve(query: str, filters: RetrievalFilters | None = None,
