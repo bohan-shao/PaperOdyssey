@@ -3,7 +3,9 @@
 `parse_pdf(pdf_path, options)` reads a PDF with pymupdf (span-level `get_text("dict")`, so
 font size/weight are available) and returns `[{"section": str, "text": str}, ...]`.
 
-Cleaning rules (enumerable; all thresholds live in config `kb.parse.*` and are reported):
+Cleaning rules (enumerable). The thresholds users tune live in config `kb.parse.*`; the finer
+constants of each rule (word limits, heading word caps, size ratios, look-ahead windows) are
+set in the code, next to the rule they belong to:
   R0  Contents pages: pages with >= 3 dot-leader entry lines ("Introduction . . . 3"), or a
       "Contents" title and >= 5 bare page numbers, are dropped (their entries would otherwise
       become headings such as "Introduction 3").
@@ -377,10 +379,14 @@ def _attach_drop_caps(lines: list[_Line]) -> list[_Line]:
     """
     out: list[_Line] = []
     moved: set[int] = set()
+    firsts: dict[int, list[_Line]] = {}  # paragraph-first lines per page, in order (one pass, not one per letter)
+    for t in lines:
+        if t.pos_in_block == 0:
+            firsts.setdefault(t.page, []).append(t)
     for ln in lines:
         letter = ln.text.strip()
         if re.fullmatch("[A-Z]", letter):
-            target = next((t for t in lines if t is not ln and t.page == ln.page and t.pos_in_block == 0
+            target = next((t for t in firsts.get(ln.page, []) if t is not ln
                            and (ln.x0 + ln.x1) / 2 <= t.x0 <= ln.x1 + 8 and ln.y0 - 3 <= t.y0 <= (ln.y0 + ln.y1) / 2
                            and t.size * 1.8 <= ln.size and t.text[:1].isalpha()), None)
             if target is not None and id(target) not in moved:
@@ -1412,6 +1418,8 @@ def parse_pdf(pdf_path: str | Path, options: ParseOptions | None = None) -> list
                 and len(text.split()) <= _MAX_HEADING_WORDS and not text.endswith(".")
                 and _alpha_ratio(text) >= 0.7 and ln.size >= body_size - 0.3):
             found = (_normalize_heading(text.split(None, 1)[1]), 2)  # IEEE italic subsection sharing its block
+        if found is not None and _list_item(ln, lines[max(0, i - 11):i - 1][::-1], lines[i:i + 10], body_size, opts):
+            found = None
         if in_bibliography:
             prose = [x.text for x in lines[i - 1:i + 5] if len(x.text.split()) >= 6]
             if found is None and not (len(prose) >= 4 and not any(_bib_line(t) for t in prose[:4])):
@@ -1419,8 +1427,6 @@ def parse_pdf(pdf_path: str | Path, options: ParseOptions | None = None) -> list
             if found is not None and _REFERENCES_RE.match(found[0].lower()):
                 continue
             in_bibliography = False
-        if found is not None and _list_item(ln, lines[max(0, i - 11):i - 1][::-1], lines[i:i + 10], body_size, opts):
-            found = None
         run_in = None
         if found is None and ln.bold_prefix:
             run_in = _run_in_heading(ln, body_size)
@@ -1623,7 +1629,8 @@ def drop_leading_abstract(sections: list[dict[str, str]], abstract: str) -> list
     words, or <= 150 words where the copy continues further into the abstract, within the first
     400 + 2 x (abstract length) words, at most 1.25 x the abstract's length from its start) of 6-word sequences shared with
     `abstract`, and must hold at least half of the abstract's sequences; otherwise nothing is
-    dropped. Later sentences that reuse the abstract's wording (an introduction) stay.
+    dropped. A sequence the run already holds never extends it, so later sentences that reuse the
+    abstract's wording (an introduction repeating one of its sentences, right after it or further on) stay.
     """
     if not sections or sections[0]["section"] or not abstract:
         return sections
@@ -1641,6 +1648,8 @@ def drop_leading_abstract(sections: list[dict[str, str]], abstract: str) -> list
     hits = [k for k in range(len(seq) - 5) if tuple(seq[k:k + 6]) in grams]
     runs: list[list[int]] = []
     for k in hits:
+        if runs and tuple(seq[k:k + 6]) in {tuple(seq[j:j + 6]) for j in runs[-1]}:
+            continue  # the copy already had it: an introduction repeating a sentence of the abstract is not the copy
         if runs and k - runs[-1][-1] <= 25:
             runs[-1].append(k)
         elif (runs and k - runs[-1][-1] <= 150

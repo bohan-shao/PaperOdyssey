@@ -133,7 +133,8 @@ class ParseTest(unittest.TestCase):
         from kb.parse import _bib_line, _is_references_line
 
         for text in ("References", "7 REFERENCES", "References:", "Bibliography", "Reference"):
-            self.assertTrue(_is_references_line(text), text)
+            with self.subTest(text=text):
+                self.assertTrue(_is_references_line(text))
         self.assertFalse(_is_references_line("References 218"))  # a contents entry with its page number
         self.assertTrue(_is_references_line("Re F E R E N C E S"))  # letter-spaced
         self.assertTrue(_bib_line("[1] K. Simonyan and A. Zisserman, “Very deep convolutional networks,” 2014."))
@@ -146,7 +147,8 @@ class ParseTest(unittest.TestCase):
         for text in ("Shlomo Argamon-Engelson and Ido Dagan.", "search (JAIR), 11:335–360.",
                      "[Angeli and Manning2013] Gabor Angeli and Christo-", "[1] https://developer.nvidia.com/jetson-tx2.",
                      "Johnson, Niko Sünderhauf, Ian Reid, Stephen Gould, and", "tional Linguistics, 34(4):555–596."):
-            self.assertTrue(_bib_line(text), text)
+            with self.subTest(text=text):
+                self.assertTrue(_bib_line(text))
         self.assertFalse(_bib_line("Table 3: The average number of words in translations of beginning sentences"))
         self.assertFalse(_bib_line("The statistical results are shown in Table 3. Without using the cache model"))
         self.assertFalse(_is_references_line("reference."))  # a wrapped sentence, not a title
@@ -154,7 +156,8 @@ class ParseTest(unittest.TestCase):
         self.assertFalse(_bib_line("2. Supportive, whether the psychologist expresses support"))  # a numbered list
         for text in ("1 Suerbaum, S. & Michetti, P. Helicobacter pylori", "infection. N Engl J Med 347, 1175-1186,",
                      "doi:10.1056/NEJMra020542 (2002).", "incidence analysis. The Lancet Global Health 8, e180-e190"):
-            self.assertTrue(_bib_line(text), text)  # Nature / medical style
+            with self.subTest(text=text):  # Nature / medical style
+                self.assertTrue(_bib_line(text))
 
     def test_reference_list_rules(self) -> None:
         """Contents pages are dropped, a "Reference" table header does not cut the paper, a small
@@ -246,7 +249,8 @@ class ParseTest(unittest.TestCase):
         from kb.parse import _is_bold
         for font, bold in (("ABCDEF+CMBX10", True), ("CMBX12", True), ("SFBX1000", True), ("FranklinGothic-Demi", True),
                            ("NimbusRomNo9L-Medi", True), ("CMR10", False), ("CMTI10", False), ("bbding10", False)):
-            self.assertEqual(_is_bold({"font": font, "flags": 4}), bold, font)  # TeX bold fonts carry no bold flag
+            with self.subTest(font=font):  # TeX bold fonts carry no bold flag
+                self.assertEqual(_is_bold({"font": font, "flags": 4}), bold)
         self.assertEqual(_repair("the inverse \ue000\u0302 of"), "the inverse ˆ of")  # base glyph unmapped
         self.assertEqual(_repair("the trade-offbetween speed and a puffin"), "the trade-off between speed and a puffin")
         self.assertTrue(_bib_line("Abadi, M.; Agarwal, A.; Barham, P.; Brevdo, E.; Chen, Z.;"))  # AAAI author list
@@ -262,11 +266,11 @@ class ParseTest(unittest.TestCase):
                      "44 Towards a principled approach", "2. The results are below.",
                      "0.01. The precision will decrease quickly if we continue",
                      "2. Brown clustering features benefit from two additional features:"):
-            self.assertIsNone(_heading_name(line(text), 10.0, opts), text)
+            with self.subTest(text=text):
+                self.assertIsNone(_heading_name(line(text), 10.0, opts))
         for text in ("2 U2QΓ1VT",):  # ALL-CAPS formula inside a paragraph block
-            self.assertIsNone(_heading_name(_Line(text, 10.0, False, 0, 100, 110, 72, 1, block_lines=2), 10.0, opts), text)
-        for text in ():
-            self.assertIsNone(_heading_name(line(text), 10.0, opts), text)
+            with self.subTest(text=text):
+                self.assertIsNone(_heading_name(_Line(text, 10.0, False, 0, 100, 110, 72, 1, block_lines=2), 10.0, opts))
         self.assertEqual(_heading_name(line("A. Feature Extraction:"), 10.0, opts), ("Feature Extraction", 1))  # IEEE
         self.assertEqual(_heading_name(line("4.2 Regret analysis of RELEAF for Drel = 1"), 10.0, opts),
                          ("Regret analysis of RELEAF for Drel = 1", 2))  # "=" in a title, not an assignment
@@ -312,7 +316,8 @@ class ParseTest(unittest.TestCase):
             ("semi-", "written text", "semi-written text"),  # "semi" is no word on its own but keeps its hyphen
         ]
         for left, right, want in cases:
-            self.assertEqual(_join_hyphenated(left, right, paper), want)
+            with self.subTest(left=left, right=right):
+                self.assertEqual(_join_hyphenated(left, right, paper), want)
         self.assertEqual(_join_lines(["the represen-", "tation of real-", "world data"], paper),
                          "the representation of real-world data")
         self.assertEqual(_join_lines(["a well-", "known result"], Counter()), "a wellknown result")  # no evidence
@@ -333,6 +338,53 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(drop_leading_abstract(secs[1:], abstract), secs[1:])
         other = [{"section": "", "text": intro * 20}]
         self.assertEqual(drop_leading_abstract(other, abstract), other)
+        # an introduction (heading missed) repeating the abstract's last sentence keeps its opening (PR #12 review)
+        abstract = ("Retrieval augmented generation combines a retriever with a generator so that answers are grounded "
+                    "in passages. We study how chunk size and overlap change answer quality on three question answering "
+                    "benchmarks. Our experiments cover sparse and dense retrievers, four generators and two corpora. "
+                    "We find that sentence aligned chunks of about three hundred tokens work best across all settings.")
+        intro = ("1 Introduction Large language models hallucinate when they answer from parametric memory alone. "
+                 "Retrieval is a common remedy, but how documents are cut into passages is rarely studied in isolation. "
+                 "Practitioners pick a chunk size by habit and seldom report it. In this paper we run a controlled study "
+                 "of chunking choices. In short, we find that sentence aligned chunks of about three hundred tokens work "
+                 "best across all settings. The rest of the paper is organised as follows.")
+        front = "A Study of Chunking\nAda Author, Bob Writer\nUniversity of Somewhere"
+        out = drop_leading_abstract([{"section": "", "text": f"{front}\n{abstract}\n{intro}"}], abstract)
+        self.assertEqual(out[0]["text"], intro)
+        # ... while a copy interrupted by a figure is still removed as a whole
+        half = len(abstract) // 2
+        cut = abstract.rfind(" ", 0, half)
+        figure = "Figure 1: Overview of the retrieval augmented generation pipeline used in all experiments."
+        out = drop_leading_abstract([{"section": "", "text": f"{front}\n{abstract[:cut]}\n{figure}\n{abstract[cut + 1:]}\n{intro}"}],
+                                    abstract)
+        self.assertEqual(out[0]["text"], intro)
+        # an introduction opening with the abstract's first sentence, right after the copy, keeps it (1804.10390)
+        intro = ("1 Introduction Retrieval augmented generation combines a retriever with a generator so that answers "
+                 "are grounded in passages. Large language models hallucinate when they answer from parametric memory "
+                 "alone, and retrieval is a common remedy.")
+        out = drop_leading_abstract([{"section": "", "text": f"{front}\n{abstract}\n{intro}"}], abstract)
+        self.assertEqual(out[0]["text"], intro)
+
+    def test_chapter_bibliographies_of_one_line_entries(self) -> None:
+        """A thesis whose chapters end in lists of one-line numbered entries ("1. Smith, J.: ...") keeps no
+        entry in its text: an entry is a list item, not a heading that would end the list (PR #12 review)."""
+        entries = ["1. Smith, J.: Deep retrieval. Nature (2015)", "2. Doe, A.: Dense passages. Science (2017)",
+                   "3. Lee, K.: Sparse indexes. Cell (2019)", "4. Kim, Y.: Neural rankers. Nature (2020)"]
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "thesis.pdf"
+            doc = pymupdf.open()
+            for k, name in enumerate(("Retrieval", "Generation", "Evaluation")):
+                page = doc.new_page()
+                page.insert_text((72, 80), f"{k + 1} {name}", fontsize=12, fontname="hebo")
+                page.insert_textbox(pymupdf.Rect(72, 100, 520, 330), BODY, fontsize=10, fontname="helv")
+                page.insert_text((72, 350), "References", fontsize=12, fontname="hebo")
+                for j, entry in enumerate(entries):
+                    page.insert_textbox(pymupdf.Rect(72, 370 + 30 * j, 520, 390 + 30 * j), entry, fontsize=10, fontname="helv")
+            doc.save(str(pdf))
+            sections = parse_pdf(pdf, ParseOptions(min_words=50))
+        text = " ".join(s["text"] for s in sections)
+        self.assertEqual([e for e in entries if e.split(":")[0] in text], [])
+        self.assertEqual([s["section"] for s in sections], ["Retrieval", "Generation", "Evaluation"])
 
     def test_running_bibliography_header_is_one_list(self) -> None:
         """A "References" header repeated on each page of one list is not a chapter bibliography:
@@ -686,6 +738,11 @@ class BuildTest(unittest.TestCase):
             self.assertEqual((store.load_paper("A", db)["num_chunks"], store.load_paper("B", db)["num_chunks"]), (3, 3))
             failing.add("B")  # B now fails the quality check: a rebuild must not keep its old count
             run("--rebuild")
+            self.assertEqual((store.load_paper("A", db)["num_chunks"], store.load_paper("B", db)["num_chunks"]), (3, 0))
+            failing.clear()
+            run("--rebuild")
+            self.assertEqual(store.load_paper("B", db)["num_chunks"], 3)
+            run("--rebuild", "--limit", "1")  # B is not built this time: it must not keep its count either
             self.assertEqual((store.load_paper("A", db)["num_chunks"], store.load_paper("B", db)["num_chunks"]), (3, 0))
 
 

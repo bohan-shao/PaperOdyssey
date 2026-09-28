@@ -69,7 +69,11 @@ def process_paper(row: dict, raw_dir: str, cfg: dict, mode: str) -> dict:
     # The metadata abstract is authoritative; add it when the parser found no Abstract section
     # (and drop the paper's own copy from leading front matter, so it is not there twice).
     if row.get("abstract") and not any(s["section"].lower() == "abstract" for s in sections):
-        sections = [{"section": "Abstract", "text": row["abstract"]}, *drop_leading_abstract(sections, row["abstract"])]
+        try:
+            rest = drop_leading_abstract(sections, row["abstract"])
+        except Exception:  # noqa: BLE001 (a cleanup step must not stop the build; keep the text as parsed)
+            rest = sections
+        sections = [{"section": "Abstract", "text": row["abstract"]}, *rest]
 
     meta = {k: row.get(k) for k in ("arxiv_id", "title", "year", "categories")}
     ch = kb["chunk"]
@@ -217,6 +221,7 @@ def main() -> None:
             store.reset_jsonl(passages_path)
             if not ablation:  # an ablation rebuild must not wipe the baseline's shared outputs
                 store.reset_jsonl(sections_path)
+                store.reset_num_chunks(sqlite_path)  # counted again as papers are built (failed/skipped stay 0)
                 for f in (failures_path, results / "parse_quality.jsonl", qa_path):
                     f.unlink(missing_ok=True)
         if args.retry_failed:
@@ -252,8 +257,6 @@ def main() -> None:
                     _append_jsonl(failures_path, [{
                         "paper_id": pid, "error": res["error"], "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     }])
-                    if not ablation:  # a --rebuild must not leave an earlier build's count on a paper that now fails
-                        store.set_num_chunks({pid: 0}, sqlite_path)
                     continue
                 # parents first: a paper counts as built once its passages are written (resume marker)
                 if pid not in sections_done:
