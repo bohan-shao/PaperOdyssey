@@ -175,8 +175,11 @@ only from a valid arXiv ID; unknown IDs have no link. Text is the exact bounded 
 to generation, loaded from the stored child passage. `[n]` identifies a passage, not a paper.
 
 Answered results require at least one valid citation. An insufficient-evidence result may
-have no citations; any citations present still undergo validation. Missing individual
-passages are skipped. A missing/corrupt lookup store is an error, not an empty search.
+have no citations; any citations present still undergo validation. `answer` stores citations
+as individual `[n]`: grouped forms (`[1, 2]`, `[1-3]`, `[01]`) are rewritten, and brackets
+whose numbers are not all supplied sources (e.g. the interval `[0, 1]`) are plain text.
+Missing individual passages are skipped. A missing/corrupt lookup store is an error, not an
+empty search.
 No new evidence fields are required on `FinalResult` or `ReviewRecord`.
 
 Passage records are read with `retrieval.lookup.get_lookup_store().get_passages(passage_ids)`

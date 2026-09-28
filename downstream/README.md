@@ -29,9 +29,13 @@ print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
   calling the answer model. A missing or corrupt lookup store is an operational error.
 - The prompt requests a concise answer in the question's language and requires inline
   citations. The model may report insufficient evidence even when excerpts exist.
-- Numeric citation format and bounds are checked in code; malformed or uncited answers
-  raise `DownstreamError`. There is no second model check or repair loop. These checks
-  validate source identity, **not semantic support for every claim**.
+- Generation goes through `llm.client.chat_json`, so a reply that is not valid JSON, or is
+  cut off at the token limit, is re-asked there. Citations are then checked in code without a
+  second model call: grouped forms such as `[1, 2]`, `[1-3]` or `[01]` are rewritten as
+  `[1][2]`, `[1][2][3]`, `[1]`; a bracket whose numbers are not all supplied sources (the
+  interval `[0, 1]`, a year range) stays plain text; a lone `[n]` outside the sources, or an
+  answered response with no citation, raises `DownstreamError`. These checks validate source
+  identity, **not semantic support for every claim**.
 - Blank input raises `ValueError`; search, evidence lookup, and model failures raise
   `DownstreamError`, with the underlying exception chained for debugging.
 

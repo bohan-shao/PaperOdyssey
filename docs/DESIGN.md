@@ -81,15 +81,16 @@ The task is simple question answering from retrieved paper evidence (D29):
 downstream.run(input_text)
    ├─ 1) orchestration.run_query(input_text)   ← Paper Search: papers + review verdicts + coverage
    ├─ 2) lookup store .get_passages(...)       ← original passages named in review evidence (D28)
-   └─ 3) llm.client.chat(...)               → answer + numbered passage citations
+   └─ 3) llm.client.chat_json(...)             → answer + numbered passage citations
 ```
 
 - Composition decision already fixed (D24): the downstream task **CALLS Paper Search**.
 - Defaults: 5 passing papers by review score, 2 passages per paper, 2,400 characters per
   passage, 1,024 answer tokens; all configured under `downstream.*`.
 - Return `DownstreamResult` (SCHEMA §10), including all model context and actual citations.
-  No usable evidence produces an explicit insufficient-evidence response. Operational
-  failures and invalid citation output raise `DownstreamError`.
+  No usable evidence produces an explicit insufficient-evidence response. Grouped citations
+  (`[1, 2]`, `[1-3]`) are rewritten as `[1][2]`; operational failures and invalid citation
+  output (unknown sources, no citation) raise `DownstreamError`.
 - No forced comparison table, evidence matrix, or extra model verification pass.
 - No circular dependency: `orchestration → llm.client`; `downstream → orchestration + retrieval.lookup + llm`.
 

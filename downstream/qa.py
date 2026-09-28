@@ -8,16 +8,19 @@ import time
 from typing import Any
 
 from config import get_config
-from llm.client import get_client, parse_json_reply
+from llm.client import get_client
 from orchestration import run_query
 from orchestration.types import FinalResult
 from retrieval.lookup import get_lookup_store
 
-from .prompts import PROMPT_VERSION, build_answer_prompt
+from .prompts import ANSWER_SCHEMA, PROMPT_VERSION, build_answer_prompt
 from .types import DownstreamResult, EvidenceSource
 
 _CITATION = re.compile(r"\[(\d+)\]")
 _NUMERIC_BRACKET = re.compile(r"\[\s*\d[\d\s,;\-–]*\]")
+_SINGLE = re.compile(r"\[\s*(\d+)\s*\]")
+_RANGE = re.compile(r"\s*(\d+)\s*[-–]\s*(\d+)\s*")
+_NUMBERS = re.compile(r"\s*\d+(?:\s+\d+)*\s*")
 _ARXIV_ID = re.compile(r"(?:\d{4}\.\d{4,5}|[A-Za-z][A-Za-z.\-]*/\d{7})(?:v\d+)?")
 
 
@@ -83,8 +86,40 @@ def _sources(search: FinalResult, cfg: dict[str, Any]) -> list[EvidenceSource]:
     return sources
 
 
-def _parse_answer(raw: str, source_count: int) -> tuple[str, str, list[int]]:
-    result = parse_json_reply(raw)
+def _group_numbers(inner: str, source_count: int) -> list[int] | None:
+    """Sources named by a bracket body such as "1, 2" or "1-3"; None if it is not a citation.
+
+    Every number must be a supplied source, so an interval such as [0, 1] stays plain text.
+    """
+    numbers: list[int] = []
+    for part in re.split(r"[,;]", inner):
+        if bounds := _RANGE.fullmatch(part):
+            low, high = int(bounds[1]), int(bounds[2])
+            if not 1 <= low <= high <= source_count:
+                return None
+            numbers.extend(range(low, high + 1))
+        elif _NUMBERS.fullmatch(part):
+            values = [int(n) for n in part.split()]
+            if not all(1 <= n <= source_count for n in values):
+                return None
+            numbers.extend(values)
+        else:
+            return None
+    return numbers
+
+
+def _normalize_citations(answer: str, source_count: int) -> str:
+    """Rewrite [1, 2] / [1-3] / [01] as [1][2] / [1][2][3] / [1]; keep non-citation brackets."""
+    def rewrite(match: re.Match[str]) -> str:
+        if single := _SINGLE.fullmatch(match[0]):
+            return f"[{int(single[1])}]"  # a lone number is always a citation; bounds checked later
+        numbers = _group_numbers(match[0][1:-1], source_count)
+        return match[0] if numbers is None else "".join(f"[{n}]" for n in dict.fromkeys(numbers))
+
+    return _NUMERIC_BRACKET.sub(rewrite, answer)
+
+
+def _parse_answer(result: object, source_count: int) -> tuple[str, str, list[int]]:
     if not isinstance(result, dict):
         raise ValueError("answer response must be an object")
     status, answer = result.get("status"), result.get("answer")
@@ -92,16 +127,13 @@ def _parse_answer(raw: str, source_count: int) -> tuple[str, str, list[int]]:
         raise ValueError("answer response has an invalid status")
     if not isinstance(answer, str) or not answer.strip():
         raise ValueError("answer response is empty")
-    for bracket in _NUMERIC_BRACKET.findall(answer):
-        match = _CITATION.fullmatch(bracket)
-        if not match or bracket != f"[{int(match[1])}]":
-            raise ValueError("citations must use individual source numbers such as [1][2]")
+    answer = _normalize_citations(answer.strip(), source_count)
     numbers = list(dict.fromkeys(int(n) for n in _CITATION.findall(answer)))
     if any(n < 1 or n > source_count for n in numbers):
         raise ValueError("answer cites a source that was not supplied")
     if status == "answered" and not numbers:
         raise ValueError("answer is missing evidence citations")
-    return status, answer.strip(), numbers
+    return status, answer, numbers
 
 
 def run(input_text: str, query_id: str | None = None) -> DownstreamResult:
@@ -128,8 +160,9 @@ def run(input_text: str, query_id: str | None = None) -> DownstreamResult:
     evidence_end = time.perf_counter()
     if sources:
         try:
-            raw = get_client().chat(build_answer_prompt(question, sources), max_tokens=max_tokens)
-            status, answer, cited = _parse_answer(raw, len(sources))
+            reply = get_client().chat_json(build_answer_prompt(question, sources), ANSWER_SCHEMA,
+                                           max_tokens=max_tokens)
+            status, answer, cited = _parse_answer(reply, len(sources))
         except Exception as exc:
             raise DownstreamError("Could not produce a valid cited answer. Check the LLM configuration or try again.") from exc
     else:

@@ -242,12 +242,13 @@ class LLMClient:
         text, _ = self._complete(messages, temperature, max_tokens, "chat")
         return text
 
-    def chat_json(self, messages: list[dict], schema_desc: str) -> dict | list:
+    def chat_json(self, messages: list[dict], schema_desc: str, max_tokens: int | None = None) -> dict | list:
         """A chat call with enforced JSON output.
 
         Args:
             messages: The message list (the prompt already contains the JSON format requirements).
             schema_desc: A description of the expected JSON structure (used for retry hints).
+            max_tokens: Output limit of the first attempt (default: config `llm.max_tokens`).
 
         Returns:
             The parsed dict or list.
@@ -256,7 +257,7 @@ class LLMClient:
             LLMError: After repeated parse failures.
         """
         conversation = list(messages)
-        max_tokens = self.max_tokens
+        max_tokens = self.max_tokens if max_tokens is None else max_tokens
         error = ""
         for _ in range(self.retries + 1):
             text, finish_reason = self._complete(conversation, None, max_tokens, "json")

@@ -21,6 +21,10 @@ Return only a JSON object with these two fields:
 {"status": "answered or insufficient_evidence", "answer": "answer text with inline citations"}.
 An answered response must have at least one citation. Do not expose internal reasoning."""
 
+# Shown to the model only when a reply is not valid JSON (llm.client.chat_json re-ask).
+ANSWER_SCHEMA = ('object {"status": "answered" | "insufficient_evidence", '
+                 '"answer": "answer text with [n] citations"}')
+
 
 def build_answer_prompt(question: str, sources: list[EvidenceSource]) -> list[dict]:
     return [

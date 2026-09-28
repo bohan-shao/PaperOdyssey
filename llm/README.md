@@ -32,8 +32,8 @@ still goes through `llm/client.py`.
 - `build_rewrite_prompt(missing, existing)` — feedback-based rewriting (used by orchestration)
 - Record `TEMPLATE_VERSION`; the report cites template versions for reproducibility
 - The answer prompt and its independent version live in `downstream/prompts.py`.
-  QA uses `chat(..., max_tokens=downstream.max_tokens)` and `parse_json_reply()`;
-  it validates citations locally and does not run an additional self-check model.
+  QA uses `chat_json(..., max_tokens=downstream.max_tokens)`, so invalid or truncated JSON gets
+  the usual re-ask; it validates citations locally and does not run an additional self-check model.
 
 ## Implementation Notes: client.py (status: implemented)
 
@@ -55,8 +55,9 @@ client.usage_summary()                                 # {calls, prompt_tokens, 
 - **chat_json**: accepts plain JSON, ```json fences, or JSON embedded in prose (the longest
   object/array wins, so a citation like `[1]` is never mistaken for the payload). On a parse
   failure it re-asks with the model's previous reply, the error and `schema_desc`; a reply cut
-  off by the token limit is retried with doubled `max_tokens` (cap 8192). No provider JSON mode
-  is forced because the review prompt expects a top-level array.
+  off by the token limit is retried with doubled `max_tokens` (cap 8192). The optional
+  `max_tokens=` argument sets the first attempt's limit (default `llm.max_tokens`). No
+  provider JSON mode is forced because the review prompt expects a top-level array.
 - **Cost reporting**: one line per call in `data/results/metrics/llm_usage.jsonl`
   (`time, model, kind, prompt_tokens, completion_tokens, latency_ms`).
 - **Tests**: `python -m unittest tests.test_llm` runs the real OpenAI SDK against a mocked HTTP

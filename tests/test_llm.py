@@ -88,6 +88,13 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(client.chat_json([{"role": "user", "content": "x"}], "array"), [])
         self.assertEqual([r["max_tokens"] for r in server.requests], [100, 200])
 
+    def test_chat_json_max_tokens_sets_the_first_attempt(self) -> None:
+        server = Server(ok('{"answer": "cut', finish_reason="length"), ok('{"answer": "ok"}'))
+        client = self.make(server, max_tokens=100)
+        self.assertEqual(client.chat_json([{"role": "user", "content": "x"}], "object", max_tokens=300),
+                         {"answer": "ok"})
+        self.assertEqual([r["max_tokens"] for r in server.requests], [300, 600])
+
     def test_chat_json_gives_up_with_llm_error(self) -> None:
         server = Server(ok("nope"), ok("still nope"), ok("never"))
         with self.assertRaises(LLMError):

@@ -45,7 +45,7 @@ class DownstreamTests(unittest.TestCase):
         self.cfg = copy.deepcopy(get_config())
         self.search = search_result()
         self.client = MagicMock()
-        self.client.chat.return_value = json.dumps({"status": "answered", "answer": "It uses low-rank updates [1]."})
+        self.client.chat_json.return_value = {"status": "answered", "answer": "It uses low-rank updates [1]."}
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch("downstream.qa.get_config", return_value=self.cfg))
@@ -65,8 +65,8 @@ class DownstreamTests(unittest.TestCase):
     def test_answer_uses_real_text_and_one_search_and_generation(self):
         result = run("  How does it work?  ", query_id="custom")
         self.search_call.assert_called_once_with("How does it work?", query_id="custom")
-        self.client.chat.assert_called_once()
-        prompt = json.loads(self.client.chat.call_args.args[0][1]["content"])
+        self.client.chat_json.assert_called_once()
+        prompt = json.loads(self.client.chat_json.call_args.args[0][1]["content"])
         self.assertEqual(prompt["paper_excerpts"][0]["text"], passage()["text"])
         self.assertEqual(result.sources[0].url, "https://arxiv.org/abs/2401.00001v2")
         self.assertEqual(result.sources[0].section, "Method")
@@ -88,12 +88,12 @@ class DownstreamTests(unittest.TestCase):
             ReviewRecord("2401.00004", "pass", 1, evidence={"top_passages": ["excluded"]}),
         ]
         self.search_call.return_value = search_result(records)
-        self.client.chat.return_value = '{"status":"answered","answer":"First [1][2], second [3], first again [1]."}'
+        self.client.chat_json.return_value = {"status": "answered", "answer": "First [1][2], second [3], first again [1]."}
         result = run("Explain these papers")
         self.assertEqual([s.paper_id for s in result.sources], ["2401.00001", "2401.00001", "2401.00002"])
         self.assertEqual(result.cited_source_numbers, [1, 2, 3])
         self.assertTrue(all(len(s.text) == 12 for s in result.sources))
-        self.assertEqual(self.client.chat.call_args.kwargs["max_tokens"], 300)
+        self.assertEqual(self.client.chat_json.call_args.kwargs["max_tokens"], 300)
 
     def test_empty_search_skips_model_and_lookup_store(self):
         self.search_call.return_value = search_result([])
@@ -121,27 +121,46 @@ class DownstreamTests(unittest.TestCase):
         self.client_factory.assert_not_called()
 
     def test_invalid_or_uncited_answers_fail_without_a_repair_call(self):
-        invalid = ["not JSON", "[]", '{"status":"wrong","answer":"text [1]"}',
-                   '{"status":"answered","answer":""}']
-        invalid += [json.dumps({"status": "answered", "answer": answer})
-                    for answer in ["No citations", "Unknown [2]", "Zero [0]", "Group [1,2]", "Range [1-2]", "Padded [01]"]]
+        # Unparseable JSON is re-asked inside llm.client.chat_json; these parse but are invalid.
+        invalid = [[], {"status": "wrong", "answer": "text [1]"}, {"status": "answered", "answer": ""}]
+        invalid += [{"status": "answered", "answer": answer}
+                    for answer in ["No citations", "Unknown [2]", "Zero [0]", "Spaced unknown [ 2 ]",
+                                   "Only an interval [0, 1]"]]
         for response in invalid:
             with self.subTest(response=response):
-                self.client.chat.reset_mock()
-                self.client.chat.return_value = response
+                self.client.chat_json.reset_mock()
+                self.client.chat_json.return_value = response
                 with self.assertRaises(DownstreamError):
                     run("Question")
-                self.client.chat.assert_called_once()
+                self.client.chat_json.assert_called_once()
+
+    def test_grouped_and_padded_citations_are_normalized(self):
+        self.cfg["downstream"]["passages_per_paper"] = 3
+        docs = [passage("2401.00001", str(n)) for n in range(3)]
+        self.write(docs)
+        self.search_call.return_value = search_result([ReviewRecord("2401.00001", "pass", 5, evidence={
+            "top_passages": [d["passage_id"] for d in docs]})])
+        cases = [
+            ("A [1, 2] and B [2-3].", "A [1][2] and B [2][3].", [1, 2, 3]),
+            ("Padded [01], spaced [ 2 ], repeated [3; 3].", "Padded [1], spaced [2], repeated [3].", [1, 2, 3]),
+            # Brackets that are not all supplied source numbers stay text: intervals, year ranges.
+            ("Scores lie in [0, 1] over [2019-2021] [1–2].", "Scores lie in [0, 1] over [2019-2021] [1][2].", [1, 2]),
+        ]
+        for raw, expected, cited in cases:
+            with self.subTest(raw=raw):
+                self.client.chat_json.return_value = {"status": "answered", "answer": raw}
+                result = run("Question")
+                self.assertEqual((result.answer, result.cited_source_numbers), (expected, cited))
 
     def test_model_can_report_insufficient_evidence(self):
-        self.client.chat.return_value = '{"status":"insufficient_evidence","answer":"The excerpts do not report this result."}'
+        self.client.chat_json.return_value = {"status": "insufficient_evidence", "answer": "The excerpts do not report this result."}
         result = run("What was the accuracy?")
         self.assertEqual(result.status, "insufficient_evidence")
         self.assertEqual(result.cited_source_numbers, [])
         self.assertEqual(len(result.sources), 1)
 
     def test_model_and_search_failures_are_not_unanswerable_results(self):
-        self.client.chat.side_effect = RuntimeError("provider failure")
+        self.client.chat_json.side_effect = RuntimeError("provider failure")
         with self.assertRaisesRegex(DownstreamError, "valid cited answer"):
             run("Question")
         self.search_call.side_effect = NotImplementedError("retrieval stub")
