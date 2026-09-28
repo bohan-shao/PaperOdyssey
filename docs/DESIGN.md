@@ -68,34 +68,41 @@ user input paragraph
 
 - **`llm/client.py`**: the single LLM entry point for the whole system (DeepSeek API,
   OpenAI-compatible; `LLM_*` env vars can switch provider) — used by orchestration's own LLM
-  calls (query understanding / review / rewriting) and later by the downstream task.
+  calls (query understanding / review / rewriting) and downstream answer generation.
 - **`llm/prompt.py`**: prompt templates (query understanding / review / rewriting).
-- Task-specific helpers (answer generation, faithfulness self-check) are **parked** — they will be
-  defined with the downstream task (`downstream/`) once its type is decided.
+- Answer prompts are defined in `downstream/prompts.py`; QA makes one generation call
+  and validates citation numbers in code, without an additional model self-check.
 
-### 2.5 Downstream Task (`downstream/`, Q4/Q5: 40 points) — reserved, task type TBD
+### 2.5 Downstream Task (`downstream/`, Q4/Q5) — cited paper QA
 
-The package is currently an **empty reserved folder** (task type not yet decided — candidates:
-QA with cited answers, summarization, classification over papers). When decided:
+The task is simple question answering from retrieved paper evidence (D29):
 
 ```
 downstream.run(input_text)
    ├─ 1) orchestration.run_query(input_text)   ← Paper Search: papers + review verdicts + coverage
-   ├─ 2) task-specific processing on the evidence (TBD)
-   └─ 3) task output
+   ├─ 2) lookup store .get_passages(...)       ← original passages named in review evidence (D28)
+   └─ 3) llm.client.chat_json(...)             → answer + numbered passage citations
 ```
 
 - Composition decision already fixed (D24): the downstream task **CALLS Paper Search**.
-- When the task is decided, only this package + its evaluation change; the framework stays untouched.
-- No circular dependency: `orchestration → llm.client`; `downstream → orchestration + llm`.
+- Defaults: 5 passing papers by review score, 2 passages per paper, 2,400 characters per
+  passage, 1,024 answer tokens; all configured under `downstream.*`.
+- Return `DownstreamResult` (SCHEMA §10), including all model context and actual citations.
+  No usable evidence produces an explicit insufficient-evidence response. Grouped citations
+  (`[1, 2]`, `[1-3]`) are rewritten as `[1][2]`; operational failures and invalid citation
+  output (unknown sources, no citation) raise `DownstreamError`.
+- No forced comparison table, evidence matrix, or extra model verification pass.
+- No circular dependency: `orchestration → llm.client`; `downstream → orchestration + retrieval.lookup + llm`.
 
 ### 2.6 Interface (`ui/`, Streamlit, Q2)
 
-- Two tabs (D23): **Paper Search** (`orchestration.run_query()`) and **Downstream**
-  (`downstream.run()`, which internally calls Paper Search), sharing the same input box.
-- Paper Search tab: paragraph input → understanding results (sub-queries/criteria, editable) → filter conditions (year/category) → paper list (title/year/link/review score and reasons) → expandable hit passages.
-- Downstream tab: everything above + the task output (schema TBD with the task).
-- Per-stage latency display in both tabs.
+- Two tabs: **Paper QA** and **Paper Search**, sharing one question input.
+- **Ask** calls `downstream.run()` and populates both tabs using the same search result;
+  **Search papers only** calls `orchestration.run_query()` without generating an answer.
+- QA displays the answer, expandable citation excerpts, arXiv links, timing, and a JSON
+  download. Search displays reviewed papers, matched passages, coverage, and stage timings.
+- Editable query plans, separate filter controls, and live round streaming remain deferred;
+  explicit year/category requirements can still be expressed in the question.
 - 5 preset example inputs (Q2 requirement: write 5 queries, produce results, measure latency).
 - Keep the interface simple (the assignment explicitly does not require a complex UI).
 
@@ -108,7 +115,7 @@ kb.store output ──► retrieval builds dual indices ──► orchestration 
                     ▼
               downstream (task output) ──► ui
               orchestration ──► llm.client (LLM infra)
-              downstream ──► orchestration + llm (task logic; reserved until the task is defined)
+              downstream ──► orchestration + retrieval.lookup + llm (cited answer generation)
 ```
 
 Modules depend only on: the data formats in `docs/SCHEMA.md` + the interface contracts in each package's `README.md` + the `retrieve()` signature in `retrieval/pipeline.py`.
@@ -121,7 +128,7 @@ Modules depend only on: the data formats in `docs/SCHEMA.md` + the interface con
 | Parallel retrieval (incl. rerank, per path) | < 0.5 s |
 | Review (5 papers per batch) | 2–4 s / round |
 | **Paper Search total** | **3–8 s** |
-| Downstream task processing | TBD (depends on the task; generative tasks +2–5 s) |
+| Downstream task processing | Evidence loading + one generation call; +2–5 s target, not yet measured live |
 | **End-to-end (Downstream tab)** | **5–15 s** (single round within budget ~5 s) |
 
 Latency is recorded per stage (`latency_by_stage`: understanding/retrieval/review/rewrite[/task]/total); the report must include a breakdown analysis.
@@ -130,7 +137,7 @@ Latency is recorded per stage (`latency_by_stage`: understanding/retrieval/revie
 
 - Component level: retrieval metrics (P@K/R@K/MRR/NDCG), review-decision accuracy — `eval/retrieval_metrics.py`, `eval/review_metrics.py`
 - Framework level: coverage, round distribution, end-to-end candidate quality — `eval/`
-- Generation level: ROUGE/BERTScore + RAGAS — parked, defined together with the downstream task (Q4; see eval/README.md)
+- Generation level: ROUGE/BERTScore + RAGAS — planned evaluation of the QA result, not yet implemented (see eval/README.md)
 - Evaluation data and results go to `data/eval/` and `data/results/`; formats in SCHEMA.md
 
 ## 6. Decision Log (ADR)
@@ -166,5 +173,6 @@ Latency is recorded per stage (`latency_by_stage`: understanding/retrieval/revie
 | D24 | 2026-08-25 | Composition | The downstream task CALLS Paper Search: `downstream.run()` invokes `orchestration.run_query()`, then does task-specific processing | Orchestration generates internally | Keeps Paper Search a standalone, task-agnostic capability; downstream type (QA/summarization/classification) can change without touching the framework; avoids circular dependencies |
 | D25 | 2026-09-21 | KB acquisition | arXiv API sliced by (category, year, month), at most 150 records per slice, then OpenAlex citations matched on `locations.landing_page_url` (batched OR filter), then year-stratified top-cited selection | Single arXiv query; OpenAlex DOI lookup; global top-cited | arXiv paging breaks on deep offsets; arXiv DOIs are mostly unresolvable in OpenAlex; a global citation ranking crowds out recent (low-citation) years |
 | D26 | 2026-09-21 | Chunk text format | Sentence-packed chunks (350 body tokens, up to 100 tokens of sentence-aligned overlap, tiktoken cl100k_base), `[title] section` prefix embedded in `text`; every passage carries `parent_section_id`, parents stored in `sections.jsonl` | Raw token windows; prefix as separate field | Chunks stay readable for the LLM; BM25 and dense both see title/section; the parent-document ablation needs no KB rebuild |
-| D28 | 2026-09-28 | Passage lookup store | SQLite `data/indices/lookup.sqlite` (passages + sections tables keyed by id), built by `build_indexes.py` from the same passages file as BM25/FAISS; sparse and dense hydrate hits through it | In-memory dict from `passages.jsonl`; Pyserini stored raw docs; `kb.store.load_parents` scans | ~600k passages ≈ 1 GB of text is too heavy to hold in the UI process; stored docs would tie dense to the BM25 index and break the rank-bm25 fallback; `load_parents` scans `sections.jsonl` on every call |
 | D27 | 2026-09-21 | Semantic chunking threshold (Q3 ablation A) | BAAI/bge-small-en-v1.5 sentence embeddings, cut where adjacent cosine < 0.55, chunks clamped to 100-500 tokens | 0.8 (initial guess) | Measured on 2.5k adjacent-sentence pairs: median 0.65, 10th percentile 0.53. At 0.8, ~90% of sentence boundaries became cuts (91-word chunks), which would mix up the ablation with a chunk-size change; 0.55 gives 239 vs 286 mean body tokens for the fixed baseline |
+| D28 | 2026-09-28 | Passage lookup store | SQLite `data/indices/lookup.sqlite` (passages + sections tables keyed by id), built by `build_indexes.py` from the same passages file as BM25/FAISS; sparse and dense hydrate hits through it | In-memory dict from `passages.jsonl`; Pyserini stored raw docs; `kb.store.load_parents` scans | ~600k passages ≈ 1 GB of text is too heavy to hold in the UI process; stored docs would tie dense to the BM25 index and break the rank-bm25 fallback; `load_parents` scans `sections.jsonl` on every call |
+| D29 | 2026-09-26 | Downstream task and minimal UI | Simple cited paper QA: Paper Search, stored passage evidence (read from the D28 lookup store), one answer-generation call; shared QA/search UI | Cross-paper comparison matrices / multi-pass verification / long surveys | Keep the question-to-answer flow simple; citations remain inspectable and evidence is retained for later evaluation. Generation metrics and a live end-to-end run on the built indexes remain pending. |

@@ -283,7 +283,7 @@ class DenseRetriever:
             if kept == 0:
                 return []
             bits = np.packbits(mask, bitorder="little")  # must outlive the searches below
-            selector = faiss.IDSelectorBitmap(len(mask), faiss.swig_ptr(bits))
+            selector = faiss.IDSelectorBitmap(len(bits), faiss.swig_ptr(bits))  # n = bitmap bytes
             rows = None
             if kept > self._exact_max:
                 scores, rows = self._index.search(

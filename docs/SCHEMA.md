@@ -96,7 +96,7 @@ hypothetical document is appended as one additional `SubQuery` with empty `keywo
 
 `FinalResult` is the **Paper Search** output (`orchestration.run_query()`, D24). It contains no
 generated answer; the downstream task (`downstream/`) consumes it and produces its own
-`DownstreamResult` (schema TBD with the task type — see `downstream/types.py`):
+`DownstreamResult` (section 10; see `downstream/types.py`):
 
 ```json
 {
@@ -149,5 +149,40 @@ Constraints:
 - Passages/papers: read/write defined in `kb/store.py`; type definitions in `retrieval/types.py` (`ScoredPassage`)
 - Orchestration layer: `orchestration/types.py` (`QueryPlan`, `ReviewRecord`, `FinalResult`)
 - Evaluation set: defined within `eval/`
+- Downstream QA: `downstream/types.py` (`EvidenceSource`, `DownstreamResult`)
 
 > ⚠️ When changing a contract: update SCHEMA.md → update the corresponding types.py → run `scripts/sanity_check.py` (schema round-trips) → PR with review.
+
+## 10. Cited Paper QA
+
+`downstream.run(input_text: str, query_id: str | None = None) -> DownstreamResult`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `query_id` | str | ID returned by Paper Search |
+| `input_text` | str | Question, stripped of surrounding whitespace |
+| `answer` | str | Natural-language answer with `[n]` citations, or an insufficient-evidence explanation |
+| `status` | str | `answered` or `insufficient_evidence`; operational failures raise `DownstreamError` |
+| `sources` | list[EvidenceSource] | All excerpts actually supplied to the model, numbered from 1 |
+| `cited_source_numbers` | list[int] | Distinct cited numbers in first-appearance order; all must exist in `sources` |
+| `search_result` | FinalResult | Original Paper Search result (section 6), unchanged |
+| `latency_by_stage` | dict[str, int] | `search_ms`, `evidence_ms`, `generation_ms`, `total_ms`; wall-clock milliseconds |
+| `prompt_version` | str | Downstream prompt version, currently `1.0.0` |
+
+`EvidenceSource` contains `number: int`, `paper_id: str`, `passage_id: str`, `title: str`,
+`year: int | None`, `section: str`, `url: str | None`, and `text: str`. The URL is constructed
+only from a valid arXiv ID; unknown IDs have no link. Text is the exact bounded excerpt fed
+to generation, loaded from the stored child passage. `[n]` identifies a passage, not a paper.
+
+Answered results require at least one valid citation. An insufficient-evidence result may
+have no citations; any citations present still undergo validation. `answer` stores citations
+as individual `[n]`: grouped forms (`[1, 2]`, `[1-3]`, `[01]`) are rewritten, and brackets
+whose numbers are not all supplied sources (e.g. the interval `[0, 1]`) are plain text.
+Missing individual passages are skipped. A missing/corrupt lookup store is an error, not an
+empty search.
+No new evidence fields are required on `FinalResult` or `ReviewRecord`.
+
+Passage records are read with `retrieval.lookup.get_lookup_store().get_passages(passage_ids)`
+(D28): primary-key lookups in `lookup.sqlite`, the store that also hydrates retrieval hits.
+Missing IDs are omitted; an empty selection does not open the store. Results serialize with
+`asdict()` and JSON; the UI supports downloading this full payload for later evaluation.

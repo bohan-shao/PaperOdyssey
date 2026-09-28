@@ -6,7 +6,7 @@ Usage:
 
 Pipeline: run the corresponding metrics per docs/EVALUATION.md; results land in data/results/metrics/.
 Constraints: each run outputs a config snapshot + dependency versions; same-query caching ensures reproducibility.
-Note: generation/ragas stages come back with the downstream task (Q4) — see eval/README.md.
+Note: paper QA is implemented; generation/ragas metric stages remain pending (Q4).
 """
 
 from __future__ import annotations

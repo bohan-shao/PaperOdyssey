@@ -9,7 +9,7 @@ Template list (used by the orchestration layer's own LLM calls):
 Implementation requirements:
 - All templates write the output convention into the prompt (JSON structure description), working with llm/client.chat_json.
 - Template version: module-level constant TEMPLATE_VERSION, recorded in the report/result files.
-- (Task-specific templates — answer generation / faithfulness self-check — are defined later with the downstream task.)
+- The answer-generation prompt is maintained separately in downstream/prompts.py.
 
 Constraint: template text lives in the prompts dictionary (module level); it must not be scattered across business files.
 """

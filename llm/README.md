@@ -5,7 +5,7 @@
 The **LLM layer of the whole system** — every LLM call goes through `llm/client.py`:
 
 - **orchestration** uses it for query understanding / review / rewriting (Paper Search's own LLM calls)
-- the **downstream task** (reserved folder, TBD) will use it when defined
+- **downstream paper QA** uses `chat()` for one cited answer-generation call
 - **eval** (RAGAS) uses it for metric computation
 
 `llm/jev.py` is the one exception: an optional client for TypeSafe's Jev, a decision-only model
@@ -31,7 +31,9 @@ still goes through `llm/client.py`.
 - `build_review_prompt(candidates, criteria, input_text)` — review (used by orchestration)
 - `build_rewrite_prompt(missing, existing)` — feedback-based rewriting (used by orchestration)
 - Record `TEMPLATE_VERSION`; the report cites template versions for reproducibility
-- (Task-specific prompts — generation/self-check — are defined later with the downstream task)
+- The answer prompt and its independent version live in `downstream/prompts.py`.
+  QA uses `chat_json(..., max_tokens=downstream.max_tokens)`, so invalid or truncated JSON gets
+  the usual re-ask; it validates citations locally and does not run an additional self-check model.
 
 ## Implementation Notes: client.py (status: implemented)
 
@@ -53,8 +55,9 @@ client.usage_summary()                                 # {calls, prompt_tokens, 
 - **chat_json**: accepts plain JSON, ```json fences, or JSON embedded in prose (the longest
   object/array wins, so a citation like `[1]` is never mistaken for the payload). On a parse
   failure it re-asks with the model's previous reply, the error and `schema_desc`; a reply cut
-  off by the token limit is retried with doubled `max_tokens` (cap 8192). No provider JSON mode
-  is forced because the review prompt expects a top-level array.
+  off by the token limit is retried with doubled `max_tokens` (cap 8192). The optional
+  `max_tokens=` argument sets the first attempt's limit (default `llm.max_tokens`). No
+  provider JSON mode is forced because the review prompt expects a top-level array.
 - **Cost reporting**: one line per call in `data/results/metrics/llm_usage.jsonl`
   (`time, model, kind, prompt_tokens, completion_tokens, latency_ms`).
 - **Tests**: `python -m unittest tests.test_llm` runs the real OpenAI SDK against a mocked HTTP
