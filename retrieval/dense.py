@@ -246,6 +246,11 @@ class DenseRetriever:
         self._lookup = lookup
         self._encoder.encode_query("warm up")  # first (CUDA) call is slow; keep it out of timings
 
+    @property
+    def index(self) -> object:
+        """The loaded FAISS HNSW index, for read-only use (e.g. the efSearch latency sweep)."""
+        return self._index
+
     def _mask(self, filters: RetrievalFilters | None) -> np.ndarray | None:
         """Boolean mask of the rows the filters keep; None = no filtering."""
         if filters is None:
