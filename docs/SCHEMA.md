@@ -176,10 +176,10 @@ to generation, loaded from the stored child passage. `[n]` identifies a passage,
 
 Answered results require at least one valid citation. An insufficient-evidence result may
 have no citations; any citations present still undergo validation. Missing individual
-passages are skipped. A missing/corrupt passage file is an error, not an empty search.
+passages are skipped. A missing/corrupt lookup store is an error, not an empty search.
 No new evidence fields are required on `FinalResult` or `ReviewRecord`.
 
-The read-only KB helper `load_passages(passage_ids: Iterable[str], path) -> dict[str, dict]`
-returns existing passages keyed by ID using one streaming scan. Missing IDs are omitted;
-an empty request returns `{}` without opening the file. Results serialize with `asdict()`
-and JSON; the UI supports downloading this full payload for later evaluation.
+Passage records are read with `retrieval.lookup.get_lookup_store().get_passages(passage_ids)`
+(D28): primary-key lookups in `lookup.sqlite`, the store that also hydrates retrieval hits.
+Missing IDs are omitted; an empty selection does not open the store. Results serialize with
+`asdict()` and JSON; the UI supports downloading this full payload for later evaluation.

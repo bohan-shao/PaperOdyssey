@@ -1,8 +1,9 @@
 # downstream/ Cited paper question answering
 
 `downstream.run(input_text, query_id=None) -> DownstreamResult` calls Paper Search once,
-loads real passage text through `kb.store.load_passages`, and makes one answer-generation
-call through `llm.client`. The existing search review/rewrite settings remain in effect.
+loads real passage text by ID from the retrieval lookup store (`retrieval.lookup`, D28), and
+makes one answer-generation call through `llm.client`. The existing search review/rewrite
+settings remain in effect.
 
 ```python
 import json
@@ -25,13 +26,13 @@ print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
   link when available, and exactly the excerpt sent to the model.
 - Missing, empty, or mismatched passages are omitted; review reasons and abstracts are not
   substitutes for original text. No usable sources means `insufficient_evidence` without
-  calling the answer model. A missing/corrupt corpus file is an operational error.
+  calling the answer model. A missing or corrupt lookup store is an operational error.
 - The prompt requests a concise answer in the question's language and requires inline
   citations. The model may report insufficient evidence even when excerpts exist.
 - Numeric citation format and bounds are checked in code; malformed or uncited answers
   raise `DownstreamError`. There is no second model check or repair loop. These checks
   validate source identity, **not semantic support for every claim**.
-- Blank input raises `ValueError`; search, corpus, and model failures raise
+- Blank input raises `ValueError`; search, evidence lookup, and model failures raise
   `DownstreamError`, with the underlying exception chained for debugging.
 
 ## Output and measurement
@@ -43,8 +44,9 @@ generation, and total wall time; LLM token usage remains in the shared client us
 The UI offers a JSON download containing the answer, sources, search result, and timings.
 Answer results are not cached or written automatically; Paper Search retains its own cache.
 
-Evidence lookup scans the passage JSONL once per call, stopping when all selected IDs are
-found. Large-corpus lookup latency must be measured when real retrieval is available.
+Evidence is read with primary-key lookups in `lookup.sqlite`, which `scripts/build_indexes.py`
+builds from the same `passages.jsonl` as the BM25/FAISS indexes, so the cost does not grow with
+the corpus. The UI's search tab reads its excerpts from the same store on every rerun.
 
 ## Verification and integration status
 
@@ -54,13 +56,13 @@ python -m unittest discover -s tests -v
 python scripts/sanity_check.py
 ```
 
-Tests cover real temporary passage files, citation/source mapping, budgets, no-evidence
+Tests cover a real temporary lookup store, citation/source mapping, budgets, no-evidence
 behavior, failures, and Streamlit interactions. The integration test runs the real
 orchestration and LLM SDK against controlled retrieval results and an HTTP mock transport.
 It makes no external model calls. Python >=3.11 and the relevant common/LLM/UI/KB
 dependencies from `requirements.txt` are required for the full test suite.
 
-`retrieval.pipeline.retrieve()` is still a stub at this implementation's base commit.
-Real indexed retrieval and the five configured example questions must be verified after
-that module is integrated. This change does not claim live end-to-end readiness, generation
-quality scores, or completion of the 1,000-item coursework evaluation.
+The retrieval core (`retrieval.pipeline.retrieve()`) is now implemented, but a live
+end-to-end run on the built indexes, including the five configured example questions, has not
+been verified yet. This change does not claim generation quality scores or completion of the
+1,000-item coursework evaluation.

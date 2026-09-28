@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from streamlit.testing.v1 import AppTest
 
@@ -12,6 +12,13 @@ from downstream import DownstreamError, DownstreamResult, EvidenceSource
 from tests.test_downstream import passage, search_result
 
 APP = str(Path(__file__).resolve().parents[1] / "ui" / "app.py")
+
+
+def lookup_store(passages):
+    """Patch for retrieval.lookup.get_lookup_store serving the given passage records."""
+    store = MagicMock()
+    store.get_passages.return_value = passages
+    return patch("retrieval.lookup.get_lookup_store", return_value=store)
 
 
 class UITests(unittest.TestCase):
@@ -26,7 +33,7 @@ class UITests(unittest.TestCase):
     def test_submit_reuses_search_and_shows_citation_and_original_text(self):
         with patch("downstream.run", return_value=self.answer) as answer, \
                 patch("orchestration.run_query") as search, \
-                patch("kb.store.load_passages", return_value={self.source.passage_id: passage()}):
+                lookup_store({self.source.passage_id: passage()}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("How does it work?")
             app.button[0].click().run()
@@ -43,7 +50,7 @@ class UITests(unittest.TestCase):
 
     def test_failed_followup_clears_stale_answer(self):
         with patch("downstream.run", side_effect=[self.answer, DownstreamError("Paper search failed.")]), \
-                patch("kb.store.load_passages", return_value={}):
+                lookup_store({}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("First question")
             app.button[0].click().run()
@@ -66,7 +73,7 @@ class UITests(unittest.TestCase):
 
     def test_search_only_does_not_generate_answer(self):
         with patch("downstream.run") as answer, patch("orchestration.run_query", return_value=self.search) as search, \
-                patch("kb.store.load_passages", return_value={}):
+                lookup_store({}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("Find papers")
             app.button[1].click().run()

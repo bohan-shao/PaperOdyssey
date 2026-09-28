@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from typing import Any
 
-from config import get_config, get_path
-from kb.store import load_passages
+from config import get_config
 from llm.client import get_client, parse_json_reply
 from orchestration import run_query
 from orchestration.types import FinalResult
+from retrieval.lookup import get_lookup_store
 
 from .prompts import PROMPT_VERSION, build_answer_prompt
 from .types import DownstreamResult, EvidenceSource
@@ -51,8 +52,8 @@ def _sources(search: FinalResult, cfg: dict[str, Any]) -> list[EvidenceSource]:
     if not selected:
         return []
 
-    path = get_path("processed") / cfg["kb"]["store"].get("passages_file", "passages.jsonl")
-    passages = load_passages((pid for _, pid in selected), path)
+    # Primary-key lookups in the store the retrieval hits came from (D28), not a corpus scan.
+    passages = get_lookup_store().get_passages(pid for _, pid in selected)
     sources: list[EvidenceSource] = []
     seen: set[str] = set()
     for paper_id, passage_id in selected:
@@ -122,8 +123,8 @@ def run(input_text: str, query_id: str | None = None) -> DownstreamResult:
     search_end = time.perf_counter()
     try:
         sources = _sources(search, cfg)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise DownstreamError("Could not read paper evidence. Check the processed knowledge base.") from exc
+    except (OSError, RuntimeError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+        raise DownstreamError("Could not read paper evidence. Check the lookup store (scripts/build_indexes.py).") from exc
     evidence_end = time.perf_counter()
     if sources:
         try:

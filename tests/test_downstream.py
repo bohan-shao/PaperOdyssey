@@ -1,4 +1,4 @@
-"""Offline paper-QA tests: real passage files, controlled search/model responses."""
+"""Offline paper-QA tests: a real lookup store, controlled search/model responses."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 from config import get_config
 from downstream import DownstreamError, run
-from kb.store import load_passages
 from orchestration.types import FinalResult, QueryPlan, ReviewRecord
+from retrieval.lookup import LookupStore, build_lookup
 
 
 def passage(paper_id="2401.00001", suffix="0000", text="The model uses low-rank updates."):
@@ -29,6 +29,14 @@ def search_result(papers=None):
     return FinalResult("q-test", "How does it work?", QueryPlan("How does it work?"), papers, {})
 
 
+def build_store(root, passages):
+    """Write passages.jsonl and build the retrieval lookup store from it; returns the db path."""
+    (root / "passages.jsonl").write_text("".join(json.dumps(p) + "\n" for p in passages), encoding="utf-8")
+    (root / "sections.jsonl").write_text("", encoding="utf-8")
+    build_lookup(root / "passages.jsonl", root / "sections.jsonl", root / "lookup.sqlite")
+    return root / "lookup.sqlite"
+
+
 class DownstreamTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -41,13 +49,18 @@ class DownstreamTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch("downstream.qa.get_config", return_value=self.cfg))
-        self.stack.enter_context(patch("downstream.qa.get_path", return_value=self.root))
+        self.store_factory = self.stack.enter_context(patch("downstream.qa.get_lookup_store", side_effect=self.open_store))
         self.client_factory = self.stack.enter_context(patch("downstream.qa.get_client", return_value=self.client))
         self.search_call = self.stack.enter_context(patch("downstream.qa.run_query", return_value=self.search))
         self.write([passage()])
 
     def write(self, passages):
-        (self.root / "passages.jsonl").write_text("".join(json.dumps(p) + "\n" for p in passages), encoding="utf-8")
+        self.db = build_store(self.root, passages)
+
+    def open_store(self):
+        store = LookupStore(self.db)
+        self.addCleanup(store.close)
+        return store
 
     def test_answer_uses_real_text_and_one_search_and_generation(self):
         result = run("  How does it work?  ", query_id="custom")
@@ -82,14 +95,15 @@ class DownstreamTests(unittest.TestCase):
         self.assertTrue(all(len(s.text) == 12 for s in result.sources))
         self.assertEqual(self.client.chat.call_args.kwargs["max_tokens"], 300)
 
-    def test_empty_search_skips_model_and_corpus(self):
+    def test_empty_search_skips_model_and_lookup_store(self):
         self.search_call.return_value = search_result([])
-        (self.root / "passages.jsonl").unlink()
+        self.db.unlink()
         result = run("有什么证据？")
         self.assertEqual(result.status, "insufficient_evidence")
         self.assertIn("未找到", result.answer)
         self.assertEqual(result.sources, [])
         self.assertEqual(result.latency_by_stage["generation_ms"], 0)
+        self.store_factory.assert_not_called()
         self.client_factory.assert_not_called()
 
     def test_missing_blank_or_wrong_paper_evidence_is_not_used(self):
@@ -99,10 +113,11 @@ class DownstreamTests(unittest.TestCase):
                 self.assertEqual(run("Question").status, "insufficient_evidence")
         self.client_factory.assert_not_called()
 
-    def test_missing_corpus_is_an_operational_error(self):
-        (self.root / "passages.jsonl").unlink()
-        with self.assertRaisesRegex(DownstreamError, "processed knowledge base"):
+    def test_missing_lookup_store_is_an_operational_error(self):
+        self.db.unlink()
+        with self.assertRaisesRegex(DownstreamError, "lookup store") as caught:
             run("Question")
+        self.assertIn("lookup store not found", str(caught.exception.__cause__))
         self.client_factory.assert_not_called()
 
     def test_invalid_or_uncited_answers_fail_without_a_repair_call(self):
@@ -145,14 +160,6 @@ class DownstreamTests(unittest.TestCase):
             run("Question")
         self.search_call.assert_not_called()
 
-    def test_corpus_lookup_empty_missing_and_read_only(self):
-        path = self.root / "passages.jsonl"
-        before = path.read_bytes()
-        found = load_passages(["P2401.00001_0000", "missing"], path)
-        self.assertEqual(list(found), ["P2401.00001_0000"])
-        self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(load_passages([], self.root / "absent.jsonl"), {})
-
     def test_arxiv_links_are_derived_from_valid_ids_only(self):
         self.write([dict(passage(), arxiv_id="https://example.com/untrusted")])
         self.assertIsNone(run("Question").sources[0].url)
@@ -178,7 +185,8 @@ class PipelineIntegrationTests(unittest.TestCase):
         hit = ScoredPassage(doc["passage_id"], doc["paper_id"], doc["text"], 0.9, 1, "rerank", title=doc["title"])
         with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
             root = Path(tmp)
-            (root / "passages.jsonl").write_text(json.dumps(doc) + "\n")
+            lookup = LookupStore(build_store(root, [doc]))
+            stack.callback(lookup.close)
             upsert_papers([{"paper_id": doc["paper_id"], "title": doc["title"], "abstract": doc["text"]}], root / "papers.sqlite")
             http = httpx2.Client(transport=httpx2.MockTransport(server))
             stack.callback(http.close)
@@ -186,8 +194,8 @@ class PipelineIntegrationTests(unittest.TestCase):
                                retries=0, usage_path=root / "usage.jsonl", http_client=http)
             for module in ["downstream.qa", "orchestration.loop", "orchestration.query_understanding", "orchestration.review", "llm.prompt"]:
                 stack.enter_context(patch(f"{module}.get_config", return_value=cfg))
-            for module in ["downstream.qa", "orchestration.loop"]:
-                stack.enter_context(patch(f"{module}.get_path", return_value=root))
+            stack.enter_context(patch("orchestration.loop.get_path", return_value=root))
+            stack.enter_context(patch("downstream.qa.get_lookup_store", return_value=lookup))
             for module in ["downstream.qa", "orchestration.query_understanding", "orchestration.review"]:
                 stack.enter_context(patch(f"{module}.get_client", return_value=client))
             retrieve = stack.enter_context(patch("orchestration.loop.retrieve", return_value=RetrieveResult([hit], 1)))

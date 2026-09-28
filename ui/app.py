@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -15,9 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import downstream
 import orchestration
-from config import get_config, get_path
-from kb.store import load_passages
+from config import get_config
 from orchestration.types import FinalResult
+from retrieval.lookup import get_lookup_store
 
 
 def _use_example() -> None:
@@ -56,13 +57,11 @@ def _show_search(result: FinalResult) -> None:
         st.info("No papers matched this question.")
         return
     ids = [pid for paper in result.papers for pid in paper.evidence.get("top_passages", [])]
-    cfg = get_config()
-    path = get_path("processed") / cfg["kb"]["store"].get("passages_file", "passages.jsonl")
     try:
-        passages = load_passages(ids, path)
-    except (OSError, ValueError, KeyError):
+        passages = get_lookup_store().get_passages(ids)  # runs on every rerun: keep it a key lookup
+    except (OSError, RuntimeError, sqlite3.Error, ValueError, KeyError):
         passages = {}
-        st.warning("Paper excerpts are unavailable in the processed knowledge base.")
+        st.warning("Paper excerpts are unavailable: the retrieval lookup store could not be read.")
     for paper in result.papers:
         with st.expander(str(paper.evidence.get("title") or paper.paper_id)):
             st.caption(f"Review: {paper.verdict} · Score: {paper.score}/5")

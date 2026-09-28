@@ -3,7 +3,7 @@
 ## Goal
 
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
-performance/cost, and ablation tables. (Generation metrics and RAGAS are parked — see below.)
+performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
 
 ## Implementation requirements
 

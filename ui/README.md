@@ -2,7 +2,7 @@
 
 ## Goal (coursework requirement: keep the UI simple; it is not a focus for extra credit)
 
-Two presentation tabs (D23/D28) sharing the same input box:
+Two presentation tabs (D23/D29) sharing the same input box:
 
 1. **Paper QA** — **Ask** calls `downstream.run()`, which calls Paper Search once and
    generates an answer with evidence citations. Displays expandable original excerpts,

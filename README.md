@@ -132,7 +132,7 @@ implementation, built indices, processed passages, and a configured LLM key.
 
 | Decision | Conclusion |
 |---|---|
-| Downstream task | Simple cited paper QA: Paper Search → original passages → one answer-generation call (D28) |
+| Downstream task | Simple cited paper QA: Paper Search → original passages → one answer-generation call (D29) |
 | Corpus | arXiv cs.CL/cs.AI/cs.LG, 15k–30k papers, 2015–2025, OpenAlex citation filter |
 | Sparse/dense | Pyserini BM25 / BGE-large-en-v1.5 + FAISS HNSW |
 | Fusion/rerank | RRF(k=60) → BGE-reranker-v2-m3 (top-50 → top-10) |
