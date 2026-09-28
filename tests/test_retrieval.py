@@ -1,17 +1,22 @@
-"""Offline tests for retrieval/ (no models, no network). Run: python -m unittest tests.test_retrieval
+"""Offline tests for retrieval/ (no network). Run: python -m unittest tests.test_retrieval
 
-The Pyserini tests need Java and the rank-bm25 tests need rank-bm25; each is skipped when its
-backend is missing, so run them in Docker (./run_docker.sh python -m unittest tests.test_retrieval).
+The Pyserini tests need Java, the rank-bm25 tests rank-bm25, the dense tests numpy + faiss (with a
+hashed bag-of-words encoder standing in for BGE), and the real-encoder test the cached
+all-MiniLM-L6-v2 model. Each is skipped when its dependency is missing, so run them in Docker
+(./run_docker.sh python -m unittest tests.test_retrieval).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 import shutil
 import sqlite3
 import tempfile
 import threading
 import unittest
+import zlib
 from pathlib import Path
 
 from kb import store
@@ -111,6 +116,16 @@ class LookupTest(unittest.TestCase):
 
 HAS_PYSERINI = importlib.util.find_spec("pyserini") is not None and shutil.which("java") is not None
 HAS_RANKBM25 = importlib.util.find_spec("rank_bm25") is not None
+HAS_DENSE = all(importlib.util.find_spec(m) is not None for m in ("numpy", "faiss"))
+HAS_MINILM = False
+if HAS_DENSE:
+    import numpy as np
+
+    from retrieval import dense
+if importlib.util.find_spec("sentence_transformers") is not None:
+    from huggingface_hub import try_to_load_from_cache
+
+    HAS_MINILM = isinstance(try_to_load_from_cache("sentence-transformers/all-MiniLM-L6-v2", "config.json"), str)
 
 # (passage_id suffix, year, categories, text): one passage per paper, distinct topics.
 CORPUS = [
@@ -123,6 +138,20 @@ CORPUS = [
 ]
 
 
+def write_corpus(tmp: Path) -> tuple[Path, Path, LookupStore]:
+    """Write CORPUS as passages.jsonl + sections.jsonl under tmp and open a lookup store over it."""
+    passages, sections = tmp / "passages.jsonl", tmp / "sections.jsonl"
+    for key, year, cats, text in CORPUS:
+        pid = f"2401.0000{key}"
+        meta = {"paper_id": pid, "arxiv_id": pid + "v1", "title": f"Paper {key}", "section": "Abstract",
+                "year": year, "categories": cats, "text": f"[Paper {key}] Abstract\n{text}"}
+        store.write_passages([{**meta, "passage_id": f"P{pid}_0000", "chunk_index": 0,
+                               "parent_section_id": f"{pid}_S000"}], passages)
+        store.write_parents([{**meta, "parent_section_id": f"{pid}_S000", "section_index": 0}], sections)
+    build_lookup(passages, sections, tmp / "lookup.sqlite")
+    return passages, sections, LookupStore(tmp / "lookup.sqlite")
+
+
 class _SparseCases:
     """BM25 contract tests, run once per backend by the subclasses below."""
 
@@ -132,19 +161,7 @@ class _SparseCases:
     def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory()
         tmp = Path(cls._tmp.name)
-        cls.passages, cls.sections = tmp / "passages.jsonl", tmp / "sections.jsonl"
-        for key, year, cats, text in CORPUS:
-            pid = f"2401.0000{key}"
-            store.write_passages([{
-                "passage_id": f"P{pid}_0000", "paper_id": pid, "arxiv_id": pid + "v1", "title": f"Paper {key}",
-                "section": "Abstract", "year": year, "categories": cats, "chunk_index": 0,
-                "text": f"[Paper {key}] Abstract\n{text}", "parent_section_id": f"{pid}_S000"}], cls.passages)
-            store.write_parents([{
-                "parent_section_id": f"{pid}_S000", "paper_id": pid, "arxiv_id": pid + "v1", "title": f"Paper {key}",
-                "section": "Abstract", "year": year, "categories": cats, "section_index": 0,
-                "text": f"[Paper {key}] Abstract\n{text}"}], cls.sections)
-        build_lookup(cls.passages, cls.sections, tmp / "lookup.sqlite")
-        cls.lookup = LookupStore(tmp / "lookup.sqlite")
+        cls.passages, cls.sections, cls.lookup = write_corpus(tmp)
         cls.index_dir = tmp / "bm25"
         cls.info = sparse.build_index(cls.passages, cls.index_dir, backend=cls.backend, threads=1)
         cls.retriever = sparse.SparseRetriever(cls.index_dir, cls.lookup, backend=cls.backend)
@@ -212,6 +229,124 @@ class PyseriniSparseTest(_SparseCases, unittest.TestCase):
 @unittest.skipUnless(HAS_RANKBM25, "needs rank-bm25 (run in Docker)")
 class RankBM25SparseTest(_SparseCases, unittest.TestCase):
     backend = "rankbm25"
+
+
+class HashEncoder:
+    """Offline stand-in for BGE: hashed bag-of-words unit vectors, so shared words raise the cosine."""
+
+    def __init__(self, name: str = "hash-bow", dim: int = 256) -> None:
+        self.name, self.dim, self.batch_size = name, dim, 64
+        self.seen: list[str] = []
+
+    def encode(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
+        self.seen.extend(texts)
+        vecs = np.zeros((len(texts), self.dim), dtype=np.float32)
+        for row, text in enumerate(texts):
+            for token in re.findall(r"[a-z0-9]+", text.lower()):
+                vecs[row, zlib.crc32(token.encode()) % self.dim] += 1.0
+        return vecs / np.maximum(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-12)
+
+    def encode_query(self, query: str) -> np.ndarray:
+        return dense.Encoder.encode_query(self, query)  # the real prefix logic
+
+
+@unittest.skipUnless(HAS_DENSE, "needs numpy + faiss (run in Docker)")
+class DenseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls._tmp.name)
+        cls.passages, cls.sections, cls.lookup = write_corpus(tmp)
+        cls.index_dir = tmp / "faiss"
+        cls.encoder = HashEncoder()
+        cls.info = dense.build_index(cls.passages, cls.index_dir, encoder=cls.encoder)
+        # exact_max=1000: every filtered search is exact; exact_max=0: HNSW with the ID selector.
+        cls.exact = dense.DenseRetriever(cls.index_dir, cls.lookup, encoder=cls.encoder, exact_max=1000)
+        cls.hnsw = dense.DenseRetriever(cls.index_dir, cls.lookup, encoder=cls.encoder, exact_max=0)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.lookup.close()
+        store.reset_jsonl(cls.passages)
+        store.reset_jsonl(cls.sections)
+        cls._tmp.cleanup()
+
+    @staticmethod
+    def ids(retriever: dense.DenseRetriever, query: str, filters: RetrievalFilters | None = None,
+            top_k: int = 10) -> list[str]:
+        hits, _ = retriever.search(query, filters, top_k)
+        return [h.paper_id[-1] for h in hits]  # "2401.0000A" -> "A"
+
+    def test_build_layout_mapping_and_rebuild(self) -> None:
+        self.assertEqual((self.info["model_name"], self.info["dim"], self.info["num_vectors"]),
+                         ("hash-bow", 256, len(CORPUS)))
+        self.assertEqual(sorted(p.name for p in self.index_dir.iterdir()), ["index.faiss", "mapping.jsonl", "meta.json"])
+        rows = [json.loads(line) for line in (self.index_dir / "mapping.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["row"], r["passage_id"]) for r in rows],
+                         [(i, f"P2401.0000{key}_0000") for i, (key, *_) in enumerate(CORPUS)])
+        self.assertEqual(rows[3]["categories"], ["q-bio.NC"])
+        meta = json.loads((self.index_dir / "meta.json").read_text())
+        self.assertEqual((meta["hnsw"]["M"], meta["query_instruction"]), (32, dense.QUERY_INSTRUCTION))
+        again = dense.build_index(self.passages, self.index_dir, encoder=HashEncoder())
+        self.assertEqual(again["num_vectors"], len(CORPUS))
+        self.assertEqual([p.name for p in self.index_dir.parent.iterdir() if p.name.endswith(".tmp")], [])
+
+    def test_best_match_first_and_hydrated(self) -> None:
+        hits, latency_ms = self.exact.search("low-rank adaptation of language models", None, 10)
+        self.assertEqual(hits[0].passage_id, "P2401.0000A_0000")
+        self.assertEqual(len(hits), len(CORPUS))  # dense always returns the nearest neighbours
+        self.assertEqual([h.rank for h in hits], list(range(1, len(hits) + 1)))
+        self.assertEqual([h.score for h in hits], sorted((h.score for h in hits), reverse=True))
+        self.assertLessEqual(hits[0].score, 1.0 + 1e-5)  # cosine of unit vectors
+        self.assertEqual((hits[0].stage, hits[0].year, hits[0].categories), ("dense", 2019, ["cs.CL", "cs.LG"]))
+        self.assertIsInstance(latency_ms, int)
+
+    def test_query_gets_bge_instruction(self) -> None:
+        self.exact.search("spiking neurons", None, 3)
+        self.assertEqual(self.encoder.seen[-1], dense.QUERY_INSTRUCTION + "spiking neurons")
+
+    def test_top_k_and_empty_query(self) -> None:
+        self.assertEqual(len(self.ids(self.exact, "neural networks", top_k=2)), 2)
+        self.assertEqual(self.ids(self.exact, ""), [])
+        self.assertEqual(self.ids(self.exact, "   "), [])
+
+    def test_filters_on_exact_and_hnsw_paths(self) -> None:
+        for name, r in (("exact", self.exact), ("hnsw", self.hnsw)):
+            with self.subTest(path=name):
+                q = "spiking neural networks"
+                self.assertEqual(self.ids(r, q)[0], "D")
+                recent = self.ids(r, q, RetrievalFilters(year_min=2020))
+                self.assertEqual((recent[0], sorted(recent)), ("D", ["B", "D", "E"]))
+                self.assertEqual(sorted(self.ids(r, q, RetrievalFilters(year_max=2018))), ["C", "F"])
+                self.assertEqual(self.ids(r, q, RetrievalFilters(categories=["q-bio.NC"])), ["D"])
+                self.assertEqual(self.ids(r, q, RetrievalFilters(categories=["eess.AS"])), ["C"])
+                self.assertEqual(sorted(self.ids(r, q, RetrievalFilters(categories=["q-bio.NC", "eess.AS"]))), ["C", "D"])
+                self.assertEqual(self.ids(r, q, RetrievalFilters(categories=["cs.XX"])), [])
+                self.assertEqual(len(self.ids(r, q, RetrievalFilters(categories=[]))), len(CORPUS))
+                self.assertEqual(self.ids(r, q, RetrievalFilters(year_min=2020, categories=["eess.AS"])), [])
+                all_hits, _ = r.search(q, None, 10)
+                only_d, _ = r.search(q, RetrievalFilters(categories=["q-bio.NC"]), 10)
+                self.assertAlmostEqual(only_d[0].score, all_hits[0].score, places=5)
+
+    def test_open_errors(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "rebuild"):
+            dense.DenseRetriever(self.index_dir, self.lookup, encoder=HashEncoder(name="other-model"))
+        with self.assertRaisesRegex(RuntimeError, "dim"):
+            dense.DenseRetriever(self.index_dir, self.lookup, encoder=HashEncoder(dim=128))
+        with self.assertRaisesRegex(RuntimeError, "build_indexes"):
+            dense.DenseRetriever(self.index_dir / "missing", self.lookup, encoder=self.encoder)
+
+
+@unittest.skipUnless(HAS_DENSE and HAS_MINILM, "needs sentence-transformers + cached all-MiniLM-L6-v2 (run in Docker)")
+class RealEncoderTest(unittest.TestCase):
+    def test_unit_vectors_similarity_and_query_prefix(self) -> None:
+        enc = dense.Encoder("sentence-transformers/all-MiniLM-L6-v2", batch_size=8)
+        vecs = enc.encode(["A cat sits on the mat.", "A kitten is sitting on a rug.", "Stock markets fell sharply today."])
+        self.assertEqual((vecs.shape, vecs.dtype), ((3, enc.dim), np.float32))
+        np.testing.assert_allclose(np.linalg.norm(vecs, axis=1), 1.0, atol=1e-3)
+        self.assertGreater(vecs[0] @ vecs[1], vecs[0] @ vecs[2])
+        np.testing.assert_allclose(enc.encode_query("cat on a mat"),
+                                   enc.encode([dense.QUERY_INSTRUCTION + "cat on a mat"]), atol=1e-3)
 
 
 class CategoryTokenTest(unittest.TestCase):

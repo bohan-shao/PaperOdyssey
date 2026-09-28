@@ -55,6 +55,24 @@ Implementation notes:
 - Encoding: batched (config `retrieval.dense.batch_size`); fp16 available on A40; record total encoding time
 - Query: encode the query (same model, same prefix) → FAISS search → cosine similarity scores
 
+Implementation notes:
+- Index layout: `data/indices/faiss/index.faiss` (IndexHNSWFlat, inner product on unit vectors, so
+  score = cosine; the file also holds the float32 vectors), `mapping.jsonl` (row → passage_id,
+  year, categories), `meta.json` (model, dim, HNSW params, query instruction, faiss version);
+  opening an index built with another model or dim raises
+- Build streams passages in chunks of 16k (encode → add), so texts are never all in memory;
+  encoding and HNSW insertion times are reported separately in the build report
+- Filters use a FAISS ID selector during the search (same semantics as sparse, never a post-cut):
+  selections of ≤ `retrieval.dense.filter_exact_max` passages (default 50k) are searched exactly
+  over the stored vectors, because HNSW with a selective filter returns too few hits (in a check
+  keeping 3 of 100 vectors it found only 1); larger selections use HNSW + selector with an exact
+  fallback if it comes back short
+- The query encoder is behind a lock (HF fast tokenizers are not thread-safe); the retriever
+  encodes a warm-up query on open so the first CUDA call is not in the measured latency
+- Verified on the local KB sample (1,997 passages, RTX 5070, fp16): encoding 11.7 s (~170/s,
+  so roughly 1-1.5 h for the full ~800k), index 8.9 MB; warm top-50 query ≈ 15 ms including
+  query encoding and hydration
+
 ### fusion.py — Hybrid fusion (D7)
 - RRF: `score = Σ 1/(k + rank_i)`, k=60 (config-adjustable); sparse and dense each feed in their top-50
 - Support a weighted variant (config `fusion.weights`) as an ablation comparison

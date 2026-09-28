@@ -16,7 +16,6 @@ import argparse
 import json
 import logging
 import sys
-import time
 from datetime import date
 from pathlib import Path
 
@@ -34,6 +33,7 @@ def main() -> None:
     parser.add_argument("--only", choices=["lookup", "sparse", "dense", "all"], default="all")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per HF Hub request otherwise
 
     cfg = get_config(args.config)
     paths = {k: PROJECT_ROOT / str(v) for k, v in cfg["paths"].items()}
@@ -43,8 +43,6 @@ def main() -> None:
     if not passages.exists():
         sys.exit(f"{passages} not found; build the KB first (scripts/build_kb.py)")
 
-    # retrieval.dense.faiss_dir ("indices/...") is relative to the data dir.
-    data_dir = paths["indices"].parent
     report: dict = {"passages_file": str(passages)}
     if args.only in ("lookup", "all"):
         db = lookup_path(cfg)
@@ -61,9 +59,10 @@ def main() -> None:
     if args.only in ("dense", "all"):
         from retrieval import dense
 
-        t0 = time.perf_counter()
-        dense.build_index(passages, data_dir / cfg["retrieval"]["dense"]["faiss_dir"])
-        report["dense"] = {"build_s": round(time.perf_counter() - t0, 3)}
+        faiss_dir = dense.index_path(cfg)
+        log.info("building FAISS index (%s) -> %s", cfg["retrieval"]["dense"]["model_name"], faiss_dir)
+        report["dense"] = dense.build_index(passages, faiss_dir)
+        log.info("FAISS index: %s", report["dense"])
 
     # Merge into today's report, so an --only run keeps the other indexes' numbers.
     out = paths["results"] / "metrics" / f"index_build_{date.today().isoformat()}.json"

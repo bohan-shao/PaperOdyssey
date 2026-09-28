@@ -146,6 +146,7 @@ def build_index(passages_path: str | Path, index_dir: str | Path, backend: str |
     out = Path(index_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent))
+    tmp.chmod(0o755)  # mkdtemp makes it owner-only; the index is shared data
     try:
         if backend == "pyserini":
             n = _build_pyserini(passages_path, tmp, threads or min(8, os.cpu_count() or 1))

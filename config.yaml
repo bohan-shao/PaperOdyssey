@@ -86,6 +86,7 @@ retrieval:
     faiss_dir: indices/faiss
     hnsw: {M: 32, efConstruction: 200, efSearch: 128}
     top_k: 50
+    filter_exact_max: 50000     # filtered searches keeping <= this many passages are exact (HNSW misses hits on small selections)
   fusion:
     rrf_k: 60
     weights: [1.0, 1.0]         # [sparse, dense]
