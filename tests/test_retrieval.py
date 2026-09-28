@@ -17,12 +17,14 @@ import tempfile
 import threading
 import unittest
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 from kb import store
 from retrieval import sparse
+from retrieval.fusion import reciprocal_rank_fusion
 from retrieval.lookup import LookupStore, build_lookup
-from retrieval.types import RetrievalFilters
+from retrieval.types import RetrievalFilters, ScoredPassage
 
 META = {"arxiv_id": "2401.00001v2", "title": "A Test Paper", "year": 2024, "categories": ["cs.CL", "cs.LG"]}
 
@@ -347,6 +349,78 @@ class RealEncoderTest(unittest.TestCase):
         self.assertGreater(vecs[0] @ vecs[1], vecs[0] @ vecs[2])
         np.testing.assert_allclose(enc.encode_query("cat on a mat"),
                                    enc.encode([dense.QUERY_INSTRUCTION + "cat on a mat"]), atol=1e-3)
+
+
+def ranked(stage: str, *pids: str, scores: list[float] | None = None) -> list[ScoredPassage]:
+    """Hits in the given order, ranks 1..n (scores default to a descending 10, 9, ...)."""
+    scores = scores or [10.0 - i for i in range(len(pids))]
+    return [ScoredPassage(passage_id=pid, paper_id=pid.split("_")[0], text=f"text of {pid}", score=score,
+                          rank=i, stage=stage, year=2020) for i, (pid, score) in enumerate(zip(pids, scores), 1)]
+
+
+class FusionTest(unittest.TestCase):
+    def test_scores_follow_the_rrf_formula(self) -> None:
+        fused = reciprocal_rank_fusion(ranked("bm25", "a", "b", "c"), ranked("dense", "c", "d"))
+        by_id = {h.passage_id: h.score for h in fused}
+        self.assertAlmostEqual(by_id["c"], 1 / 63 + 1 / 61)  # rank 3 in sparse, rank 1 in dense
+        self.assertAlmostEqual(by_id["a"], 1 / 61)
+        self.assertAlmostEqual(by_id["d"], 1 / 62)
+
+    def test_output_is_deduplicated_sorted_and_hybrid(self) -> None:
+        fused = reciprocal_rank_fusion(ranked("bm25", "a", "b", "c"), ranked("dense", "c", "b", "d"))
+        # c = 1/63 + 1/61 = 0.032266 edges out b = 2/62 = 0.032258; both beat single-list a and d
+        self.assertEqual([h.passage_id for h in fused], ["c", "b", "a", "d"])
+        self.assertEqual([h.rank for h in fused], [1, 2, 3, 4])
+        self.assertEqual({h.stage for h in fused}, {"hybrid"})
+        self.assertEqual([h.score for h in fused], sorted((h.score for h in fused), reverse=True))
+        self.assertEqual((fused[0].text, fused[0].year, fused[0].paper_id), ("text of c", 2020, "c"))
+
+    def test_only_ranks_matter_not_score_scale(self) -> None:
+        sparse_hits = ranked("bm25", "a", "b", "c", scores=[25.1, 11.7, 3.2])
+        dense_hits = ranked("dense", "b", "d", "a", scores=[0.83, 0.79, 0.41])
+        rescaled = ranked("bm25", "a", "b", "c", scores=[0.3, 0.2, 0.1])
+        self.assertEqual(reciprocal_rank_fusion(sparse_hits, dense_hits),
+                         reciprocal_rank_fusion(rescaled, dense_hits))
+
+    def test_k_controls_how_much_the_top_rank_dominates(self) -> None:
+        sparse_hits, dense_hits = ranked("bm25", "top", "x", "both"), ranked("dense", "y", "z", "both")
+        self.assertEqual(reciprocal_rank_fusion(sparse_hits, dense_hits, k=0)[0].passage_id, "top")  # 1/1 > 2/3
+        self.assertEqual(reciprocal_rank_fusion(sparse_hits, dense_hits, k=60)[0].passage_id, "both")  # 2/63 > 1/61
+
+    def test_weights(self) -> None:
+        sparse_hits, dense_hits = ranked("bm25", "s1", "s2"), ranked("dense", "d1", "d2")
+        self.assertEqual([h.passage_id for h in reciprocal_rank_fusion(sparse_hits, dense_hits, weights=(2.0, 1.0))][:2],
+                         ["s1", "s2"])  # 2/61, 2/62 > 1/61
+        self.assertEqual([h.passage_id for h in reciprocal_rank_fusion(sparse_hits, dense_hits, weights=[0.0, 1.0])],
+                         ["d1", "d2"])  # a weight-0 list adds no candidates
+
+    def test_ties_are_deterministic(self) -> None:
+        fused = reciprocal_rank_fusion(ranked("bm25", "zeta", "b"), ranked("dense", "alpha", "c"))
+        self.assertEqual([h.passage_id for h in fused], ["alpha", "zeta", "b", "c"])  # equal 1/61: by id
+
+    def test_duplicate_within_one_list_counts_once_at_best_rank(self) -> None:
+        sparse_hits = ranked("bm25", "a", "b") + [replace(ranked("bm25", "a")[0], rank=5)]
+        self.assertAlmostEqual(reciprocal_rank_fusion(sparse_hits, [])[0].score, 1 / 61)
+
+    def test_top_k_and_empty_inputs(self) -> None:
+        self.assertEqual(len(reciprocal_rank_fusion(ranked("bm25", "a", "b", "c"), ranked("dense", "d"), top_k=2)), 2)
+        self.assertEqual(reciprocal_rank_fusion([], []), [])
+        self.assertEqual([h.passage_id for h in reciprocal_rank_fusion([], ranked("dense", "d", "e"))], ["d", "e"])
+
+    def test_inputs_not_modified(self) -> None:
+        sparse_hits = ranked("bm25", "a", "b")
+        before = list(sparse_hits)
+        reciprocal_rank_fusion(sparse_hits, ranked("dense", "b"))
+        self.assertEqual(sparse_hits, before)
+        self.assertEqual(sparse_hits[0].stage, "bm25")
+
+    def test_invalid_arguments(self) -> None:
+        hits = ranked("bm25", "a")
+        for kwargs in ({"k": -1}, {"weights": (-1.0, 1.0)}, {"weights": (0.0, 0.0)}, {"weights": (1.0,)}):
+            with self.subTest(**kwargs), self.assertRaises(ValueError):
+                reciprocal_rank_fusion(hits, [], **kwargs)
+        with self.assertRaisesRegex(ValueError, "1-based"):
+            reciprocal_rank_fusion([replace(hits[0], rank=0)], [])
 
 
 class CategoryTokenTest(unittest.TestCase):

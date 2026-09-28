@@ -78,6 +78,17 @@ Implementation notes:
 - Support a weighted variant (config `fusion.weights`) as an ablation comparison
 - Output the sorted, deduplicated top-50 (cross-path merging happens here; see pipeline)
 
+Implementation notes:
+- `reciprocal_rank_fusion(sparse_hits, dense_hits, k, weights, top_k)`: one entry per passage_id,
+  score = Σ w / (k + rank), rank 1..n, stage `"hybrid"`, other fields from the first input hit
+- Only ranks are read, never scores: BM25 (0 to 20+) and cosine (~0.3-0.9) need no normalization,
+  and any order-preserving rescaling of either list gives the same fusion (tested)
+- A duplicate within one list counts once at its best rank; a list with weight 0 adds no
+  candidates; ties go to the better single rank, then passage_id (reproducible runs)
+- Invalid `k` (< 0), ranks (< 1) or weights (negative, both 0, not two values) raise ValueError
+- Verified on the local KB sample: sparse and dense top-50 share 22 passages for a Transformer
+  query; fusing takes ~0.3 ms and the passages both retrievers rank highly come out on top
+
 ### rerank.py — Reranking (D8)
 - BGE-reranker-v2-m3 cross-encoder; top-50 → top-10
 - Scoring pairs: (query, passage.text); output the reranked list + rerank scores
