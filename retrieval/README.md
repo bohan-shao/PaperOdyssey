@@ -13,6 +13,16 @@ toggleable (EVALUATION.md §2).
 - `RetrievalFilters`: year_min / year_max / categories
 - `RetrieveResult`: hits + latency_ms + per-stage breakdown (needed for Q2 timing and report performance)
 
+### lookup.py — Lookup store (D28)
+- `data/indices/lookup.sqlite` (config `retrieval.lookup.db_file`), built by `scripts/build_indexes.py`
+  from the same `passages.jsonl` + `sections.jsonl` as the indexes; rebuild = temp file + atomic replace
+- Tables `passages` (SCHEMA.md §2 columns, keyed by `passage_id`) and `sections` (keyed by `parent_section_id`)
+- `get_lookup_store().hydrate([(passage_id, score), ...], stage)` → `ScoredPassage` list, ranks 1..n;
+  sparse and dense both return hits through this
+- `with_parent_text(hits)`: parent-document mode, swaps in the section text, `passage_id` keeps the child
+- Primary-key lookups only (not retrieval); an id missing from the store raises (indexes and store out of sync)
+- Verified on the local KB sample (1,997 passages): build 0.03 s, 7 MB; hydrating 50 hits + 10 parent swaps ≈ 0.3 ms
+
 ### sparse.py — Sparse (D5)
 - Build a Lucene BM25 index with Pyserini (`data/indices/bm25/`); indexed fields: text + metadata
   (year/categories as filter fields)
@@ -20,6 +30,21 @@ toggleable (EVALUATION.md §2).
 - Return top-k (default 50, before reranking) with raw BM25 scores
 - Fallback: if Java is unavailable → rank-bm25 (already listed in `requirements.txt`), note it in the report
 - Forbidden: SQL-LIKE retrieval
+
+Implementation notes:
+- Index layout: `data/indices/bm25/meta.json` (backend, doc count) + `lucene/` (Pyserini) or
+  `rankbm25.pkl`; opening an index built by the other backend raises
+- Pyserini: Anserini's default English analyzer (Porter, stopwords), BM25 `k1=0.9, b=0.4`
+  (config `retrieval.sparse.bm25`); queries go through Anserini's bag-of-words generator, so
+  punctuation in LLM-written sub-queries cannot break query parsing
+- Filters are Lucene FILTER clauses on the extra `year` / `categories` fields: they restrict the
+  candidates and leave scores unchanged. Categories are indexed as `cs_cl`-style tokens, because
+  the analyzer splits `q-bio.NC` at the hyphen and stems `eess.AS` to `eess.a`
+- rank-bm25: lowercase alphanumeric tokens, no stemming/stopwords (scores differ from Lucene);
+  the pickle is held in memory and every query scores all passages in Python, so it is only
+  practical on small corpora
+- Verified on the local KB sample (1,997 passages): Pyserini build 6.5 s, 444 KB;
+  warm top-50 query ≈ 2.6 ms including lookup hydration (first query ≈ 50 ms, JVM warm-up)
 
 ### dense.py — Dense (D6)
 - Encoding model: BGE-large-en-v1.5 (sentence-transformers); the model name is config-replaceable
@@ -30,15 +55,58 @@ toggleable (EVALUATION.md §2).
 - Encoding: batched (config `retrieval.dense.batch_size`); fp16 available on A40; record total encoding time
 - Query: encode the query (same model, same prefix) → FAISS search → cosine similarity scores
 
+Implementation notes:
+- Index layout: `data/indices/faiss/index.faiss` (IndexHNSWFlat, inner product on unit vectors, so
+  score = cosine; the file also holds the float32 vectors), `mapping.jsonl` (row → passage_id,
+  year, categories), `meta.json` (model, dim, HNSW params, query instruction, faiss version);
+  opening an index built with another model or dim raises
+- Build streams passages in chunks of 16k (encode → add), so texts are never all in memory;
+  encoding and HNSW insertion times are reported separately in the build report
+- Filters use a FAISS ID selector during the search (same semantics as sparse, never a post-cut):
+  selections of ≤ `retrieval.dense.filter_exact_max` passages (default 50k) are searched exactly
+  over the stored vectors, because HNSW with a selective filter returns too few hits (in a check
+  keeping 3 of 100 vectors it found only 1); larger selections use HNSW + selector with an exact
+  fallback if it comes back short
+- The query encoder is behind a lock (HF fast tokenizers are not thread-safe); the retriever
+  encodes a warm-up query on open so the first CUDA call is not in the measured latency
+- Verified on the local KB sample (1,997 passages, RTX 5070, fp16): encoding 11.7 s (~170/s,
+  so roughly 1-1.5 h for the full ~800k), index 8.9 MB; warm top-50 query ≈ 15 ms including
+  query encoding and hydration
+
 ### fusion.py — Hybrid fusion (D7)
 - RRF: `score = Σ 1/(k + rank_i)`, k=60 (config-adjustable); sparse and dense each feed in their top-50
 - Support a weighted variant (config `fusion.weights`) as an ablation comparison
 - Output the sorted, deduplicated top-50 (cross-path merging happens here; see pipeline)
 
+Implementation notes:
+- `reciprocal_rank_fusion(sparse_hits, dense_hits, k, weights, top_k)`: one entry per passage_id,
+  score = Σ w / (k + rank), rank 1..n, stage `"hybrid"`, other fields from the first input hit
+- Only ranks are read, never scores: BM25 (0 to 20+) and cosine (~0.3-0.9) need no normalization,
+  and any order-preserving rescaling of either list gives the same fusion (tested)
+- A duplicate within one list counts once at its best rank; a list with weight 0 adds no
+  candidates; ties go to the better single rank, then passage_id (reproducible runs)
+- Invalid `k` (< 0), ranks (< 1) or weights (negative, both 0, not two values) raise ValueError
+- Verified on the local KB sample: sparse and dense top-50 share 22 passages for a Transformer
+  query; fusing takes ~0.3 ms and the passages both retrievers rank highly come out on top
+
 ### rerank.py — Reranking (D8)
 - BGE-reranker-v2-m3 cross-encoder; top-50 → top-10
 - Scoring pairs: (query, passage.text); output the reranked list + rerank scores
 - Record latency (~100–300ms for 50 pairs on A40)
+
+Implementation notes:
+- `Reranker`: sentence-transformers CrossEncoder, fp16 on CUDA, pairs truncated to
+  `retrieval.rerank.max_length` (512); score = sigmoid of the logit, in [0, 1]; model behind a
+  lock (tokenizers are not thread-safe); warm-up pair on load
+- `rank_by_scores` is the ordering step on its own: new score descending, ties by fused rank;
+  passage_id / paper_id / text / metadata kept, rank 1..k, stage `"rerank"`
+- Parent-document mode is applied by the pipeline after reranking (`lookup.with_parent_text`),
+  not inside rerank: the cross-encoder always scores the child text, and the swap also works in
+  the hybrid-without-rerank ablation row
+- Verified on the local KB sample (RTX 5070, fp16): pairs are ~400 tokens (p90 460, almost
+  never truncated); 50 pairs ≈ 380 ms, 10 pairs ≈ 76 ms (compute-bound, linear in pairs;
+  an A40 should land in the 100-300 ms budget). Reranking reorders strongly, e.g. fused rank
+  26 → 1 for an uncertainty-quantification query
 
 ### pipeline.py — Unified entry point (interface discipline)
 ```python
@@ -49,6 +117,27 @@ def retrieve(query: str, filters: RetrievalFilters | None = None,
 - All toggles come from config: `retrieval.{sparse,dense,fusion,rerank}.enabled` (ablation matrix)
 - Must record per-stage latency (sparse_ms/dense_ms/fusion_ms/rerank_ms/total_ms)
 - The orchestration layer may only call `retrieve()`; evaluation scripts may only call it too (to keep ablations fair)
+
+Implementation notes:
+- Switches are followed literally, with no hidden coupling: one retriever on → its list goes
+  straight to rerank / the top_k cut (so the BM25-only and dense-only rows also set
+  `rerank.enabled=false`, see EVALUATION.md §2); `fusion.top_k` (50) candidates go to the reranker;
+  `top_k` defaults to `rerank.top_k` (10); `filters.enabled=false` drops the filters argument
+- Parent-document mode is the last step (`lookup.with_parent_text`), after rerank or the cut, so
+  the cross-encoder scores child text and the swap works with rerank on or off
+- Hit stage = configuration level (`bm25` / `dense` / `hybrid` / `rerank`); `latency_ms` has
+  one entry per stage that ran (+ `parent_ms`, `total_ms`); `total_candidates` = list size before rerank
+- Sparse runs on a worker thread while dense runs on the calling thread (`retrieval.parallel`)
+- Enabled components are loaded one at a time under one lock on first use: pyserini and
+  sentence-transformers both import transformers, and two threads doing that at once fail with
+  `cannot import name 'AutoTokenizer'` (found on the real stack; orchestration's concurrent
+  first calls hit it too). `warm_up()` loads everything ahead of the first query
+- Any failure in an enabled stage raises RuntimeError naming the stage (no silent fallback that
+  would turn one ablation row into another)
+- Verified on the local KB sample (RTX 5070), median warm latency: BM25-only 4 ms, dense-only
+  11 ms, hybrid 14 ms (sparse and dense overlap), hybrid + rerank 413 ms (rerank 388 ms);
+  6 concurrent cold-start calls load everything once and match serial results. The reranker is
+  serialized by its lock, so concurrent sub-queries queue on it (6 warm calls: 2.3 s)
 
 ## Ablation Checklist (EVALUATION.md §2–§3)
 1. Four-level matrix: bm25 / dense / hybrid / hybrid+rerank

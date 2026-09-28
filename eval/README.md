@@ -28,6 +28,22 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are parked 
 - Output: `data/eval/eval_set.jsonl` (SCHEMA.md §7)
 - IAA computation: `eval/annotation/iaa.py` (Fleiss' kappa + percentage agreement)
 
+### latency.py — Retrieval-core latency benchmark (Q2, EVALUATION.md §7)
+- Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100]` (needs the built
+  indexes and models) → `data/results/metrics/latency_retrieval_<date>.json` + a summary table
+- Times `retrieve()` only (no LLM stages), warm, over paper titles sampled from papers.sqlite
+  (seeded): per-stage p50/p95 for the four ablation rows + filtered + parent-doc, the DESIGN §4
+  budget check (hybrid+rerank p95 < 500 ms), throughput at 1/4/8 concurrent callers, an efSearch
+  sweep (HNSW time + recall@50 vs exact search) and a rerank-depth sweep (time + top-10
+  agreement with depth 50); cold-start load time is reported separately
+- Configurations are switched in memory, never in config.yaml; every row sets all switches
+- Percentiles: linear interpolation between ranks (numpy's default)
+- First run on the 50-paper sample (RTX 5070): hybrid+rerank p95 410 ms (within budget, rerank
+  ≈ 95% of it); throughput flat at ~2.6 qps from 1 to 8 callers (the reranker runs one call at a
+  time, so concurrent sub-queries only queue); efSearch 128 → recall@50 0.998; rerank depth
+  costs ~7.8 ms per pair (depth 30: 232 ms, top-10 agreement 0.77). Rerun after the full KB build
+  before citing numbers: BM25 and HNSW times grow with the corpus
+
 ## Parked (come back with the downstream task, Q4)
 
 - **Generation metrics** (ROUGE/BERTScore) and **RAGAS** (faithfulness / answer relevance /

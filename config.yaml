@@ -70,11 +70,14 @@ kb:
 
 # ---- retrieval/ retrieval core (ablation matrix changes go here) ----
 retrieval:
+  lookup:
+    db_file: lookup.sqlite      # passage/section records by id (under paths.indices), hydrates BM25/FAISS hits
   sparse:
     enabled: true
     backend: pyserini           # pyserini | rankbm25 (fallback if Java is unavailable)
     top_k: 50                   # candidate count per retrieval channel before fusion
     index_dir: indices/bm25
+    bm25: {k1: 0.9, b: 0.4}     # Anserini defaults; used by both backends
   dense:
     enabled: true
     model_name: BAAI/bge-large-en-v1.5
@@ -83,13 +86,18 @@ retrieval:
     faiss_dir: indices/faiss
     hnsw: {M: 32, efConstruction: 200, efSearch: 128}
     top_k: 50
+    filter_exact_max: 50000     # filtered searches keeping <= this many passages are exact (HNSW misses hits on small selections)
   fusion:
     rrf_k: 60
     weights: [1.0, 1.0]         # [sparse, dense]
+    top_k: 50                   # fused candidates kept (the reranker's input)
   rerank:
     enabled: true
     model_name: BAAI/bge-reranker-v2-m3
     top_k: 10
+    max_length: 512             # (query, passage) tokens per pair; longer pairs are truncated
+    batch_size: 64
+    fp16: true
   parent_doc:
     enabled: false              # Q3 ablation: parent-document retrieval
   filters:

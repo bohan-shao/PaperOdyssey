@@ -23,8 +23,8 @@ Both run on the same evaluation set.
 
 | Configuration | Switch (config.yaml) |
 |---|---|
-| BM25 only | `retrieval.sparse.enabled=true, dense.enabled=false` |
-| Dense only | reverse of the above |
+| BM25 only | `retrieval.sparse.enabled=true, dense.enabled=false, rerank.enabled=false` |
+| Dense only | `retrieval.sparse.enabled=false, dense.enabled=true, rerank.enabled=false` |
 | Hybrid (RRF) | both on, `rerank.enabled=false` |
 | Hybrid + rerank | everything on (system default) |
 
