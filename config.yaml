@@ -40,10 +40,15 @@ kb:
     min_font_ratio: 0.9        # R3: drop lines smaller than this x body font (footnotes, figure labels)
     heading_size_delta: 0.8    # heading = bold or font >= body + delta (plus numbered/known-word pattern)
     header_footer_min_ratio: 0.3   # R2: margin lines repeated on >= this share of pages (0.3 catches odd/even headers)
-    margin_ratio: 0.1          # R2: top/bottom page share treated as header/footer zone
-    drop_sections: [acknowledgments, acknowledgements, acknowledgment, acknowledgement,
-                    author contributions, funding, ethics statement, broader impact,
-                    reproducibility statement]
+    margin_ratio: 0.12         # R2: top/bottom page share treated as header/footer zone
+    drop_sections: [acknowledgments, acknowledgements, acknowledgment, acknowledgement, acknowledge,
+                    acknowledgments and disclosure of funding, acknowledgements and disclosure of funding,
+                    author contributions, funding, ethics statement, ethical statement,
+                    ethical considerations, ethical consideration, broader impact, broader impacts,
+                    impact statement, reproducibility statement, declarations, conflict of interest,
+                    conflicts of interest, competing interests, declaration of competing interest,
+                    declaration of interests, data availability, data availability statement,
+                    code availability]   # R6: statements, not paper content
     front_matter_max_words: 400   # R5: longer text before the first heading is kept, not dropped
     min_words: 500             # quality check: fewer words -> paper excluded
     max_bad_char_ratio: 0.02   # quality check: broken-glyph share above this -> excluded

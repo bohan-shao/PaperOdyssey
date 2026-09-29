@@ -5,7 +5,8 @@ Usage:
         [--chunk-mode section_fixed|semantic] [--passages-file NAME] [--stats-only]
 
 Pipeline (per paper, parallel over processes):
-    kb.parse.parse_pdf -> kb.parse.quality_check -> (+ metadata abstract if no Abstract section)
+    kb.parse.parse_pdf -> kb.parse.quality_check -> (+ metadata abstract if no Abstract section; the
+    paper's own copy is then dropped from leading front matter, kb.parse.drop_leading_abstract)
     -> kb.chunk.chunk_section_fixed | chunk_semantic -> kb.store.write_passages / write_parents
     -> kb.store.set_num_chunks; finally kb.stats.compute_corpus_stats -> results/corpus_stats.json
 
@@ -44,7 +45,7 @@ from tqdm import tqdm  # noqa: E402
 from config import PROJECT_ROOT, get_config  # noqa: E402
 from kb import chunk, store  # noqa: E402
 from kb.fetch import read_metadata_csv  # noqa: E402
-from kb.parse import ParseOptions, PDFParseError, parse_pdf, quality_check  # noqa: E402
+from kb.parse import ParseOptions, PDFParseError, drop_leading_abstract, parse_pdf, quality_check  # noqa: E402
 from kb.stats import compute_corpus_stats, write_stats_report  # noqa: E402
 
 log = logging.getLogger("build_kb")
@@ -65,9 +66,14 @@ def process_paper(row: dict, raw_dir: str, cfg: dict, mode: str) -> dict:
     if not quality["ok"]:
         return {"paper_id": row["paper_id"], "error": "quality check failed", "quality": quality}
 
-    # The metadata abstract is authoritative; add it when the parser found no Abstract section.
+    # The metadata abstract is authoritative; add it when the parser found no Abstract section
+    # (and drop the paper's own copy from leading front matter, so it is not there twice).
     if row.get("abstract") and not any(s["section"].lower() == "abstract" for s in sections):
-        sections = [{"section": "Abstract", "text": row["abstract"]}, *sections]
+        try:
+            rest = drop_leading_abstract(sections, row["abstract"])
+        except Exception:  # noqa: BLE001 (a cleanup step must not stop the build; keep the text as parsed)
+            rest = sections
+        sections = [{"section": "Abstract", "text": row["abstract"]}, *rest]
 
     meta = {k: row.get(k) for k in ("arxiv_id", "title", "year", "categories")}
     ch = kb["chunk"]
@@ -215,6 +221,7 @@ def main() -> None:
             store.reset_jsonl(passages_path)
             if not ablation:  # an ablation rebuild must not wipe the baseline's shared outputs
                 store.reset_jsonl(sections_path)
+                store.reset_num_chunks(sqlite_path)  # counted again as papers are built (failed/skipped stay 0)
                 for f in (failures_path, results / "parse_quality.jsonl", qa_path):
                     f.unlink(missing_ok=True)
         if args.retry_failed:

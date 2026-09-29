@@ -8,7 +8,7 @@
 - `write_parents` / `iter_parents` / `load_parents`: the same for `sections.jsonl`
   (parent-document units, D22).
 - `iter_passages(path)`: generator (retrieval builds its indices from this).
-- `init_sqlite` / `upsert_papers` / `load_paper` / `set_num_chunks`: papers table per
+- `init_sqlite` / `upsert_papers` / `load_paper` / `set_num_chunks` / `reset_num_chunks`: papers table per
   SCHEMA.md section 3; upsert keyed on paper_id and only overwrites the columns provided, so
   metadata upserts never reset num_chunks and vice versa. Batched executemany transactions.
 
@@ -210,6 +210,13 @@ def upsert_papers(rows: list[dict], path: str | Path) -> None:
 def set_num_chunks(counts: dict[str, int], path: str | Path) -> None:
     """Record chunk counts per paper after chunking."""
     upsert_papers([{"paper_id": pid, "num_chunks": n} for pid, n in counts.items()], path)
+
+
+def reset_num_chunks(path: str | Path) -> None:
+    """Set every paper's num_chunks to 0 (a rebuild counts them again as papers are built)."""
+    if Path(path).exists():
+        with _connect(path) as conn:
+            conn.execute("UPDATE papers SET num_chunks = 0")
 
 
 def load_paper(paper_id: str, path: str | Path) -> dict | None:
