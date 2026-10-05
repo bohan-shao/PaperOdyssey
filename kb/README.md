@@ -61,10 +61,12 @@ python scripts/build_kb.py
 python scripts/download_papers.py --metadata-only          # one person: ~40 min arXiv + OpenAlex
 #   -> share data/raw/metadata.csv (Dropbox); every member downloads from the SAME file:
 python scripts/download_papers.py --shard 0/3              # member 1 (1/3, 2/3 for the others), ~6 h each
-#   -> collect all PDFs into one data/raw/pdf/, then on that machine:
+#   -> either collect all PDFs into one data/raw/pdf/, then on that machine:
 python scripts/download_papers.py --resume                 # records every pdf_path, retries failures
 python scripts/build_kb.py                                 # ~30 min with 4 workers; resumable
 python scripts/build_kb.py --stats-only                    # recompute results/corpus_stats.json
+#   -> or each member builds their own shard (build_kb.py --rebuild) and the shards are merged:
+python scripts/merge_kb_shards.py --out merged/data shard0/data shard1/data shard2/data
 
 # Q3 ablation A (semantic chunking, D21; needs sentence-transformers). Baseline files are left alone
 python scripts/build_kb.py --chunk-mode semantic --passages-file passages_semantic.jsonl
@@ -166,6 +168,13 @@ Fixes from the review of PR #12 (DESIGN.md D34), measured on a full rebuild agai
 with: 2 of 6,643 papers changed, both keeping text they lost with the abstract copy before (1804.10390: the
 first 163 words of its introduction; 2403.09718: its introduction's first sentence and a 9-word keyword line);
 the reference-list fix changed no paper of this shard; the 50 QA papers are unchanged. Indexes built from an earlier output of this parser (`scripts/build_indexes.py`) must be rebuilt.
+
+Shard 1/3 (built on 2026-10-02 by a second member with the same code, pymupdf 1.28.2 and tiktoken 0.14.0, on
+Python 3.14): 6,652 PDFs (15 not on arXiv), 6,649 built, 3 rejected by the quality check, 218,900 passages,
+100,491 sections; its metadata.csv is the shared selection with PDFs only in its own rows. The same hard checks
+pass, 20 of its PDFs re-parsed on the machine that built shard 0 give byte-identical passages and sections, and
+no character in its text is treated differently by Python 3.11 and 3.14 (letter class, category, NFKC).
+Merged with shard 0 (`merge_kb_shards.py`): 13,292 papers, 436,195 passages, 200,665 sections, all checks pass.
 
 How the rules were checked: every paper whose section names changed between successive full builds
 was listed and reviewed (311, then 116); random samples of 500-900 papers were re-parsed after each
