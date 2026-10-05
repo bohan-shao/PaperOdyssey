@@ -102,7 +102,6 @@ def main() -> None:
     stats["chunking"] = {"mode": "section_fixed", **{k: kb["chunk"].get(k) for k in (
         "chunk_tokens", "overlap_tokens", "min_new_tokens", "tokenizer", "tiktoken_encoding", "prefix")}}
     stats["pipeline"] = _parse_summary(out / "raw", stats["n_documents"])
-    stats["shards"] = [str(s) for s in args.shards]
     write_stats_report(stats, out / "results" / kb["stats"]["out_file"])
     pipe = stats["pipeline"]
     print(f"merged {len(args.shards)} shards: {pipe['papers_selected']} selected -> {pipe['pdfs_available']} PDFs -> "
