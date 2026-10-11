@@ -29,6 +29,7 @@ include date/category constraints in their question for the existing query plann
 - Search cache remains owned by `run_query`. QA results stay in session state and can be
   downloaded as JSON; the UI does not write them to disk automatically.
 - Latency/timing display reads `latency_by_stage` directly (source of Q2 timing data)
-- Run `bash scripts/run_ui.sh`. Live requests require the completed retrieval module and
-  built indices; the current retrieval stub is surfaced as an error, not a generated answer.
+- Run `bash scripts/run_ui.sh`. Live requests require processed passages, built indices
+  (`scripts/build_indexes.py`), and an LLM key; a missing index or lookup store is surfaced as
+  an actionable error, not a generated answer.
 - Test interactions offline with `python -m unittest tests.test_ui -v`.
