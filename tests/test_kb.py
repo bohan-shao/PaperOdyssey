@@ -655,6 +655,33 @@ class ChunkTest(unittest.TestCase):
         self.assertGreater(len(ps), 2)
         self.assertEqual([p["chunk_index"] for p in ps], list(range(len(ps))))
 
+    def test_semantic_batch_equals_one_paper_at_a_time(self) -> None:
+        import numpy as np
+
+        calls: list[int] = []
+
+        def embed(sents: list[str]) -> np.ndarray:
+            calls.append(len(sents))
+            return np.array([[1.0, 0.0] if "retriever" in s else [0.0, 1.0] for s in sents])
+
+        papers = [("2401.00001", self.sections, META), ("2401.00002", [{"section": "", "text": "One short sentence."}], META),
+                  ("2401.00003", list(reversed(self.sections)), {**META, "title": "Another"})]
+        batch = chunk.chunk_semantic_batch(papers, 0.5, 10, 200, tokenizer=self.tok, embed_fn=embed)
+        self.assertEqual(len(calls), 1)  # one embedding call for the whole batch
+        alone = [chunk.chunk_semantic(pid, secs, 0.5, 10, 200, meta=meta, tokenizer=self.tok, embed_fn=embed)
+                 for pid, secs, meta in papers]
+        self.assertEqual(batch, alone)
+        self.assertEqual(batch[1][0]["text"], "[A Test Paper] Body\nOne short sentence.")
+
+    def test_sections_from_parents_inverts_parent_records(self) -> None:
+        sections = [*self.sections, {"section": "", "text": "Unnamed text.\nSecond paragraph."}]
+        parents = chunk.build_parent_records("2401.00001", sections, meta=META)
+        self.assertEqual(chunk.sections_from_parents(list(reversed(parents))), sections)
+        with self.assertRaises(ValueError):  # another prefix format than the one the records were built with
+            chunk.sections_from_parents(parents, prefix_fmt="{title} / {section}")
+        with self.assertRaises(ValueError):  # a section missing
+            chunk.sections_from_parents(parents[1:])
+
     def test_parent_records_and_map(self) -> None:
         ps = chunk.chunk_section_fixed("2401.00001", self.sections, 120, 40, meta=META)
         parents = chunk.build_parent_records("2401.00001", self.sections, meta=META)
@@ -841,6 +868,146 @@ class BuildTest(unittest.TestCase):
             def other_chunking(d: Path) -> None:
                 (d / "results/corpus_stats.json").write_text(json.dumps({"chunking": {**chunking, "chunk_tokens": 300}}))
             refused("other-chunking", [s0, changed("chunking", other_chunking)])
+
+
+class RechunkTest(unittest.TestCase):
+    """Passages from sections.jsonl (no PDFs, D36) equal the passages chunked from the parsed sections."""
+
+    def setUp(self) -> None:
+        from config import get_config
+
+        self.cfg = get_config()
+        self.papers = [(f"2401.0000{k}", [{"section": "Intro", "text": BODY * (k + 1)}, {"section": "", "text": BODY}],
+                        {**META, "title": f"Paper {k}"}) for k in range(3)]
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        for pid, secs, meta in self.papers:
+            store.write_parents(chunk.build_parent_records(pid, secs, meta=meta), self.dir / "sections.jsonl")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    @staticmethod
+    def embed(sents: list[str]):
+        import numpy as np
+
+        return np.array([[1.0, 0.0] if "retriever" in s else [0.0, 1.0] for s in sents])
+
+    def test_section_fixed_from_sections_equals_the_build(self) -> None:
+        from kb import rechunk
+
+        ch = self.cfg["kb"]["chunk"]
+        out = self.dir / "passages_check.jsonl"
+        res = rechunk.rechunk_from_sections(self.dir / "sections.jsonl", out, self.cfg, "section_fixed", batch_papers=2)
+        expected = [p for pid, secs, meta in self.papers for p in chunk.chunk_section_fixed(
+            pid, secs, ch["chunk_tokens"], ch["overlap_tokens"], meta=meta, min_new_tokens=ch["min_new_tokens"])]
+        self.assertEqual(list(store.iter_passages(out)), expected)
+        self.assertEqual((res["papers"], res["passages"], res["skipped"]), (3, len(expected), 0))
+        self.assertEqual(rechunk.paper_count(self.dir / "sections.jsonl"), 3)
+
+    def test_semantic_from_sections_and_resume(self) -> None:
+        from kb import rechunk
+
+        ch = self.cfg["kb"]["chunk"]
+        out = self.dir / "passages_semantic.jsonl"
+        rechunk.rechunk_from_sections(self.dir / "sections.jsonl", out, self.cfg, "semantic", embed_fn=self.embed)
+        full = out.read_bytes()
+        expected = [p for pid, secs, meta in self.papers for p in chunk.chunk_semantic(
+            pid, secs, ch["semantic_threshold"], ch["semantic_min_tokens"], ch["semantic_max_tokens"], meta=meta,
+            embed_fn=self.embed)]
+        self.assertEqual(list(store.iter_passages(out)), expected)
+
+        # an interrupted run: the last paper incomplete and a torn line; the rerun rebuilds only that paper
+        lines = full.splitlines(keepends=True)
+        last = [i for i, line in enumerate(lines) if json.loads(line)["paper_id"] == "2401.00002"]
+        self.assertGreater(len(last), 1)
+        out.write_bytes(b"".join(lines[:last[1]]) + b'{"paper_id": "2401.0')
+        store._paper_ids_cache.clear()
+        res = rechunk.rechunk_from_sections(self.dir / "sections.jsonl", out, self.cfg, "semantic", embed_fn=self.embed)
+        self.assertEqual((res["papers"], res["skipped"]), (1, 2))
+        self.assertEqual(out.read_bytes(), full)
+
+    def test_sections_of_a_paper_not_together(self) -> None:
+        from kb import rechunk
+
+        pid, secs, meta = self.papers[0]
+        store.write_parents(chunk.build_parent_records(pid, secs, meta=meta), self.dir / "s2.jsonl")
+        with (self.dir / "s2.jsonl").open("a") as fh:
+            for r in chunk.build_parent_records("X", secs, meta=meta)[:1] + chunk.build_parent_records(pid, secs, meta=meta)[:1]:
+                fh.write(json.dumps(r) + "\n")
+        store._paper_ids_cache.clear()
+        with self.assertRaises(ValueError):
+            rechunk.rechunk_from_sections(self.dir / "s2.jsonl", self.dir / "p2.jsonl", self.cfg, "section_fixed")
+
+    def _build_kb(self, *argv: str) -> None:
+        """Run scripts/build_kb.py main() on self.dir/{raw,processed,results}, encoder stubbed."""
+        import contextlib
+        import copy
+        import importlib.util
+        import io
+        import sys
+        from unittest import mock
+
+        from config import PROJECT_ROOT
+        spec = importlib.util.spec_from_file_location("build_kb", PROJECT_ROOT / "scripts" / "build_kb.py")
+        build_kb = importlib.util.module_from_spec(spec)
+        sys.modules["build_kb"] = build_kb
+        spec.loader.exec_module(build_kb)
+        cfg = copy.deepcopy(self.cfg)
+        cfg["paths"] = {k: str(self.dir / k) for k in ("raw", "processed", "results")}
+
+        class Encoder:
+            device = "cpu"
+
+            def encode(self, sents, **kw):
+                return RechunkTest.embed(sents)
+
+        with mock.patch.object(build_kb, "get_config", return_value=cfg), \
+                mock.patch.object(chunk, "_sentence_encoder", return_value=Encoder()), \
+                mock.patch.object(build_kb.logging, "basicConfig"), \
+                mock.patch.object(sys, "argv", ["build_kb.py", *argv]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            build_kb.main()
+
+    def _layout(self) -> None:
+        for k in ("raw", "processed", "results"):
+            (self.dir / k).mkdir()
+        (self.dir / "sections.jsonl").rename(self.dir / "processed" / "sections.jsonl")
+
+    def test_build_kb_from_sections_keeps_the_baseline(self) -> None:
+        """`build_kb.py --from-sections --passages-file` writes only its passages file and its own stats file."""
+        self._layout()
+        before = {f.name: f.read_bytes() for f in (self.dir / "processed").iterdir()}
+        self._build_kb("--from-sections", "--chunk-mode", "semantic", "--passages-file", "passages_semantic.jsonl")
+        after = {f.name for f in (self.dir / "processed").iterdir()}
+        self.assertEqual(after, {*before, "passages_semantic.jsonl"})
+        self.assertEqual({f: (self.dir / "processed" / f).read_bytes() for f in before}, before)
+        self.assertEqual({f.name for f in (self.dir / "results").iterdir()}, {"corpus_stats_semantic.json"})
+        stats_out = json.loads((self.dir / "results" / "corpus_stats_semantic.json").read_text())
+        self.assertEqual(stats_out["n_documents"], 3)
+        self.assertEqual({k: stats_out["chunking"][k] for k in ("mode", "semantic_threshold", "source", "embedding_device")},
+                         {"mode": "semantic", "semantic_threshold": 0.55, "source": "sections.jsonl", "embedding_device": "cpu"})
+
+    def test_build_kb_from_sections_rebuilds_the_baseline(self) -> None:
+        """Without --passages-file, `--from-sections --rebuild` writes passages.jsonl and num_chunks again."""
+        self._layout()
+        ch = self.cfg["kb"]["chunk"]
+        db = self.dir / "processed" / self.cfg["kb"]["store"]["sqlite_file"]
+        store.upsert_papers([{"paper_id": pid, "arxiv_id": pid, "title": meta["title"], "year": 2024, "categories": ["cs.CL"],
+                              "pdf_path": f"pdf/{pid}.pdf", "source": "arxiv"} for pid, _, meta in self.papers] +
+                            [{"paper_id": "F", "arxiv_id": "F", "title": "Failed", "year": 2024, "categories": ["cs.CL"],
+                              "pdf_path": "pdf/F.pdf", "source": "arxiv"}], db)
+        store.set_num_chunks({"2401.00000": 99, "F": 5}, db)  # stale counts
+        store.write_passages([{"paper_id": "2401.00000", "passage_id": "old", "text": "old"}], self.dir / "processed/passages.jsonl")
+        sections_before = (self.dir / "processed/sections.jsonl").read_bytes()
+        self._build_kb("--from-sections", "--rebuild")
+        expected = {pid: chunk.chunk_section_fixed(pid, secs, ch["chunk_tokens"], ch["overlap_tokens"], meta=meta,
+                                                   min_new_tokens=ch["min_new_tokens"]) for pid, secs, meta in self.papers}
+        self.assertEqual(list(store.iter_passages(self.dir / "processed/passages.jsonl")), [p for ps in expected.values() for p in ps])
+        self.assertEqual({pid: store.load_paper(pid, db)["num_chunks"] for pid in [*expected, "F"]},
+                         {**{pid: len(ps) for pid, ps in expected.items()}, "F": 0})
+        self.assertEqual((self.dir / "processed/sections.jsonl").read_bytes(), sections_before)
+        self.assertEqual({f.name for f in (self.dir / "results").iterdir()}, {"corpus_stats.json"})
 
 
 class StatsTest(unittest.TestCase):
