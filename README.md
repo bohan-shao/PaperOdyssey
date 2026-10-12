@@ -1,8 +1,9 @@
 # PaperOdyssey — AI6127 Paper-QA RAG System
 
 > Course assignment: AI6127 Deep Neural Networks for NLP (2026). Deadline **2026-11-07 23:59 SGT**, submit via Blackboard.
-> Current status: KB, LLM client, orchestration, cited paper QA, and a minimal UI are implemented.
-> Retrieval and evaluation still contain stubs; real indexed end-to-end QA awaits retrieval integration.
+> Current status: KB, retrieval core, LLM client, orchestration, cited paper QA, and a minimal UI are implemented.
+> Evaluation still contains stubs (retrieval/review metrics, IAA, `scripts/run_eval.py`); generation/RAGAS metrics
+> and a live end-to-end QA run on the built indexes are pending.
 
 ## What the System Does
 
@@ -100,8 +101,11 @@ README.md               # conventions / git workflow / Definition of Done (below
 
 Each module's `README.md` states its **implementation requirements, constraints, and status**.
 Remaining `NotImplementedError` stubs must be completed according to those contracts.
-Start the minimal UI with `bash scripts/run_ui.sh`; live questions require the retrieval
-implementation, built indices, processed passages, and a configured LLM key.
+Start the minimal UI with `bash scripts/run_ui.sh`; live questions require processed passages,
+built indices (`scripts/build_indexes.py`), and a configured LLM key.
+
+Coding agents (Codex, Claude Code) read [AGENTS.md](AGENTS.md); `CLAUDE.md` imports it, so edit
+`AGENTS.md` only.
 
 ## Conventions
 
@@ -114,13 +118,15 @@ implementation, built indices, processed passages, and a configured LLM key.
 
 **Git workflow**: `main` is protected; feature branches `module/description`; Conventional Commits (`feat:` `fix:` `docs:` `refactor:` `chore:`); every PR needs at least 1 reviewer who is not the author; `scripts/sanity_check.py` must pass before merging.
 
-**Sanity checks** (no test framework): before any PR run `python scripts/sanity_check.py`, which verifies ① `config.yaml` loads with `${VAR}` placeholders expanded, ② every package imports cleanly, ③ schema round-trips (ScoredPassage/RetrieveResult/QueryPlan/ReviewRecord/FinalResult serialize and read back with identical fields). It needs only pyyaml (via `config.py`) — no heavy dependencies. Pipeline correctness is validated by small real runs (e.g. `--limit 100`), not mocks.
+**Sanity checks**: before any PR run `python scripts/sanity_check.py`, which verifies ① `config.yaml` loads with `${VAR}` placeholders expanded, ② every package imports cleanly, ③ schema round-trips (ScoredPassage/RetrieveResult/QueryPlan/ReviewRecord/FinalResult/EvidenceSource/DownstreamResult serialize and read back with identical fields). It needs only pyyaml (via `config.py`) — no heavy dependencies.
+
+**Tests**: offline `unittest` tests live in `tests/` (no network, no real API calls; tests whose optional dependency — Java, FAISS, cached models — is missing are skipped). Run `python -m unittest discover -s tests -t .`, or `./run_docker.sh python -m unittest discover -s tests -t .` for the full run. End-to-end pipeline behavior is still checked with small real runs (e.g. `--limit 100`), not mocks alone.
 
 **Ablation discipline** (Q3/Q5): every innovation is an enable/disable switch in `config.yaml`; ablation runs change only one switch at a time on the same evaluation set and seed; results go to `data/results/metrics/ablation_<innovation>_<date>.json` with a config snapshot and failed→succeeded query instances.
 
 **Definition of Done** — a module/feature is done only when:
 - [ ] Contract (SCHEMA.md/types.py) updated or confirmed unchanged
-- [ ] `scripts/sanity_check.py` passes
+- [ ] `scripts/sanity_check.py` passes (and relevant `tests/` pass)
 - [ ] Latency/cost recorded (when the feature touches the online path)
 - [ ] Package README implementation notes updated
 - [ ] PR passed review
