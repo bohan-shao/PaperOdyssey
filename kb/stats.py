@@ -14,10 +14,14 @@ Counting conventions (state them in the report):
   year / primary category / section-count (for report figures).
 
 Every statistic is deterministic for the same input files.
+
+Also here, for build_kb.py and the shard merge (kb/merge.py): the corpus funnel (selected -> PDFs ->
+built / failed, with reasons) and the spreadsheet of the manual parse-quality review.
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import re
 import statistics
@@ -26,7 +30,7 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
-from .store import iter_parents, iter_passages
+from .store import iter_parents, iter_passages, read_records
 
 _STRIP = re.compile(r"^[^\w]+|[^\w]+$")
 _HAS_ALNUM = re.compile(r"\w")
@@ -142,3 +146,69 @@ def write_stats_report(stats: dict, out_path: str | Path) -> None:
     print("by year:     " + ", ".join(f"{y}: {n}" for y, n in stats["by_year"].items()))
     print("by category: " + ", ".join(f"{c}: {n}" for c, n in list(stats["by_primary_category"].items())[:8]))
     print(f"written to {out}")
+
+
+_REASONS = (
+    ("quality check", "quality check failed (too short / broken glyphs)"),
+    ("encrypted", "encrypted PDF"),
+    ("no extractable text", "no text layer (image-only PDF)"),
+    ("cannot open", "corrupt PDF"),
+    ("no usable text", "no usable text after cleaning"),
+    ("no passages", "no passages produced"),
+    ("chunk:", "chunking error"),
+)
+
+
+def _failure_reason(error: str) -> str:
+    for needle, label in _REASONS:
+        if needle in error:
+            return label
+    return "other parse error"
+
+
+def parse_summary(raw: str | Path, n_documents: int) -> dict:
+    """Corpus funnel for the report: selected -> PDF available -> built / failed (with reasons).
+
+    Args:
+        raw: data/raw (metadata.csv, parse_failures.jsonl).
+        n_documents: papers built (`compute_corpus_stats(...)["n_documents"]`).
+    """
+    from .fetch import read_metadata_csv  # pandas; only needed here
+
+    raw = Path(raw)
+    summary: dict = {}
+    meta_csv = raw / "metadata.csv"
+    if meta_csv.exists():
+        meta = read_metadata_csv(meta_csv)
+        summary["papers_selected"] = len(meta)
+        summary["pdfs_available"] = int((meta["pdf_path"] != "").sum())
+    failures = {r["paper_id"]: r["error"] for r in read_records(raw / "parse_failures.jsonl")}
+    reasons = Counter(_failure_reason(e) for e in failures.values())
+    summary["papers_built"] = n_documents
+    summary["papers_failed"] = len(failures)
+    summary["failure_rate"] = round(len(failures) / max(1, n_documents + len(failures)), 4)
+    summary["failure_reasons"] = dict(reasons.most_common())
+    return summary
+
+
+def write_qa_csv(qa_jsonl: str | Path, out_csv: str | Path) -> None:
+    """Spreadsheet for the manual parse-quality review (Q1): reviewers fill in `ok` and `notes`."""
+    rows = []
+    for r in read_records(qa_jsonl):
+        q = r["quality"]
+        rows.append({
+            "paper_id": r["paper_id"],
+            "arxiv_url": f"https://arxiv.org/abs/{r['paper_id'].replace('_', '/')}",
+            "pdf_path": r["pdf_path"],
+            "word_count": q["word_count"],
+            "num_sections": q["num_sections"],
+            "sections": " | ".join(s["section"] or "(unnamed)" for s in r["sections"]),
+            "first_section_start": (r["sections"][0]["text"][:300] if r["sections"] else ""),
+            "ok": "" if r["review"]["ok"] is None else r["review"]["ok"],
+            "notes": r["review"]["notes"],
+        })
+    if rows:
+        with Path(out_csv).open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)

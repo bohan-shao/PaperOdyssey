@@ -107,6 +107,21 @@ def _iter_jsonl(path: str | Path) -> Iterator[dict]:
                 yield json.loads(line)
 
 
+def read_records(path: str | Path) -> list[dict]:
+    """All records of a small JSONL file (parse failures, quality scores, QA sample); [] if it is missing.
+    A torn line from an interrupted run is skipped."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text("utf-8").splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
 def stored_paper_ids(path: str | Path) -> set[str]:
     """paper_ids already written to a passages/sections JSONL (used to resume builds)."""
     return set(_scan_paper_ids(Path(path)))

@@ -28,13 +28,11 @@ and the parse quality/QA files keep the baseline's values.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import logging
 import random
 import sys
 import time
-from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -46,7 +44,7 @@ from config import PROJECT_ROOT, get_config  # noqa: E402
 from kb import chunk, store  # noqa: E402
 from kb.fetch import read_metadata_csv  # noqa: E402
 from kb.parse import ParseOptions, PDFParseError, drop_leading_abstract, parse_pdf, quality_check  # noqa: E402
-from kb.stats import compute_corpus_stats, write_stats_report  # noqa: E402
+from kb.stats import compute_corpus_stats, parse_summary, write_qa_csv, write_stats_report  # noqa: E402
 
 log = logging.getLogger("build_kb")
 
@@ -106,76 +104,6 @@ def _append_jsonl(path: Path, records: list[dict]) -> None:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    out = []
-    for line in path.read_text("utf-8").splitlines():
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue  # torn line from an interrupted run
-    return out
-
-
-_REASONS = (
-    ("quality check", "quality check failed (too short / broken glyphs)"),
-    ("encrypted", "encrypted PDF"),
-    ("no extractable text", "no text layer (image-only PDF)"),
-    ("cannot open", "corrupt PDF"),
-    ("no usable text", "no usable text after cleaning"),
-    ("no passages", "no passages produced"),
-    ("chunk:", "chunking error"),
-)
-
-
-def _failure_reason(error: str) -> str:
-    for needle, label in _REASONS:
-        if needle in error:
-            return label
-    return "other parse error"
-
-
-def _parse_summary(raw: Path, n_documents: int) -> dict:
-    """Corpus funnel for the report: selected -> PDF available -> built / failed (with reasons)."""
-    summary: dict = {}
-    meta_csv = raw / "metadata.csv"
-    if meta_csv.exists():
-        meta = read_metadata_csv(meta_csv)
-        summary["papers_selected"] = len(meta)
-        summary["pdfs_available"] = int((meta["pdf_path"] != "").sum())
-    failures = {r["paper_id"]: r["error"] for r in _read_jsonl(raw / "parse_failures.jsonl")}
-    reasons = Counter(_failure_reason(e) for e in failures.values())
-    summary["papers_built"] = n_documents
-    summary["papers_failed"] = len(failures)
-    summary["failure_rate"] = round(len(failures) / max(1, n_documents + len(failures)), 4)
-    summary["failure_reasons"] = dict(reasons.most_common())
-    return summary
-
-
-def _write_qa_csv(qa_jsonl: Path, out_csv: Path) -> None:
-    """Spreadsheet for the manual parse-quality review (Q1): reviewers fill in `ok` and `notes`."""
-    rows = []
-    for r in _read_jsonl(qa_jsonl):
-        q = r["quality"]
-        rows.append({
-            "paper_id": r["paper_id"],
-            "arxiv_url": f"https://arxiv.org/abs/{r['paper_id'].replace('_', '/')}",
-            "pdf_path": r["pdf_path"],
-            "word_count": q["word_count"],
-            "num_sections": q["num_sections"],
-            "sections": " | ".join(s["section"] or "(unnamed)" for s in r["sections"]),
-            "first_section_start": (r["sections"][0]["text"][:300] if r["sections"] else ""),
-            "ok": "" if r["review"]["ok"] is None else r["review"]["ok"],
-            "notes": r["review"]["notes"],
-        })
-    if rows:
-        with out_csv.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build passages.jsonl / sections.jsonl / papers.sqlite from PDFs")
     parser.add_argument("--config", default="config.yaml")
@@ -227,7 +155,7 @@ def main() -> None:
         if args.retry_failed:
             failures_path.unlink(missing_ok=True)
         done = store.stored_paper_ids(passages_path)
-        failed = {r["paper_id"] for r in _read_jsonl(failures_path)}
+        failed = {r["paper_id"] for r in store.read_records(failures_path)}
         todo = meta[~meta["paper_id"].isin(done | failed)]
         if args.limit:
             todo = todo.head(max(0, args.limit - len(done)))
@@ -237,7 +165,7 @@ def main() -> None:
         store.upsert_papers([{**r, "source": "arxiv"} for r in meta.to_dict("records")], sqlite_path)
         sections_done = store.stored_paper_ids(sections_path)
         workers = args.workers or kb.get("parse", {}).get("workers", 4)
-        qa_need = 0 if ablation else max(0, kb.get("parse", {}).get("qa_sample", 50) - len(_read_jsonl(qa_path)))
+        qa_need = 0 if ablation else max(0, kb.get("parse", {}).get("qa_sample", 50) - len(store.read_records(qa_path)))
         rng = random.Random(cfg.get("seed", 42))
         qa_ids = set(rng.sample(sorted(todo["paper_id"]), min(qa_need, len(todo))))
         n_ok = n_fail = n_chunks = 0
@@ -277,12 +205,12 @@ def main() -> None:
                  n_ok, n_chunks, n_fail, elapsed)
 
     if qa_path.exists():
-        _write_qa_csv(qa_path, qa_path.with_suffix(".csv"))
+        write_qa_csv(qa_path, qa_path.with_suffix(".csv"))
 
     stats = compute_corpus_stats(passages_path, sections_path)
     stats["chunking"] = {"mode": mode, **{k: kb["chunk"].get(k) for k in (
         "chunk_tokens", "overlap_tokens", "min_new_tokens", "tokenizer", "tiktoken_encoding", "prefix")}}
-    stats["pipeline"] = _parse_summary(raw, stats["n_documents"])
+    stats["pipeline"] = parse_summary(raw, stats["n_documents"])
     write_stats_report(stats, stats_path)
     pipe = stats["pipeline"]
     print(f"pipeline: {pipe.get('papers_selected', '?')} selected -> {pipe.get('pdfs_available', '?')} PDFs -> "
