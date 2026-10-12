@@ -90,7 +90,8 @@ _ABBREV = {
     "e.g", "i.e", "et al", "al", "etc", "fig", "figs", "eq", "eqs", "sec", "secs", "tab", "cf",
     "vs", "resp", "approx", "dr", "prof", "mr", "ms", "vol", "pp", "ref", "eds", "ed",
 }
-_SPLIT_RE = re.compile(r"(?<=[.!?])[\"')\]]?\s+(?=[\"'(\[]?[A-Z0-9])")
+# a closing quote/bracket after the stop stays with its sentence ("(see Fig. 3.) Next")
+_SPLIT_RE = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][\"')\]]))\s+(?=[\"'(\[]?[A-Z0-9])")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -104,9 +105,10 @@ def split_sentences(text: str) -> list[str]:
         buf = ""
         for piece in pieces:
             buf = f"{buf} {piece}".strip() if buf else piece.strip()
-            last = buf.rsplit(None, 1)[-1].rstrip(".").lower() if buf else ""
+            end = buf.rstrip("\"')]")  # judge the word before a closing quote/bracket
+            last = end.rsplit(None, 1)[-1].rstrip(".").lower() if end else ""
             # keep going when the "sentence" ended on an abbreviation or a single initial ("J.")
-            if last in _ABBREV or re.fullmatch(r"[a-z]", last) or buf.endswith(("et al.", "e.g.", "i.e.")):
+            if last in _ABBREV or re.fullmatch(r"[a-z]", last) or end.endswith(("et al.", "e.g.", "i.e.")):
                 continue
             out.append(buf)
             buf = ""

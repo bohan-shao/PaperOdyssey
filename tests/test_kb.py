@@ -615,6 +615,10 @@ class ChunkTest(unittest.TestCase):
             "See Fig. 3 for details.",
             "It is e.g. fast.",
         ])
+        # a closing bracket/quote after the stop stays with its sentence; the split decisions don't change
+        self.assertEqual(chunk.split_sentences('It is recurrent (see Fig. 3.) The rest. He said "yes." Then (a, b, etc.) More.'), [
+            "It is recurrent (see Fig. 3.)", "The rest.", 'He said "yes."', "Then (a, b, etc.) More.",
+        ])
 
     def test_fixed_chunking_contract(self) -> None:
         ps = chunk.chunk_section_fixed("2401.00001", self.sections, 120, 40, meta=META, tokenizer=self.tok)
