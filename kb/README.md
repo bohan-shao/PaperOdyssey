@@ -38,6 +38,11 @@ Meet the assignment's hard requirements: ≥10,000 documents, ≥100,000 words, 
 - Output: document count, chunk count, total word count (token or word; state the convention), type count (unique words)
 - Output `data/results/corpus_stats.json` + print a report table
 
+### merge.py — Merging shard builds (D35)
+- `merge_shards(shards, out, cfg)`: the members' shard builds (`data/` folders) into one KB with the layout of one build
+- Refuses before writing anything when the shards don't fit together (another selection, a paper in two shards, a
+  stale build folder, different chunking, a missing passages/sections file); every line ends with LF in the output
+
 ## Interface Constraints
 
 - All paths/parameters come from `config.yaml` (the `kb.*` section); hardcoding is forbidden
@@ -65,10 +70,13 @@ python scripts/download_papers.py --shard 0/3              # member 1 (1/3, 2/3 
 python scripts/download_papers.py --resume                 # records every pdf_path, retries failures
 python scripts/build_kb.py                                 # ~30 min with 4 workers; resumable
 python scripts/build_kb.py --stats-only                    # recompute results/corpus_stats.json
-#   -> or each member builds their own shard (build_kb.py --rebuild) and the shards are merged:
+#   -> or each member builds their own shard (build_kb.py --rebuild) and the shards are merged (D35):
 python scripts/merge_kb_shards.py --out merged/data shard0/data shard1/data shard2/data
+#      then copy merged/data's raw/, processed/, results/ over data/ (config paths.raw|processed|results),
+#      or point those paths at merged/data, before build_indexes.py
 
-# Q3 ablation A (semantic chunking, D21; needs sentence-transformers). Baseline files are left alone
+# Q3 ablation A (semantic chunking, D21; needs sentence-transformers). Baseline files are left alone.
+# Needs every PDF on this machine; after a shard merge no machine has them (D35)
 python scripts/build_kb.py --chunk-mode semantic --passages-file passages_semantic.jsonl
 ```
 
@@ -76,7 +84,7 @@ All shards must be built with the same code and the same pymupdf (pinned in `req
 built shard 0): the parser relies on extraction details (dict/rawdict alignment, superscript and italic span
 flags, glyph boxes for accent placement) that can change between pymupdf releases.
 
-Budget: ~20k PDFs at 3 s each is about 17 h from one IP, ~30 GB of PDFs. The candidate pool
+Budget: ~20k PDFs at 3 s each is about 17 h from one IP, ~48 GB of PDFs (shard 0: 16 GB, 2.4 MB per PDF). The candidate pool
 (~45-55k papers) needs ~1000 OpenAlex calls, which is the whole anonymous daily cap, so set `OPENALEX_API_KEY` for full runs.
 Downloads use one connection (`kb.download.max_concurrency: 1`), as arXiv's terms ask. For a
 bulk run of this size, arXiv's official bulk PDF access on S3 (requester pays) is the sanctioned
@@ -88,7 +96,7 @@ batch still fails, `download_papers.py` exits **before selection** (never select
 data); just rerun it. A failed PDF download or parse is logged (`raw/download_failures.jsonl`,
 `raw/parse_failures.jsonl`) and skipped; `build_kb.py --retry-failed` retries parse failures.
 
-### Decisions (report material; see DESIGN.md D25/D26, D30-D34)
+### Decisions (report material; see DESIGN.md D25/D26, D30-D35)
 
 | Stage | What we do |
 |---|---|
@@ -174,7 +182,16 @@ Python 3.14): 6,652 PDFs (15 not on arXiv), 6,649 built, 3 rejected by the quali
 100,491 sections; its metadata.csv is the shared selection with PDFs only in its own rows. The same hard checks
 pass, 20 of its PDFs re-parsed on the machine that built shard 0 give byte-identical passages and sections, and
 no character in its text is treated differently by Python 3.11 and 3.14 (letter class, category, NFKC).
-Merged with shard 0 (`merge_kb_shards.py`): 13,292 papers, 436,195 passages, 200,665 sections, all checks pass.
+
+Shard 2/3 (built on 2026-10-12 by the third member with the same code, pymupdf 1.28.2 and tiktoken 0.14.0, on
+Windows with Python 3.11.4): 6,654 PDFs (12 not on arXiv), 6,649 built, 5 rejected by the quality check, 222,674
+passages, 101,470 sections. The same hard checks pass and its 20 check PDFs re-parse byte-identically here; its
+files end every line with CRLF (written on Windows), which the merge turns into LF.
+
+All three shards merged (`merge_kb_shards.py`, D35): 20,000 selected, 19,956 PDFs (44 not on arXiv), 19,941 papers
+built, 15 rejected (0.08%), 658,869 passages, 302,135 sections, 113,578,347 words, 1,158,401 types, 1,805-1,816
+papers per year (2015-2025). The hard checks pass on the merged files, and its passages, sections and failure
+files are the shards' files one after another (line ends aside).
 
 How the rules were checked: every paper whose section names changed between successive full builds
 was listed and reviewed (311, then 116); random samples of 500-900 papers were re-parsed after each
