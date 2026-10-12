@@ -746,17 +746,18 @@ class BuildTest(unittest.TestCase):
             self.assertEqual((store.load_paper("A", db)["num_chunks"], store.load_paper("B", db)["num_chunks"]), (3, 0))
 
     def test_merge_shards(self) -> None:
-        """Two members' shard builds merge into one KB: lines copied unchanged, every pdf_path, num_chunks
-        recounted, failures kept, the first shard's QA sample; a different selection or a paper built twice
-        is refused before anything is written."""
-        import contextlib, importlib.util, io, sys  # noqa: E401
-        from unittest import mock
+        """Two members' shard builds merge into one KB: lines copied unchanged (CRLF from a Windows build becomes
+        LF), every pdf_path, num_chunks recounted, failures kept, the first shard's QA sample, the shards' chunking
+        settings; what cannot be merged is refused before anything is written."""
+        import contextlib
+        import io
+        import shutil
 
-        from config import PROJECT_ROOT
-        spec = importlib.util.spec_from_file_location("merge_kb_shards", PROJECT_ROOT / "scripts" / "merge_kb_shards.py")
-        merge = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(merge)
+        from config import get_config
+        from kb.merge import MergeError, merge_shards
 
+        cfg = get_config()
+        chunking = {"mode": "section_fixed", "chunk_tokens": 350}
         ids = ["A", "B", "C", "D"]
         rows = [{"paper_id": p, "arxiv_id": p, "title": f"T{p}", "abstract": "", "year": 2024, "categories": ["cs.CL"],
                  "citation_count": 0, "pdf_path": ""} for p in ids]
@@ -780,41 +781,62 @@ class BuildTest(unittest.TestCase):
             (root / "results/parse_qa_sample.jsonl").write_text(json.dumps(
                 {"paper_id": ids[k], "pdf_path": f"pdf/{ids[k]}.pdf", "sections": [], "review": {"ok": "yes", "notes": f"shard {k}"},
                  "quality": {"word_count": 30, "num_sections": 1}}) + "\n")
-
-        def run(*argv: Path) -> None:
-            with mock.patch.object(sys, "argv", ["merge_kb_shards.py", *map(str, argv)]), \
-                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                merge.main()
+            (root / "results/corpus_stats.json").write_text(json.dumps({"n_documents": len(built), "chunking": chunking}))
 
         with tempfile.TemporaryDirectory() as tmp:
             s0, s1, out = Path(tmp) / "s0", Path(tmp) / "s1", Path(tmp) / "out"
             make_shard(s0, 0, {"A": 2, "C": 3}, [])
             make_shard(s1, 1, {"B": 4}, ["D"])
-            run("--out", out, s0, s1)
+            lf = {rel: (s1 / rel).read_bytes() for rel in ("processed/passages.jsonl", "processed/sections.jsonl")}
+            for rel, data in lf.items():  # shard 1 was built on Windows
+                (s1 / rel).write_bytes(data.replace(b"\n", b"\r\n"))
+            with contextlib.redirect_stdout(io.StringIO()):
+                stats_out = merge_shards([s0, s1], out, cfg)
 
             merged = fetch.read_metadata_csv(out / "raw/metadata.csv")
             self.assertEqual(list(merged.pdf_path), [f"pdf/{p}.pdf" for p in ids])
-            for rel in ("processed/passages.jsonl", "processed/sections.jsonl"):
-                self.assertEqual((out / rel).read_bytes(), (s0 / rel).read_bytes() + (s1 / rel).read_bytes())
+            for rel, data in lf.items():
+                self.assertEqual((out / rel).read_bytes(), (s0 / rel).read_bytes() + data)
             db = out / "processed/papers.sqlite"
             self.assertEqual([store.load_paper(p, db)["num_chunks"] for p in ids], [2, 4, 3, 0])
             self.assertEqual([json.loads(x)["paper_id"] for x in (out / "raw/parse_failures.jsonl").read_text().splitlines()], ["D"])
             self.assertEqual((out / "results/parse_qa_sample.jsonl").read_bytes(), (s0 / "results/parse_qa_sample.jsonl").read_bytes())
-            stats_out = json.loads((out / "results/corpus_stats.json").read_text())
-            self.assertEqual((stats_out["n_documents"], stats_out["n_chunks"]), (3, 9))
+            self.assertEqual(json.loads((out / "results/corpus_stats.json").read_text()), json.loads(json.dumps(stats_out)))
+            self.assertEqual((stats_out["n_documents"], stats_out["n_chunks"], stats_out["chunking"]), (3, 9, chunking))
             self.assertEqual((stats_out["pipeline"]["pdfs_available"], stats_out["pipeline"]["papers_failed"]), (4, 1))
 
-            with self.subTest("an existing output is never overwritten"), self.assertRaises(SystemExit):
-                run("--out", out, s0, s1)
-            with self.subTest("the same shard twice"), self.assertRaises(SystemExit):
-                run("--out", Path(tmp) / "twice", s0, s0)
-            self.assertFalse((Path(tmp) / "twice").exists())
-            with self.subTest("a shard built from another selection"), self.assertRaises(SystemExit):
-                other = fetch.read_metadata_csv(s1 / "raw/metadata.csv")
+            def refused(name: str, shards: list[Path], **kw) -> None:
+                with self.subTest(name), self.assertRaises(MergeError):
+                    merge_shards(shards, Path(tmp) / name, cfg, **kw)
+                self.assertFalse((Path(tmp) / name).exists())
+
+            def changed(name: str, change) -> Path:
+                bad = Path(tmp) / f"s1-{name}"
+                shutil.copytree(s1, bad)
+                change(bad)
+                return bad
+
+            with self.subTest("an existing output is never overwritten"), self.assertRaises(MergeError):
+                merge_shards([s0, s1], out, cfg)
+            refused("same-shard-twice", [s0, s0])
+            refused("qa-from-out-of-range", [s0, s1], qa_from=2)
+            refused("qa-from-negative", [s0, s1], qa_from=-1)
+            refused("no-sections", [s0, changed("no-sections", lambda d: (d / "processed/sections.jsonl").unlink())])
+            refused("no-stats", [s0, changed("no-stats", lambda d: (d / "results/corpus_stats.json").unlink())])
+
+            def other_selection(d: Path) -> None:
+                other = fetch.read_metadata_csv(d / "raw/metadata.csv")
                 other.loc[0, "title"] = "Changed"
-                fetch.write_metadata_csv(other, s1 / "raw/metadata.csv")
-                run("--out", Path(tmp) / "other", s0, s1)
-            self.assertFalse((Path(tmp) / "other").exists())
+                fetch.write_metadata_csv(other, d / "raw/metadata.csv")
+            refused("other-selection", [s0, changed("other-selection", other_selection)])
+
+            def stale_paper(d: Path) -> None:  # a paper whose PDF is in shard 0, built in this folder too
+                store.write_passages([{"paper_id": "C", "passage_id": "PC_0000", "text": "x"}], d / "processed/passages.jsonl")
+            refused("paper-of-another-shard", [s0, changed("stale", stale_paper)])
+
+            def other_chunking(d: Path) -> None:
+                (d / "results/corpus_stats.json").write_text(json.dumps({"chunking": {**chunking, "chunk_tokens": 300}}))
+            refused("other-chunking", [s0, changed("chunking", other_chunking)])
 
 
 class StatsTest(unittest.TestCase):
