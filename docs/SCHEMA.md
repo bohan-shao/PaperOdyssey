@@ -146,6 +146,16 @@ Constraints:
 
 ## 9. Type Definition Locations
 
+Retrieval's existing public signature remains
+`retrieve(query: str, filters: RetrievalFilters | None = None, top_k: int | None = None) -> RetrieveResult`.
+No fields change in D36. `total_candidates` counts the selected pool actually offered to reranking.
+`latency_ms` may additionally contain `query_ms` and `selection_ms`; timings remain integer
+milliseconds. Selection preserves passage IDs and scores, and assigns contiguous ranks.
+With parent-document mode enabled, `ScoredPassage.text` is a child-anchored parent excerpt
+bounded by `retrieval.parent_doc.max_chars` (0 = legacy unbounded section). An unlocatable
+or oversized child is returned unchanged. Downstream QA still reads the original child
+record by `passage_id`, as specified in section 10.
+
 - Passages/papers: read/write defined in `kb/store.py`; type definitions in `retrieval/types.py` (`ScoredPassage`)
 - Orchestration layer: `orchestration/types.py` (`QueryPlan`, `ReviewRecord`, `FinalResult`)
 - Evaluation set: defined within `eval/`

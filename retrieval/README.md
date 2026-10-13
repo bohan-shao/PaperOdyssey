@@ -1,151 +1,234 @@
-# retrieval/ Retrieval core (Assignment Q2/Q3, 40 points)
+# retrieval/ Hybrid retrieval (Q2/Q3)
 
-## Goal
+`retrieval.pipeline.retrieve(query, filters=None, top_k=None) -> RetrieveResult` remains the
+only retrieval entry point for orchestration, downstream and quality experiments. The default
+still combines sparse and dense retrieval. D36 changes candidate handling, not public fields
+or signatures. Contracts: `docs/SCHEMA.md`; decisions: `docs/DESIGN.md`.
 
-Each sub-query goes through: `BM25 ∥ BGE dense → RRF → cross-encoder reranking → top-10`.
-Supports metadata filtering (year/category). The four ablation configurations are
-toggleable (EVALUATION.md §2).
+## Shard 0 findings (2026-10-13)
 
-## Implementation Requirements
+The complete supplied KB contains 6,650 metadata records, of which **6,643 papers** have
+**217,294 passages** in **100,174 parent sections**, covering 2015-2025. Counts came from
+streaming the complete JSONL files and querying the metadata database. The supplied files
+were copied to configured `data/processed/` for local experiments. The temporary reference
+folder is not used by runtime code, committed config, or tests.
 
-### types.py — Type contracts (read SCHEMA.md first)
-- `ScoredPassage`: passage_id / paper_id / text / score / rank / source stage / metadata (title/year/categories)
-- `RetrievalFilters`: year_min / year_max / categories
-- `RetrieveResult`: hits + latency_ms + per-stage breakdown (needed for Q2 timing and report performance)
+| Distribution | Median | p90 | p99 | Maximum |
+|---|---:|---:|---:|---:|
+| Passages per paper | 28 | 51 | 108 | 482 |
+| Passages per section | 1 | 4 | 10 | 330 |
+| Words per passage, including prefix | 239 | 287 | 314 | 368 |
+| Words per parent section | 280 | 799 | 1,781 | 45,870 |
 
-### lookup.py — Lookup store (D28)
-- `data/indices/lookup.sqlite` (config `retrieval.lookup.db_file`), built by `scripts/build_indexes.py`
-  from the same `passages.jsonl` + `sections.jsonl` as the indexes; rebuild = temp file + atomic replace
-- Tables `passages` (SCHEMA.md §2 columns, keyed by `passage_id`) and `sections` (keyed by `parent_section_id`)
-- `get_lookup_store().hydrate([(passage_id, score), ...], stage)` → `ScoredPassage` list, ranks 1..n;
-  sparse and dense both return hits through this
-- `with_parent_text(hits)`: parent-document mode, swaps in the section text, `passage_id` keeps the child
-- Primary-key lookups only (not retrieval); an id missing from the store raises (indexes and store out of sync)
-- Verified on the local KB sample (1,997 passages): build 0.03 s, 7 MB; hydrating 50 hits + 10 parent swaps ≈ 0.3 ms
+All passages carry the `[title] section` prefix. Categories overlap: cs.LG appears on 129,994
+passages, cs.AI on 97,121, cs.CL on 73,852, and cs.CV on 32,179. This is a mixed AI/ML/NLP
+collection. Introductions account for 23,327 passages; abstracts for 6,814. Scientific acronyms,
+model names, hyphenated terms and numbers should survive query processing. Word statistics
+are not model-token statistics.
 
-### sparse.py — Sparse (D5)
-- Build a Lucene BM25 index with Pyserini (`data/indices/bm25/`); indexed fields: text + metadata
-  (year/categories as filter fields)
-- Query: BM25 scoring + filters (add year/category constraints to the Lucene query)
-- Return top-k (default 50, before reranking) with raw BM25 scores
-- Fallback: if Java is unavailable → rank-bm25 (already listed in `requirements.txt`), note it in the report
-- Forbidden: SQL-LIKE retrieval
+The previous flow was BM25 top-50 + BGE top-50 -> RRF top-50 -> BGE reranker top-10:
 
-Implementation notes:
-- Index layout: `data/indices/bm25/meta.json` (backend, doc count) + `lucene/` (Pyserini) or
-  `rankbm25.pkl`; opening an index built by the other backend raises
-- Pyserini: Anserini's default English analyzer (Porter, stopwords), BM25 `k1=0.9, b=0.4`
-  (config `retrieval.sparse.bm25`); queries go through Anserini's bag-of-words generator, so
-  punctuation in LLM-written sub-queries cannot break query parsing
-- Filters are Lucene FILTER clauses on the extra `year` / `categories` fields: they restrict the
-  candidates and leave scores unchanged. Categories are indexed as `cs_cl`-style tokens, because
-  the analyzer splits `q-bio.NC` at the hyphen and stems `eess.AS` to `eess.a`
-- rank-bm25: lowercase alphanumeric tokens, no stemming/stopwords (scores differ from Lucene);
-  the pickle is held in memory and every query scores all passages in Python, so it is only
-  practical on small corpora
-- Verified on the local KB sample (1,997 passages): Pyserini build 6.5 s, 444 KB;
-  warm top-50 query ≈ 2.6 ms including lookup hydration (first query ≈ 50 ms, JVM warm-up)
+- Repeated title matches and overlapping chunks from long papers occupy many candidate slots.
+  Passage-ID deduplication alone cannot improve paper coverage. Truncation before considering
+  paper/section membership loses alternative evidence before reranking.
+- Both channels received the same query. The rank-bm25 fallback repeats query tokens and
+  includes stopwords; long polite/natural-language queries can change lexical ranks.
+- Every dense model received a BGE prefix, even after selecting another model. Compatibility
+  checks covered model/dimension, but not the instruction or document token limit.
+- Whole parent sections were returned without a bound, including sections tens of thousands
+  of words long. Head truncation could hide the child that caused retrieval.
+- rank-bm25 holds the corpus in Python and scans every document per query. Serialized k1/b
+  values also ignored later config changes. Pyserini remains appropriate in Docker.
+- A custom CLI config did not reliably govern later no-argument `get_config()` calls. Index
+  paths were based on the parent of `paths.indices`, potentially defeating relocation.
 
-### dense.py — Dense (D6)
-- Encoding model: BGE-large-en-v1.5 (sentence-transformers); the model name is config-replaceable
-- **The query side must prepend the instruction prefix**: "Represent this sentence for searching relevant passages: "
-  (BGE retrieval convention; omitting it significantly hurts scores)
-- Index: FAISS HNSW (M=32, efConstruction=200, efSearch config-adjustable),
-  vectors saved under `data/indices/faiss/`; the passage_id ↔ vector-row mapping is stored separately (JSON/parquet)
-- Encoding: batched (config `retrieval.dense.batch_size`); fp16 available on A40; record total encoding time
-- Query: encode the query (same model, same prefix) → FAISS search → cosine similarity scores
+## Current architecture
 
-Implementation notes:
-- Index layout: `data/indices/faiss/index.faiss` (IndexHNSWFlat, inner product on unit vectors, so
-  score = cosine; the file also holds the float32 vectors), `mapping.jsonl` (row → passage_id,
-  year, categories), `meta.json` (model, dim, HNSW params, query instruction, faiss version);
-  opening an index built with another model or dim raises
-- Build streams passages in chunks of 16k (encode → add), so texts are never all in memory;
-  encoding and HNSW insertion times are reported separately in the build report
-- Filters use a FAISS ID selector during the search (same semantics as sparse, never a post-cut):
-  selections of ≤ `retrieval.dense.filter_exact_max` passages (default 50k) are searched exactly
-  over the stored vectors, because HNSW with a selective filter returns too few hits (in a check
-  keeping 3 of 100 vectors it found only 1); larger selections use HNSW + selector with an exact
-  fallback if it comes back short
-- The query encoder is behind a lock (HF fast tokenizers are not thread-safe); the retriever
-  encodes a warm-up query on open so the first CUDA call is not in the measured latency
-- Verified on the local KB sample (1,997 passages, RTX 5070, fp16): encoding 11.7 s (~170/s,
-  so roughly 1-1.5 h for the full ~800k), index 8.9 MB; warm top-50 query ≈ 15 ms including
-  query encoding and hydration
-
-### fusion.py — Hybrid fusion (D7)
-- RRF: `score = Σ 1/(k + rank_i)`, k=60 (config-adjustable); sparse and dense each feed in their top-50
-- Support a weighted variant (config `fusion.weights`) as an ablation comparison
-- Output the sorted, deduplicated top-50 (cross-path merging happens here; see pipeline)
-
-Implementation notes:
-- `reciprocal_rank_fusion(sparse_hits, dense_hits, k, weights, top_k)`: one entry per passage_id,
-  score = Σ w / (k + rank), rank 1..n, stage `"hybrid"`, other fields from the first input hit
-- Only ranks are read, never scores: BM25 (0 to 20+) and cosine (~0.3-0.9) need no normalization,
-  and any order-preserving rescaling of either list gives the same fusion (tested)
-- A duplicate within one list counts once at its best rank; a list with weight 0 adds no
-  candidates; ties go to the better single rank, then passage_id (reproducible runs)
-- Invalid `k` (< 0), ranks (< 1) or weights (negative, both 0, not two values) raise ValueError
-- Verified on the local KB sample: sparse and dense top-50 share 22 passages for a Transformer
-  query; fusing takes ~0.3 ms and the passages both retrievers rank highly come out on top
-
-### rerank.py — Reranking (D8)
-- BGE-reranker-v2-m3 cross-encoder; top-50 → top-10
-- Scoring pairs: (query, passage.text); output the reranked list + rerank scores
-- Record latency (~100–300ms for 50 pairs on A40)
-
-Implementation notes:
-- `Reranker`: sentence-transformers CrossEncoder, fp16 on CUDA, pairs truncated to
-  `retrieval.rerank.max_length` (512); score = sigmoid of the logit, in [0, 1]; model behind a
-  lock (tokenizers are not thread-safe); warm-up pair on load
-- `rank_by_scores` is the ordering step on its own: new score descending, ties by fused rank;
-  passage_id / paper_id / text / metadata kept, rank 1..k, stage `"rerank"`
-- Parent-document mode is applied by the pipeline after reranking (`lookup.with_parent_text`),
-  not inside rerank: the cross-encoder always scores the child text, and the swap also works in
-  the hybrid-without-rerank ablation row
-- Verified on the local KB sample (RTX 5070, fp16): pairs are ~400 tokens (p90 460, almost
-  never truncated); 50 pairs ≈ 380 ms, 10 pairs ≈ 76 ms (compute-bound, linear in pairs;
-  an A40 should land in the 100-300 ms budget). Reranking reorders strongly, e.g. fused rank
-  26 → 1 for an uncertainty-quantification query
-
-### pipeline.py — Unified entry point (interface discipline)
-```python
-def retrieve(query: str, filters: RetrievalFilters | None = None,
-             top_k: int = 10) -> RetrieveResult
+```text
+query + optional metadata filters
+  |-- normalized semantic query -> BGE encoder -> FAISS HNSW top-150
+  `-- deduplicated lexical terms -> BM25 top-150
+                parallel; filters applied before top-k
+                         |
+              full weighted RRF union (k=60)
+                         |
+          paper/section selection -> at most 50 candidates
+                         |
+           BGE cross-encoder -> diversity selection -> top-10
+                         |
+             optional child-anchored parent excerpt
 ```
-- Internally: run sparse/dense in parallel (threads/asyncio) → fusion → (optional) rerank
-- All toggles come from config: `retrieval.{sparse,dense,fusion,rerank}.enabled` (ablation matrix)
-- Must record per-stage latency (sparse_ms/dense_ms/fusion_ms/rerank_ms/total_ms)
-- The orchestration layer may only call `retrieve()`; evaluation scripts may only call it too (to keep ablations fair)
 
-Implementation notes:
-- Switches are followed literally, with no hidden coupling: one retriever on → its list goes
-  straight to rerank / the top_k cut (so the BM25-only and dense-only rows also set
-  `rerank.enabled=false`, see EVALUATION.md §2); `fusion.top_k` (50) candidates go to the reranker;
-  `top_k` defaults to `rerank.top_k` (10); `filters.enabled=false` drops the filters argument
-- Parent-document mode is the last step (`lookup.with_parent_text`), after rerank or the cut, so
-  the cross-encoder scores child text and the swap works with rerank on or off
-- Hit stage = configuration level (`bm25` / `dense` / `hybrid` / `rerank`); `latency_ms` has
-  one entry per stage that ran (+ `parent_ms`, `total_ms`); `total_candidates` = list size before rerank
-- Sparse runs on a worker thread while dense runs on the calling thread (`retrieval.parallel`)
-- Enabled components are loaded one at a time under one lock on first use: pyserini and
-  sentence-transformers both import transformers, and two threads doing that at once fail with
-  `cannot import name 'AutoTokenizer'` (found on the real stack; orchestration's concurrent
-  first calls hit it too). `warm_up()` loads everything ahead of the first query
-- Any failure in an enabled stage raises RuntimeError naming the stage (no silent fallback that
-  would turn one ablation row into another)
-- Verified on the local KB sample (RTX 5070), median warm latency: BM25-only 4 ms, dense-only
-  11 ms, hybrid 14 ms (sparse and dense overlap), hybrid + rerank 413 ms (rerank 388 ms);
-  6 concurrent cold-start calls load everything once and match serial results. The reranker is
-  serialized by its lock, so concurrent sub-queries queue on it (6 warm calls: 2.3 s)
+`query_processing.enabled` normalizes Unicode/dashes/whitespace, deduplicates lexical terms
+and removes configured stopwords. Dense/reranker retain the complete normalized question,
+including negation. No automatic acronym expansion, LLM call or implicit filter is introduced.
 
-## Ablation Checklist (EVALUATION.md §2–§3)
-1. Four-level matrix: bm25 / dense / hybrid / hybrid+rerank
-2. Parent-document retrieval toggle: `retrieval.parent_doc.enabled` (on a child hit, return the parent text; SCHEMA.md §2)
-3. Metadata filtering toggle: `retrieval.filters.enabled`
-4. HyDE is implemented in the orchestration layer (this package only gets called)
+`diversity.enabled` applies soft quotas: before rerank, four passages per paper and two per
+parent; finally, two per paper and one per parent. Deferred passages fill spare slots for
+single-paper queries. Exact repeated body text within a paper is removed. Selection preserves
+scores and relative relevance order, then assigns contiguous ranks. Different papers are not
+necessarily relevant papers. The full RRF union reaches selection before the top-50 cut.
+Channel recall depth and rerank budget are independent. `top_k` is an upper bound and cannot
+return more than the available selected pool. Single-channel ablations also apply selection.
 
-## Definition of Done (see README: Definition of Done)
-- Sanity: ScoredPassage/RetrieveResult round-trip covered by `scripts/sanity_check.py`
-- Smoke: sparse/dense/fusion/rerank each runnable end-to-end on a small corpus (offline)
-- Integration: real index build and query verified with small `--limit` runs
+For the legacy baseline disable query processing/diversity, set both channel depths and
+fusion depth to 50, and rerank batch size to 64. RRF weights remain `[1, 1]`: no uncalibrated
+sum of BM25/cosine scores. Zero-weight channels contribute no candidates; ties are stable.
+
+## Components and choices
+
+| Module | Responsibilities |
+|---|---|
+| `query.py` | Pure semantic/lexical query views and known-prefix removal |
+| `sparse.py` | Pyserini (default), SQLite or rank-bm25; no silent backend fallback |
+| `sqlite_bm25.py` | Contentless disk-backed FTS5 index over title/section/body; exact metadata filters before LIMIT |
+| `dense.py` | Unit float32 vectors, FAISS HNSW, model/instruction/token-limit manifest validation |
+| `fusion.py` | Full weighted RRF union with stable ties and finite nonnegative weights |
+| `selection.py` | Paper/section quotas and exact body deduplication before/after reranking |
+| `rerank.py` | CrossEncoder sigmoid scoring, serialized inference, batch size 16 |
+| `lookup.py` | Primary-key hydration, missing-ID errors, bounded parent excerpts |
+| `pipeline.py` | Parallel sparse/dense, sequential cold loading, selected-pool count, stage timings |
+
+Pyserini uses Porter/stopwords and configurable k1=0.9, b=0.4. rank-bm25 retains its lowercase
+alphanumeric analyzer and applies configured k1/b when loaded, including old pickles. SQLite
+uses Porter + unicode61 and **fixed k1=1.2, b=0.75**; its scores differ from Lucene/rank-bm25.
+FTS5 negative scores are negated for higher-is-better output. Retrieval uses the inverted
+index `MATCH`, not SQL LIKE. See the [SQLite BM25 specification](https://www.sqlite.org/fts5.html#the_bm25_function).
+
+Optional SQLite `sparse.field_weighting.enabled` weights title/section/body `[2, 0.5, 1]`.
+The known prefix is removed before indexing the body, avoiding duplicate title weight.
+The switch defaults **off** pending labeled evaluation; enabling it on another backend raises.
+SQLite is a scalable no-Java alternative; rank-bm25 remains useful for small baseline samples.
+Pyserini remains the production default until a labeled backend comparison supports a switch.
+
+**Production models remain BGE-large-en-v1.5 + bge-reranker-v2-m3.** Changing models without
+measuring this corpus would not establish a gain. The machine has an 8 GiB RTX 4070 Laptop
+GPU, but the installed probe runtime is CPU-only. Qwen3-Embedding-0.6B is supported as an
+optional experiment through SentenceTransformer with model-specific query instructions:
+
+```yaml
+# Change these fields in a full copy of config.yaml; use a separate dense index.
+retrieval:
+  dense:
+    model_name: Qwen/Qwen3-Embedding-0.6B
+    query_format: qwen3
+    query_instruction: null
+    task_instruction: "Given a scientific question, retrieve relevant passages from research papers"
+    max_length: 1024
+    batch_size: 8
+    faiss_dir: faiss_qwen3_06b
+```
+
+Qwen queries use `Instruct: ...\nQuery: ...`; documents have no instruction. Auto mode recognizes
+BGE/Qwen3 model names; plain mode supports MiniLM. Local paths should specify `query_format`
+or `query_instruction`. An explicit empty SentenceTransformer prompt prevents accidental
+additional model prompts. The manifest records effective instruction and document token limit;
+mismatches require rebuilding. Mapping row order is validated. Qwen3 requires transformers
+>=4.51.0. See the [official embedding card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B).
+Instruction/manifest behavior is covered by offline tests; Qwen weights were not downloaded
+or evaluated in this change. At 1,024 float32 dimensions, Shard 0 alone needs about 0.83 GiB
+for dense vectors before HNSW graph overhead. A model swap at the same dimension does not
+reduce this index footprint.
+
+Qwen3-Reranker is **not** a drop-in sequence-classification CrossEncoder: its official adapter
+uses causal yes/no token logits. Passing its model name to this wrapper raises an actionable
+error rather than using an untrained classification head. Implement and measure that adapter
+separately before selecting it. See the [official reranker card](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B).
+
+Dense filtering retains exact search for <=50,000 eligible vectors, and fallback when filtered
+ANN returns too few results. HNSW remains M=32, efConstruction=200, per-query efSearch >= k.
+Models serialize tokenizer/inference access; concurrent orchestration paths can still queue
+on the reranker. Timings include query/selection, both channels, fusion, rerank, parent and total.
+
+## Storage and compatibility
+
+Inputs use `paths.processed` plus `kb.store.*` filenames. Sparse/dense subdirectories resolve
+under `paths.indices`; defaults are `bm25` and `faiss`. Absolute paths and legacy
+`indices/bm25` / `indices/faiss` spellings work. Lookup remains
+`paths.indices/retrieval.lookup.db_file`. The selected CLI config is reused by package calls.
+Restart after model/index/backend changes; online singletons are not hot-reloaded.
+
+Layouts: `lookup.sqlite`; sparse `meta.json` + `lucene/`, `rankbm25.pkl`, or `bm25.sqlite`;
+dense `index.faiss`, `mapping.jsonl`, `meta.json`. Legacy BGE indexes with 512-token settings
+remain readable. Changing model/document token limit/backend requires rebuilding that index.
+Candidate/query-view changes do not. Compare in separate directories and close readers before
+replacing indexes on Windows. Build with `python scripts/build_indexes.py --config <full-config.yaml>`.
+
+Parent mode defaults off. When on, return up to 6,000 characters around the matched child,
+keeping the title prefix. Unlocatable/oversized children remain unchanged; `max_chars: 0`
+restores whole sections. ID/score/rank still identify the child; reranking always sees the child.
+Downstream QA reloads original children by ID, so parent mode currently changes retrieval/review
+context, not QA's evidence-loading contract.
+
+## Small-scale validation
+
+The seeded probe uses 300 complete papers (9,994 passages, 4,635 sections), 60 queries and
+seed 42. Queries alternate partial title and abstract terms. Source labels are weak and
+non-exhaustive: this diagnoses source finding/candidate crowding, not general relevance or
+answer quality. Source metrics deduplicate papers within the first ten returned passages.
+
+Sparse-only results:
+
+| Variant | Source recall@10 | Source MRR@10 | Distinct papers@10 | Warm p50 ms |
+|---|---:|---:|---:|---:|
+| Legacy rank-bm25 | 0.9833 | 0.9456 | 3.45 | 36.0 |
+| Query processing only | 0.9833 | 0.9750 | 3.37 | 31.0 |
+| Diversity only | 0.9833 | 0.9456 | 7.70 | 37.0 |
+| Combined, rank-bm25 | 0.9833 | 0.9750 | 7.53 | 34.5 |
+| Combined, SQLite | 0.9833 | 0.9722 | 7.48 | 11.0 |
+| SQLite + field weighting | 0.9833 | 0.9833 | 7.37 | 12.0 |
+
+Per-query records and the isolated depth row:
+`data/results/metrics/ablation_retrieval_probe_sparse_2026-10-13.json`.
+Full corpus profile: `data/results/metrics/shard0_profile.json`. Artifacts are gitignored.
+
+Real MiniLM dense + sparse + MiniLM cross-encoder on the same sample and queries:
+
+| Variant | Source recall@10 | Source MRR@10 | Distinct papers@10 | Warm p50 / p95 ms |
+|---|---:|---:|---:|---:|
+| Legacy budgets/selection | 0.9833 | 0.9833 | 3.07 | 1,710.5 / 2,199.6 |
+| Diversity only | 0.9833 | 0.9833 | 7.28 | 1,696.5 / 1,938.1 |
+| Combined, rank-bm25 | 1.0000 | 0.9861 | 7.38 | 1,689.0 / 2,434.5 |
+| Combined, SQLite | 1.0000 | 0.9861 | 7.32 | 1,645.5 / 3,458.7 |
+
+Report: `data/results/metrics/ablation_retrieval_probe_hybrid_rerank_2026-10-13.json`.
+The field-weighted row also has recall 1.0 and MRR 0.9861: no additional source gain after
+reranking. It stays disabled by default. Query-only/depth-only rows do not recover the
+one missed source; the combined candidate changes do. `PROBE0057` (abstract terms about
+spam classifiers) previously misses source `1502.03581`; the combined run includes its
+abstract as passage 9, distinct-paper rank 6. This is one diagnostic recovery, not a
+statistically established relevance improvement.
+
+Median latency is similar, but combined p95 is worse and CPU reranking remains the bottleneck;
+there is no general speedup claim. Keep the rerank budget at 50 and measure GPU tails before
+raising it. Dense sample build: 193.9 s encoding, 0.4 s HNSW insertion, 19.1 MB total index.
+These MiniLM figures must not be extrapolated to Qwen/BGE as measured costs. Final validation:
+sanity config/import/schema checks pass; 88 retrieval/latency tests ran, 81 passed and seven
+optional Pyserini/BGE-reranker tests skipped.
+
+```bash
+python scripts/probe_retrieval.py --papers 300 --queries 60
+python scripts/probe_retrieval.py --papers 300 --queries 60 --hybrid --rerank
+python scripts/sanity_check.py
+python -m unittest tests.test_retrieval tests.test_retrieval_redesign tests.test_latency
+```
+
+The probe makes no LLM/API calls. Neural mode uses real cached MiniLM embedding/cross-encoder
+models on CPU; it cannot establish BGE/Qwen superiority. Reports preserve stage latency,
+cold start, versions, corpus hash, queries and config snapshots. Set `HF_HUB_OFFLINE=1` for
+cached-model runs. Tests never download models. See `docs/EVALUATION.md` for the ablation
+protocol and separate human-label requirement.
+
+The full repository test attempt also encountered missing non-retrieval dependencies
+(`httpx2`, `tenacity`, `pandas`, `streamlit`) and a downstream fixture that replaces an open
+SQLite database on Windows. It is not reported as a clean full-suite pass. Detailed output:
+`data/results/tests_retrieval_redesign.log`. Pyserini/BGE-reranker live tests require the
+optional Java/model environment; the local retrieval tests skip those explicitly.
+
+## Next measurements
+
+Keep field weighting off and BGE unchanged until annotated dev data supports switching.
+Compare Qwen3-0.6B embedding vs BGE with separate indexes, fixed queries and equal budgets;
+measure passage/paper relevance, truncation, p95 latency and peak VRAM. Sweep channel depths
+50/100/150 and rerank budgets 30/50. A paper-level title/abstract route is a next experiment
+if title queries still retrieve incidental mentions. Do not tune on the held-out evaluation set.

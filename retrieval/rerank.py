@@ -52,6 +52,9 @@ class Reranker:
 
     def __init__(self, model_name: str, max_length: int = 512, batch_size: int = 64,
                  fp16: bool = True, device: str | None = None) -> None:
+        if "qwen3-reranker" in model_name.casefold():
+            raise ValueError("Qwen3-Reranker requires causal yes/no logit scoring, not CrossEncoder; "
+                             "use the configured BGE cross-encoder until that adapter is benchmarked")
         import torch
         from sentence_transformers import CrossEncoder
 
@@ -94,7 +97,7 @@ def get_reranker() -> Reranker:
         if _RERANKER is None:
             cfg = get_config()["retrieval"]["rerank"]
             _RERANKER = Reranker(cfg["model_name"], cfg.get("max_length", 512),
-                                 cfg.get("batch_size", 64), cfg.get("fp16", True))
+                                 cfg.get("batch_size", 64), cfg.get("fp16", True), cfg.get("device"))
         return _RERANKER
 
 

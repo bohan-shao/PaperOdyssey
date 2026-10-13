@@ -39,6 +39,9 @@ Both run on the same evaluation set.
 | HyDE | No expansion | `orchestration.hyde.enabled` | Report the latency/cost increase as well |
 | Metadata filtering | No filtering | `retrieval.filters.enabled` | Time-window/category scenarios |
 | Cross-encoder rerank | No reranking | `retrieval.rerank.enabled` | See §2 matrix |
+| Query views | Original query in both channels | `retrieval.query_processing.enabled` | Preserve dense semantics; deduplicate lexical tokens; retain negation/numbers |
+| Paper/section diversity | Plain top-k passage truncation | `retrieval.diversity.enabled` | Source recall and relevant-paper precision alongside distinct-paper count |
+| Sparse field weighting | Equal FTS5 field weights | `retrieval.sparse.field_weighting.enabled` | SQLite only; hold analyzer/backend/corpus fixed |
 
 Each ablation must include: query instances that **failed before the improvement → succeeded after** (explicitly required by the assignment).
 
@@ -95,3 +98,33 @@ Metrics: the ROUGE/BERTScore/RAGAS trio + coverage.
 - Planned unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`; the script remains a stub, and generation/ragas stages are not implemented.
 - Each evaluation run outputs: `data/results/metrics/<stage>_<date>.json` (including a config snapshot + dependency versions)
 - When the report cites metrics, it must include the `metrics/*.json` file paths (included in the Dropbox deliverables)
+
+### D36 small-corpus diagnostic
+
+`scripts/probe_retrieval.py --papers 300 --queries 60 [--hybrid] [--rerank]` samples complete
+papers from the configured processed KB with `seed`, builds isolated sample indexes under
+`paths.results/retrieval_probe/`, and writes
+`metrics/ablation_retrieval_probe_<mode>_<date>.json`. No temporary input directory is embedded
+in code/config. The report includes query records, paper IDs, a passage SHA-256, versions,
+per-row retrieval config, stage timing, hits, build costs, and per-query/per-query-type metrics.
+
+Queries alternate partial title terms and twelve distinct abstract terms excluding title
+terms. The source paper is a **weak, non-exhaustive label**. These are known-source probes,
+not held-out human relevance judgments: source text remains indexed and source recall is
+optimistic. `source_recall@10`, source MRR/NDCG and distinct-paper count are computed over
+distinct papers represented in the first ten returned passages. Diversity is not precision.
+The source formulas have hand-computed regression tests. Production retrieval metric stubs
+remain unchanged; this diagnostic does not satisfy the 1,000-item/three-annotator requirement.
+
+Rows compare legacy 50/50/50 budgets, query processing alone, 150/150 depth alone, diversity
+alone, the combination, SQLite instead of rank-bm25, and SQLite field weighting. The depth
+row changes the two channel budgets as one coupled recall-budget experiment; it is not an
+isolated per-channel ablation. Compare `sqlite_fields` only against `sqlite` to isolate field
+weights. Baseline/combined rows keep the same model and index. The CPU MiniLM model pair
+is a resource-limited proxy, not a BGE-vs-Qwen3 comparison. No LLM/API calls or token costs.
+
+Before selecting a new production model/default, repeat on manually annotated dev queries,
+then evaluate untouched held-out queries at paper and passage granularity. Include filtered,
+acronym/model-name, negative constraint, comparison and technical-detail cases; report
+P@10/R@10, MRR/NDCG, relevant evidence diversity, p50/p95, peak VRAM and build time. For
+Qwen3 use separate dense index directories and record the instruction and token limit.

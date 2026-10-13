@@ -1,8 +1,8 @@
-"""BGE dense retrieval: sentence-transformers encoder + FAISS HNSW over unit vectors (cosine).
+"""Model-aware dense retrieval: sentence-transformers + FAISS HNSW over unit vectors (cosine).
 
 - `Encoder`: sentence-transformers wrapper returning float32, L2-normalized rows (inner product
-  = cosine); fp16 on CUDA (`retrieval.dense.fp16`). `encode_query` prepends the BGE retrieval
-  instruction, which is mandatory for BGE (omitting it clearly hurts scores). One lock around the
+  = cosine); fp16 on CUDA (`retrieval.dense.fp16`). `encode_query` selects a BGE, Qwen3 or plain
+  instruction format; the document token limit is recorded in the index manifest. One lock around the
   model, because HF fast tokenizers fail when two threads use them at once.
 - `build_index(passages_path, faiss_dir)`: streams passages.jsonl in chunks, encodes them and
   adds them to an IndexHNSWFlat (M / efConstruction from `retrieval.dense.hnsw`), then swaps the
@@ -36,8 +36,10 @@ import time
 from collections.abc import Iterator
 from itertools import islice
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 from config import PROJECT_ROOT, get_config
 from kb import store as kb_store
@@ -63,8 +65,13 @@ class Encoder:
         import torch
         from sentence_transformers import SentenceTransformer
 
-        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        cfg = get_config()["retrieval"]["dense"]
+        device = device or cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = SentenceTransformer(model_name, device=device)
+        if cfg.get("max_length") is not None:
+            self.model.max_seq_length = int(cfg["max_length"])
+        self.max_length = self.model.max_seq_length
+        self.query_instruction = query_instruction(model_name, cfg)
         if fp16 and device.startswith("cuda"):
             self.model.half()
         dim_fn = getattr(self.model, "get_embedding_dimension", None) or self.model.get_sentence_embedding_dimension
@@ -75,15 +82,37 @@ class Encoder:
 
     def encode(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
         """(n, dim) float32, rows L2-normalized."""
+        import numpy as np
+
         with self._lock:
             vecs = self.model.encode(texts, batch_size=batch_size or self.batch_size,
                                      convert_to_numpy=True, normalize_embeddings=True,
-                                     show_progress_bar=False)
+                                     show_progress_bar=False, prompt="")
         return np.ascontiguousarray(vecs, dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
-        """(1, dim): the query with the BGE retrieval instruction prepended."""
-        return self.encode([QUERY_INSTRUCTION + query])
+        """(1, dim): model-specific retrieval instruction, applied only on the query side."""
+        return self.encode([self.query_instruction + query])
+
+
+def query_instruction(model_name: str, cfg: dict) -> str:
+    """Resolve BGE/Qwen3/plain input formats; custom local models can set an explicit prefix."""
+    explicit = cfg.get("query_instruction")
+    if explicit is not None:
+        return str(explicit)
+    family = cfg.get("query_format", "auto")
+    if family == "auto":
+        name = model_name.casefold()
+        english_bge = any(f"bge-{size}-en" in name for size in ("small", "base", "large"))
+        family = "qwen3" if "qwen3-embedding" in name else "bge" if english_bge else "plain"
+    if family == "bge":
+        return QUERY_INSTRUCTION
+    if family == "qwen3":
+        task = cfg.get("task_instruction", "Given a scientific question, retrieve relevant passages from research papers")
+        return f"Instruct: {task}\nQuery: "
+    if family == "plain":
+        return ""
+    raise ValueError(f"unknown dense query_format {family!r}")
 
 
 _ENCODER: Encoder | None = None
@@ -174,7 +203,9 @@ def build_index(passages_path: str | Path, faiss_dir: str | Path,
         faiss.write_index(index, str(tmp / "index.faiss"))
         meta = {
             "model_name": encoder.name, "dim": encoder.dim, "num_vectors": index.ntotal,
-            "metric": "inner_product", "normalized": True, "query_instruction": QUERY_INSTRUCTION,
+            "metric": "inner_product", "normalized": True,
+            "query_instruction": getattr(encoder, "query_instruction", QUERY_INSTRUCTION),
+            "max_length": getattr(encoder, "max_length", None),
             "hnsw": {"M": hnsw["M"], "efConstruction": hnsw["efConstruction"]},
             "faiss_version": faiss.__version__,
         }
@@ -205,6 +236,7 @@ class DenseRetriever:
     def __init__(self, faiss_dir: str | Path, lookup: LookupStore, encoder: Encoder | None = None,
                  ef_search: int | None = None, exact_max: int | None = None) -> None:
         import faiss
+        import numpy as np
 
         cfg = get_config()["retrieval"]["dense"]
         faiss_dir = Path(faiss_dir)
@@ -218,6 +250,15 @@ class DenseRetriever:
             raise RuntimeError(f"FAISS index {faiss_dir} was built with {meta['model_name']!r} but "
                                f"queries would be encoded with {model_name!r}; rebuild the dense index")
         self._encoder = encoder or get_encoder()
+        expected_instruction = getattr(self._encoder, "query_instruction", QUERY_INSTRUCTION)
+        if meta.get("query_instruction", QUERY_INSTRUCTION) != expected_instruction:
+            raise RuntimeError("FAISS query instruction differs from the index manifest; rebuild the dense index")
+        if meta.get("max_length") != getattr(self._encoder, "max_length", None):
+            # Pre-manifest BGE indexes used the model's 512-token limit.
+            legacy_bge = ("max_length" not in meta and "bge-" in model_name.casefold()
+                          and getattr(self._encoder, "max_length", None) == 512)
+            if not legacy_bge:
+                raise RuntimeError("FAISS document max_length differs from the encoder; rebuild the dense index")
         if self._encoder.dim != meta["dim"]:
             raise RuntimeError(f"FAISS index dim {meta['dim']} != encoder dim {self._encoder.dim}; "
                                "rebuild the dense index")
@@ -229,8 +270,10 @@ class DenseRetriever:
         years: list[int] = []
         by_category: dict[str, list[int]] = {}
         with (faiss_dir / "mapping.jsonl").open(encoding="utf-8") as fh:
-            for line in fh:
+            for row, line in enumerate(fh):
                 rec = json.loads(line)
+                if rec["row"] != row:
+                    raise RuntimeError("FAISS mapping row order is invalid; rebuild the dense index")
                 ids.append(rec["passage_id"])
                 years.append(rec.get("year") or 0)
                 for c in rec.get("categories") or []:
@@ -253,6 +296,8 @@ class DenseRetriever:
 
     def _mask(self, filters: RetrievalFilters | None) -> np.ndarray | None:
         """Boolean mask of the rows the filters keep; None = no filtering."""
+        import numpy as np
+
         if filters is None:
             return None
         mask = None
@@ -273,6 +318,8 @@ class DenseRetriever:
 
     def _search_rows(self, query: str, filters: RetrievalFilters | None, k: int,
                      ef: int) -> list[tuple[str, float]]:
+        import numpy as np
+
         faiss = self._faiss
         q = self._encoder.encode_query(query)
         mask = self._mask(filters)
@@ -304,9 +351,12 @@ class DenseRetriever:
 
 
 def index_path(cfg: dict | None = None) -> Path:
-    """The configured index dir; `retrieval.dense.faiss_dir` is relative to the data dir."""
+    """Resolve under paths.indices; accept legacy indices/faiss and explicit absolute paths."""
     cfg = cfg or get_config()
-    return (PROJECT_ROOT / str(cfg["paths"]["indices"])).parent / str(cfg["retrieval"]["dense"]["faiss_dir"])
+    subdir = Path(cfg["retrieval"]["dense"]["faiss_dir"])
+    if not subdir.is_absolute() and subdir.parts and subdir.parts[0] == "indices":
+        subdir = Path(*subdir.parts[1:])
+    return PROJECT_ROOT / str(cfg["paths"]["indices"]) / subdir
 
 
 _RETRIEVER: DenseRetriever | None = None

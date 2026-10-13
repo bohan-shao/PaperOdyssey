@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import re
-from functools import lru_cache
+import threading
 from pathlib import Path
 
 import yaml
@@ -57,12 +57,17 @@ def _expand_env(value: object) -> object:
     return value
 
 
-@lru_cache(maxsize=1)
+_CONFIG: dict | None = None
+_CONFIG_PATH: Path | None = None
+_CONFIG_LOCK = threading.RLock()
+
+
 def get_config(path: str | Path | None = None) -> dict:
     """Load the global configuration (env expansion + process-level singleton cache).
 
     Args:
-        path: Optional explicit config path (defaults to <project_root>/config.yaml).
+        path: Optional explicit config path. A selection remains active for subsequent calls;
+            before any selection, defaults to <project_root>/config.yaml.
 
     Returns:
         The fully expanded config dict.
@@ -71,8 +76,19 @@ def get_config(path: str | Path | None = None) -> dict:
         ValueError: The YAML is not a mapping, or a required section is missing.
         OSError: The config file cannot be read.
     """
+    global _CONFIG, _CONFIG_PATH
+    with _CONFIG_LOCK:
+        cfg_path = Path(path).resolve() if path is not None else (_CONFIG_PATH or PROJECT_ROOT / "config.yaml")
+        cfg = _CONFIG
+        if cfg is None or cfg_path != _CONFIG_PATH:
+            cfg = _read_config(cfg_path)
+            _CONFIG, _CONFIG_PATH = cfg, cfg_path
+        return cfg
+
+
+def _read_config(cfg_path: Path) -> dict:
+    """Read one configuration; an explicit CLI selection remains active for package callers."""
     _load_dotenv()
-    cfg_path = Path(path) if path is not None else PROJECT_ROOT / "config.yaml"
     with open(cfg_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     if not isinstance(raw, dict):

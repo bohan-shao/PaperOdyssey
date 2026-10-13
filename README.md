@@ -47,6 +47,14 @@ Online query:
 
 Detailed design and decision log: see [docs/DESIGN.md](docs/DESIGN.md).
 
+The D36 retriever keeps dense+sparse search, broadens each channel to 150, selects 50 candidates
+across papers/sections, and reranks to ten diverse passages. Corpus analysis, switches,
+SQLite BM25 (no Java), Qwen3 embedding configuration, and the reproducible small-sample probe
+are documented in [retrieval/README.md](retrieval/README.md). `get_config(path)` selects the
+active configuration for later package calls; relative index subdirectories now resolve under
+`paths.indices` (legacy `indices/bm25` / `indices/faiss` spellings still work). Restart the process
+after changing model/index configuration so loaded components are replaced consistently.
+
 ## Repository Structure
 
 | Directory | Responsibility |

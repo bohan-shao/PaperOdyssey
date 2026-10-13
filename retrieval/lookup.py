@@ -35,6 +35,7 @@ from config import PROJECT_ROOT, get_config
 from kb import store as kb_store
 
 from .types import ScoredPassage
+from .query import passage_body
 
 PASSAGE_COLUMNS = (
     "passage_id", "paper_id", "arxiv_id", "title", "section", "year", "categories",
@@ -215,7 +216,9 @@ class LookupStore:
         parent_ids = [h.parent_section_id for h in hits if h.parent_section_id]
         parents = self.get_sections(parent_ids)
         _require(parents, parent_ids, "parent section")
-        return [replace(h, text=parents[h.parent_section_id]["text"]) if h.parent_section_id else h
+        limit = get_config()["retrieval"].get("parent_doc", {}).get("max_chars", 6000)
+        return [replace(h, text=parent_excerpt(parents[h.parent_section_id]["text"], h, limit))
+                if h.parent_section_id else h
                 for h in hits]
 
     def close(self) -> None:
@@ -239,6 +242,28 @@ def _require(found: dict[str, dict], ids: Iterable[str], kind: str) -> None:
             f"{len(missing)} {kind} id(s) not in the lookup store (e.g. {missing[:3]}); "
             "the indexes and the store are out of sync, rebuild with scripts/build_indexes.py"
         )
+
+
+def parent_excerpt(parent: str, child: ScoredPassage, max_chars: int) -> str:
+    """Bound a parent around the matched child; never replace evidence with an unrelated prefix.
+
+    Zero means unbounded legacy mode. If the child cannot be found verbatim or itself exceeds
+    the budget, preserve the child (the budget is then a soft upper bound).
+    """
+    if max_chars < 0:
+        raise ValueError("parent_doc.max_chars must be non-negative")
+    if max_chars == 0 or len(parent) <= max_chars:
+        return parent
+    body = passage_body(child.text, child.title)
+    position = parent.find(body)
+    prefix, sep, _ = parent.partition("\n")
+    header = prefix + sep if sep and prefix.startswith(f"[{child.title}]") else ""
+    budget = max_chars - len(header)
+    if not body or position < 0 or len(body) > budget:
+        return child.text
+    start = max(len(header), position - (budget - len(body)) // 2)
+    start = min(start, max(len(header), len(parent) - budget))
+    return header + parent[start:start + budget]
 
 
 # ---------------------------------------------------------------- config / singleton

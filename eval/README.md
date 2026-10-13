@@ -2,6 +2,16 @@
 
 ## Goal
 
+The D36 diagnostic is implemented in `retrieval_probe.py`; the general retrieval/review/IAA
+stubs below remain pending. Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
+for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
+`eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
+isolated sample indexes, queries, config snapshots, timings and per-query known-source metrics
+under configured `paths.results`. Run in a fresh process, without an online server sharing
+the components. Queries come from indexed source text; these proxy labels are not human
+relevance judgments. See `docs/EVALUATION.md` and `retrieval/README.md` for measured results
+and limitations. Set `HF_HUB_OFFLINE=1` when using locally cached models.
+
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
 performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
 

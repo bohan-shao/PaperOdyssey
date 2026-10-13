@@ -29,7 +29,8 @@ tiktoken>=0.7          # token counting for chunking (kb.chunk.tokenizer=tiktoke
 pyserini>=0.22.0
 rank-bm25>=0.2.2       # fallback (if Pyserini/Java unavailable)
 # Dense:
-sentence-transformers>=4.0   # BGE-large-en-v1.5 encoding; the reranker needs the v4 CrossEncoder (.half(), activation_fn)
+sentence-transformers>=4.0   # BGE/Qwen3 embeddings and CrossEncoder reranking
+transformers>=4.51.0         # Qwen3 architecture support for optional embedding experiments
 faiss-cpu>=1.8          # for GPU-accelerated search on A40, use faiss-gpu
 
 # ---- orchestration/ (LLM via OpenAI-compatible protocol) ----
