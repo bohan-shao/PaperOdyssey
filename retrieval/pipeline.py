@@ -178,6 +178,9 @@ def retrieve(
         stage_start = time.perf_counter()
         candidates = select_hits(candidates, cfg.get("fusion", {}).get("top_k", 50), diversity)
         latency["selection_ms"] = _ms(stage_start)
+    else:
+        # Recall depth is independent of the scoring budget, including single-channel runs.
+        candidates = candidates[:max(0, cfg.get("fusion", {}).get("top_k", 50))]
     if cfg["rerank"].get("enabled", True):
         stage_start = time.perf_counter()
         hits = _run("rerank", _rerank, query, candidates,

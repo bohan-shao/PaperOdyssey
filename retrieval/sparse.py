@@ -38,10 +38,11 @@ import threading
 import time
 from pathlib import Path
 
-from config import PROJECT_ROOT, get_config
+from config import get_config
 from kb import store as kb_store
 
 from .lookup import LookupStore, get_lookup_store
+from .index_paths import index_directory, validate_destination
 from .types import RetrievalFilters, ScoredPassage
 
 BACKENDS = ("pyserini", "rankbm25", "sqlite")
@@ -144,7 +145,7 @@ def build_index(passages_path: str | Path, index_dir: str | Path, backend: str |
     backend = backend or sparse_cfg["backend"]
     if backend not in BACKENDS:
         raise ValueError(f"unknown sparse backend {backend!r} (expected one of {BACKENDS})")
-    out = Path(index_dir)
+    out = validate_destination(index_dir, passages_path, "sparse")
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent))
     tmp.chmod(0o755)  # mkdtemp makes it owner-only; the index is shared data
@@ -161,11 +162,13 @@ def build_index(passages_path: str | Path, index_dir: str | Path, backend: str |
         if backend == "rankbm25":
             meta["bm25"] = {"k1": bm25.get("k1", 0.9), "b": bm25.get("b", 0.4)}
         if backend == "sqlite":
-            meta.update({"format_version": 1, "bm25": {"k1": 1.2, "b": 0.75},
+            meta.update({"format_version": 2, "bm25": {"k1": 1.2, "b": 0.75},
                          "analyzer": "porter unicode61", "fields": ["title", "section", "body"]})
         (tmp / "meta.json").write_text(json.dumps(meta) + "\n",
                                        encoding="utf-8")
-        shutil.rmtree(out, ignore_errors=True)
+        validate_destination(out, passages_path, "sparse")
+        if out.exists():
+            shutil.rmtree(out)
         tmp.rename(out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -285,7 +288,8 @@ class SparseRetriever:
         if not meta_path.exists():
             raise RuntimeError(f"BM25 index not found: {index_dir} "
                                "(run scripts/build_indexes.py --only sparse)")
-        built_with = json.loads(meta_path.read_text(encoding="utf-8"))["backend"]
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        built_with = meta["backend"]
         if built_with != backend:
             raise RuntimeError(f"BM25 index {index_dir} was built with {built_with!r} but the "
                                f"configured backend is {backend!r}; rebuild the sparse index")
@@ -298,6 +302,8 @@ class SparseRetriever:
         elif backend == "sqlite":
             from .sqlite_bm25 import SQLiteBM25
 
+            if meta.get("format_version") != 2:
+                raise RuntimeError("SQLite category normalization changed; rebuild the sparse index")
             fields = sparse_cfg.get("field_weighting", {})
             weights = fields.get("weights", [2.0, 0.5, 1.0]) if fields.get("enabled", False) else [1.0] * 3
             self._impl = SQLiteBM25(index_dir, weights)
@@ -316,10 +322,7 @@ class SparseRetriever:
 def index_path(cfg: dict | None = None) -> Path:
     """Resolve under paths.indices; accept legacy indices/bm25 and explicit absolute paths."""
     cfg = cfg or get_config()
-    subdir = Path(cfg["retrieval"]["sparse"]["index_dir"])
-    if not subdir.is_absolute() and subdir.parts and subdir.parts[0] == "indices":
-        subdir = Path(*subdir.parts[1:])
-    return PROJECT_ROOT / str(cfg["paths"]["indices"]) / subdir
+    return index_directory(cfg["retrieval"]["sparse"]["index_dir"], cfg)
 
 
 _RETRIEVER: SparseRetriever | None = None

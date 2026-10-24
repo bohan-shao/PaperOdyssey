@@ -19,6 +19,8 @@ import random
 import re
 import statistics
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from config import get_config, get_path
@@ -26,6 +28,19 @@ from kb import store
 from retrieval import lookup, pipeline, sparse
 
 from .latency import config_overrides, summarize
+
+# Fixed generation vocabulary, independent of the retrieval settings being evaluated.
+_QUERY_STOPWORDS = frozenset("a an and are as at be by for from in is it of on or that the this to was were with".split())
+
+
+def probe_mode(hybrid: bool, reranking: bool) -> str:
+    """Give every channel/reranking combination a distinct artifact label."""
+    return ("hybrid" if hybrid else "sparse") + ("_rerank" if reranking else "")
+
+
+def report_path(report: dict) -> Path:
+    """Use a unique run ID so reruns never overwrite earlier reports."""
+    return get_path("results") / "metrics" / f"ablation_retrieval_probe_{report['mode']}_{report['sample']['run_id']}.json"
 
 
 def source_metrics(hits: list, source: str, k: int = 10) -> dict[str, float]:
@@ -39,7 +54,7 @@ def source_metrics(hits: list, source: str, k: int = 10) -> dict[str, float]:
 
 def _queries(papers: list[dict], count: int, seed: int) -> list[dict]:
     rng = random.Random(seed)
-    stop = set(get_config()["retrieval"].get("query_processing", {}).get("stopwords", []))
+    stop = _QUERY_STOPWORDS
     chosen = rng.sample(papers, min(count, len(papers)))
     queries = []
     for i, paper in enumerate(chosen):
@@ -54,7 +69,8 @@ def _queries(papers: list[dict], count: int, seed: int) -> list[dict]:
         else:
             terms, kind = title_terms[::2], "partial_title"
         terms = terms or title_terms or title_words
-        queries.append({"query_id": f"PROBE{i:04d}", "input_text": "Find papers on " + " ".join(terms),
+        queries.append({"query_id": f"PROBE{i:04d}", "input_text": " ".join(terms),
+                        "template_text": "Find papers on " + " ".join(terms),
                         "gold_paper_ids": [paper["paper_id"]], "gold_passage_ids": [],
                         "split": "dev", "label_kind": "known_source_proxy", "query_kind": kind})
     return queries
@@ -73,7 +89,8 @@ def prepare_sample(paper_count: int, query_count: int) -> dict:
         raise ValueError("no processed papers available for the retrieval probe")
     sample = random.Random(cfg["seed"]).sample(papers, min(paper_count, len(papers)))
     ids = {p["paper_id"] for p in sample}
-    root = get_path("results") / "retrieval_probe" / f"seed{cfg['seed']}_papers{len(sample)}"
+    run_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    root = get_path("results") / "retrieval_probe" / f"seed{cfg['seed']}_papers{len(sample)}_{run_id}"
     processed = root / "processed"
     processed.mkdir(parents=True, exist_ok=True)
     counts = {}
@@ -89,23 +106,37 @@ def prepare_sample(paper_count: int, query_count: int) -> dict:
     queries = _queries(sample, query_count, cfg["seed"])
     (root / "queries.jsonl").write_text("".join(json.dumps(q) + "\n" for q in queries), encoding="utf-8")
     corpus_hash = hashlib.sha256((processed / names["passages_file"]).read_bytes()).hexdigest()
-    return {"root": str(root), "processed": str(processed), "paper_ids": sorted(ids),
+    return {"root": str(root), "run_id": run_id, "processed": str(processed), "paper_ids": sorted(ids),
             "num_papers": len(ids), "counts": counts, "queries": queries, "passages_sha256": corpus_hash}
 
 
-def _clear_runtime() -> None:
+def _clear_runtime(*, release_models: bool = False) -> None:
     """Release experiment-owned components between rows; never call in an online server."""
-    if lookup._STORE is not None:
-        lookup._STORE.close()
+    from retrieval import dense, rerank
+
+    stores = {lookup._STORE}
+    for retriever in (sparse._RETRIEVER, dense._RETRIEVER):
+        if retriever is not None:
+            stores.add(retriever._lookup)
+    # Drop all retrievers referencing a store before closing it.
+    sparse._RETRIEVER = dense._RETRIEVER = None
+    for store_ in stores:
+        if store_ is not None:
+            store_.close()
     lookup._STORE = None
-    sparse._RETRIEVER = None
     pipeline._LOADED.clear()
+    if release_models:
+        dense._ENCODER = None
+        rerank._RERANKER = None
 
 
 def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
               reranking: bool = False) -> dict:
     """Build sample indexes and compare legacy budgets, isolated switches and combined changes."""
-    if pipeline._LOADED:
+    from retrieval import dense, rerank
+
+    if (pipeline._LOADED or lookup._STORE is not None or sparse._RETRIEVER is not None
+            or dense._RETRIEVER is not None or dense._ENCODER is not None or rerank._RERANKER is not None):
         raise RuntimeError("run the probe in a fresh dedicated process")
     cfg = get_config()
     settings = cfg["eval"]["retrieval_probe"]
@@ -116,7 +147,11 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
     sections = Path(sample["processed"]) / names["sections_file"]
     report: dict = {"label_kind": "known_source_proxy", "limitations":
               "Queries derive from indexed source text; incomplete qrels, not held-out relevance labels. "
-              "Model proxies do not measure BGE/Qwen quality. Latency is local warm sequential latency.",
+               "Model proxies do not measure BGE/Qwen quality. Latency is local warm sequential latency.",
+              "metric_scope": "Raw source terms; paired request-template results are reported separately.",
+              "setup_timing": "row_setup_ms includes index loading and one warm-up query. Models and OS caches "
+                              "may be reused across rows; this is not comparable process cold-start latency.",
+              "mode": probe_mode(hybrid, reranking),
               "seed": cfg["seed"], "sample": sample, "hybrid": hybrid, "reranking": reranking,
               "probe_settings": copy.deepcopy(settings),
               "environment": {"python": platform.python_version(), "platform": platform.platform(),
@@ -145,12 +180,13 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
             report["build"]["lookup"] = lookup.build_lookup(passages, sections, lookup.lookup_path())
             for backend in ("rankbm25", "sqlite"):
                 report["build"][backend] = sparse.build_index(passages, root / "indices" / backend, backend=backend)
-            if hybrid:
-                import faiss
+            if hybrid or reranking:
                 import torch
-                from retrieval import dense
 
                 torch.set_num_threads(settings["cpu_threads"])
+            if hybrid:
+                import faiss
+
                 faiss.omp_set_num_threads(settings["cpu_threads"])
                 cfg["retrieval"]["dense"]["faiss_dir"] = str(root / "indices/faiss")
                 report["build"]["dense"] = dense.build_index(passages, dense.index_path())
@@ -170,35 +206,33 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
                     backend = cfg["retrieval"]["sparse"]["backend"]
                     cfg["retrieval"]["sparse"]["index_dir"] = str(root / "indices" / backend)
                     _clear_runtime()
-                    cold = time.perf_counter()
+                    setup = time.perf_counter()
                     pipeline.retrieve(sample["queries"][0]["input_text"])
-                    cold_ms = (time.perf_counter() - cold) * 1000
+                    setup_ms = (time.perf_counter() - setup) * 1000
                     entries = []
                     for q in sample["queries"]:
-                        result = pipeline.retrieve(q["input_text"], top_k=10)
-                        entries.append({"query_id": q["query_id"], "query_kind": q["query_kind"],
-                                        **source_metrics(result.hits, q["gold_paper_ids"][0]),
-                                        "paper_ids": [h.paper_id for h in result.hits],
-                                        "passage_ids": [h.passage_id for h in result.hits],
-                                        "latency_ms": result.latency_ms})
+                        for style, text in (("raw_terms", q["input_text"]), ("request_template", q["template_text"])):
+                            result = pipeline.retrieve(text, top_k=10)
+                            entries.append({"query_id": q["query_id"], "query_kind": q["query_kind"],
+                                            "query_style": style,
+                                            **source_metrics(result.hits, q["gold_paper_ids"][0]),
+                                            "paper_ids": [h.paper_id for h in result.hits],
+                                            "passage_ids": [h.passage_id for h in result.hits],
+                                            "total_candidates": result.total_candidates,
+                                            "latency_ms": result.latency_ms})
                     metric_names = list(source_metrics([], ""))
+                    raw = [e for e in entries if e["query_style"] == "raw_terms"]
                     report["rows"][name] = {
-                        "metrics": {m: statistics.fmean(e[m] for e in entries) for m in metric_names},
-                        "by_query_kind": {kind: {m: statistics.fmean(e[m] for e in entries if e["query_kind"] == kind)
-                                                 for m in metric_names} for kind in {e["query_kind"] for e in entries}},
-                        "latency": {stage: summarize([e["latency_ms"][stage] for e in entries if stage in e["latency_ms"]])
-                                    for stage in {s for e in entries for s in e["latency_ms"]}},
-                        "cold_start_ms": cold_ms, "config": copy.deepcopy(cfg["retrieval"]), "per_query": entries}
+                        "metrics": {m: statistics.fmean(e[m] for e in raw) for m in metric_names},
+                        "by_query_style": {style: {m: statistics.fmean(e[m] for e in entries if e["query_style"] == style)
+                                                   for m in metric_names} for style in ("raw_terms", "request_template")},
+                        "by_query_kind": {kind: {m: statistics.fmean(e[m] for e in raw if e["query_kind"] == kind)
+                                                 for m in metric_names} for kind in {e["query_kind"] for e in raw}},
+                        "latency": {stage: summarize([e["latency_ms"][stage] for e in raw if stage in e["latency_ms"]])
+                                    for stage in {s for e in raw for s in e["latency_ms"]}},
+                        "row_setup_ms": setup_ms, "config": copy.deepcopy(cfg["retrieval"]), "per_query": entries}
                     # Persist after every row so interrupted experiments remain inspectable.
                     (root / "progress.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         finally:
-            _clear_runtime()
-            if hybrid:
-                from retrieval import dense
-
-                dense._RETRIEVER = None
-                dense._ENCODER = None
-            from retrieval import rerank
-
-            rerank._RERANKER = None
+            _clear_runtime(release_models=True)
     return report

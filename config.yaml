@@ -104,7 +104,7 @@ retrieval:
     query_format: auto         # auto | bge | qwen3 | plain; never prepend BGE instructions to Qwen/MiniLM
     query_instruction: null    # explicit override for local model paths; null selects query_format
     task_instruction: "Given a scientific question, retrieve relevant passages from research papers"
-    max_length: 512            # index/query manifest; Qwen3 trial: 1024, batch_size: 8
+    max_length: 512            # document token limit in manifest; Qwen3 trial: 1024, batch_size: 8
     device: null               # automatic CUDA/CPU, or an explicit torch device
     batch_size: 64
     fp16: true
@@ -122,7 +122,7 @@ retrieval:
     device: null               # automatic CUDA/CPU; diagnostic runs explicitly choose CPU
     top_k: 10
     max_length: 512             # (query, passage) tokens per pair; longer pairs are truncated
-    batch_size: 16              # lower activation peak on consumer GPUs; tune with latency benchmark
+    batch_size: 64              # retain the reference baseline; tune per hardware with latency benchmark
     fp16: true
   parent_doc:
     enabled: false              # Q3 ablation: parent-document retrieval

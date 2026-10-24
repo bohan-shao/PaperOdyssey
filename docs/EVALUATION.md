@@ -99,17 +99,29 @@ Metrics: the ROUGE/BERTScore/RAGAS trio + coverage.
 - Each evaluation run outputs: `data/results/metrics/<stage>_<date>.json` (including a config snapshot + dependency versions)
 - When the report cites metrics, it must include the `metrics/*.json` file paths (included in the Dropbox deliverables)
 
-### D36 small-corpus diagnostic
+### D38 small-corpus diagnostic
 
 `scripts/probe_retrieval.py --papers 300 --queries 60 [--hybrid] [--rerank]` samples complete
 papers from the configured processed KB with `seed`, builds isolated sample indexes under
 `paths.results/retrieval_probe/`, and writes
-`metrics/ablation_retrieval_probe_<mode>_<date>.json`. No temporary input directory is embedded
+`metrics/ablation_retrieval_probe_<mode>_<UTC-date-time>_<run-id>.json`. Modes distinguish
+sparse/hybrid and rerank on/off; every run has isolated sample/progress artifacts.
+No temporary input directory is embedded
 in code/config. The report includes query records, paper IDs, a passage SHA-256, versions,
 per-row retrieval config, stage timing, hits, build costs, and per-query/per-query-type metrics.
+`row_setup_ms` measures index loading plus one warm-up request, with potentially reused models
+and OS caches. It is not a comparable process cold-start measurement. Retriever objects and
+their lookup references are reset between rows; all experiment-owned components are cleared
+on exit, including failures.
 
 Queries alternate partial title terms and twelve distinct abstract terms excluding title
-terms. The source paper is a **weak, non-exhaustive label**. These are known-source probes,
+terms, using a fixed generation vocabulary independent of tuned retrieval stopwords. Every
+source query has paired raw-term and `Find papers on ...` forms. Main metrics and stage
+latencies use raw terms; `by_query_style` reports both forms separately. Historical 2026-10-13
+runs used only the template, so their query-processing gain is confounded by removing its
+stopwords. The revised diagnostic found raw-term MRR unchanged at 0.975 (see retrieval/REVIEW.md).
+Neither query form represents independently collected natural user queries.
+The source paper is a **weak, non-exhaustive label**. These are known-source probes,
 not held-out human relevance judgments: source text remains indexed and source recall is
 optimistic. `source_recall@10`, source MRR/NDCG and distinct-paper count are computed over
 distinct papers represented in the first ten returned passages. Diversity is not precision.
@@ -128,3 +140,10 @@ then evaluate untouched held-out queries at paper and passage granularity. Inclu
 acronym/model-name, negative constraint, comparison and technical-detail cases; report
 P@10/R@10, MRR/NDCG, relevant evidence diversity, p50/p95, peak VRAM and build time. For
 Qwen3 use separate dense index directories and record the instruction and token limit.
+
+Parent-document latency rows also report `parent_text_counts` (`expanded`, `unchanged`,
+`no_parent`) by comparing returned text with stored children outside the timed retrieval call.
+An unchanged parent hit can mean fallback or a parent identical to its child; warnings carry
+specific fallback reasons. Report actual expansion/fallback rates before attributing an effect
+to parent retrieval. The default rerank batch size stays 64 until a reference-GPU sweep supports
+a change; CPU probe batch size 16 is a separate experiment setting.

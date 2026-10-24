@@ -10,12 +10,12 @@ from __future__ import annotations
 import math
 import re
 import sqlite3
-import threading
 from pathlib import Path
 
 from kb.store import iter_passages
 
 from .query import normalize_text, passage_body
+from .sparse import category_token
 from .types import RetrievalFilters
 
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
@@ -38,7 +38,7 @@ def build(passages_path: str | Path, out: Path) -> int:
             for n, p in enumerate(iter_passages(passages_path), 1):
                 conn.execute("INSERT INTO docs VALUES (?, ?, ?)", (n, p["passage_id"], p.get("year")))
                 conn.executemany("INSERT INTO categories VALUES (?, ?)",
-                                 [(n, c) for c in sorted({c.casefold() for c in p.get("categories") or []})])
+                                 [(n, c) for c in sorted({category_token(c) for c in p.get("categories") or []})])
                 title = p.get("title", "")
                 fields = (title, p.get("section", ""), passage_body(p["text"], title))
                 conn.execute("INSERT INTO terms(rowid, title, section, body) VALUES (?, ?, ?, ?)",
@@ -59,7 +59,6 @@ class SQLiteBM25:
             raise ValueError("sqlite field_weights must be three finite non-negative weights")
         self._weights = tuple(weights)
         self._path = (index_dir / "bm25.sqlite").resolve()
-        self._lock = threading.Lock()
 
     def search(self, query: str, filters: RetrievalFilters | None, k: int) -> list[tuple[str, float]]:
         tokens = list(dict.fromkeys(_TOKEN.findall(normalize_text(query).casefold())))
@@ -77,15 +76,14 @@ class SQLiteBM25:
             if filters.categories:
                 clauses.append("d.rowid IN (SELECT docid FROM categories WHERE category IN ("
                                + ",".join("?" for _ in filters.categories) + "))")
-                args.extend(c.casefold() for c in filters.categories)
+                args.extend(category_token(c) for c in filters.categories)
         sql = ("SELECT d.passage_id, bm25(terms, ?, ?, ?) AS score "
                "FROM terms JOIN docs d ON d.rowid=terms.rowid WHERE " + " AND ".join(clauses)
                + " ORDER BY score, d.rowid LIMIT ?")
         # A per-call connection keeps the index replaceable on Windows and uses bounded RAM.
-        with self._lock:
-            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
-            try:
-                rows = conn.execute(sql, (*self._weights, *args, k)).fetchall()
-            finally:
-                conn.close()
+        conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(sql, (*self._weights, *args, k)).fetchall()
+        finally:
+            conn.close()
         return [(pid, -float(score)) for pid, score in rows]

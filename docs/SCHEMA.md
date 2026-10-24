@@ -148,12 +148,17 @@ Constraints:
 
 Retrieval's existing public signature remains
 `retrieve(query: str, filters: RetrievalFilters | None = None, top_k: int | None = None) -> RetrieveResult`.
-No fields change in D36. `total_candidates` counts the selected pool actually offered to reranking.
+No fields change in D38/D39. `total_candidates` counts the selected pool before reranking/final
+truncation, capped by `fusion.top_k` for both hybrid and single-channel runs, including when
+reranking is disabled; it is not the raw recall union size.
 `latency_ms` may additionally contain `query_ms` and `selection_ms`; timings remain integer
 milliseconds. Selection preserves passage IDs and scores, and assigns contiguous ranks.
 With parent-document mode enabled, `ScoredPassage.text` is a child-anchored parent excerpt
 bounded by `retrieval.parent_doc.max_chars` (0 = legacy unbounded section). An unlocatable
-or oversized child is returned unchanged. Downstream QA still reads the original child
+or oversized child is returned unchanged; ambiguous anchors also preserve the child. Whitespace
+differences alone can be matched. Fallbacks emit a warning with `parent_excerpt_outcome` and
+`passage_id`; no counters or log metadata are added to `RetrieveResult.latency_ms`.
+Downstream QA still reads the original child
 record by `passage_id`, as specified in section 10.
 
 - Passages/papers: read/write defined in `kb/store.py`; type definitions in `retrieval/types.py` (`ScoredPassage`)

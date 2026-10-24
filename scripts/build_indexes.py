@@ -6,7 +6,7 @@ Usage:
 Pipeline: kb.store passages/sections -> retrieval.lookup.build_lookup
     -> retrieval.sparse.build_index (optional) -> retrieval.dense.build_index (optional)
 All three read the same passages file, so hit ids always resolve in the lookup store.
-Constraints: rebuilding overwrites old indexes (delete first, then build); build time and scale
+Constraints: rebuild in temporary storage, validate the destination, then replace; build time and scale
 are merged into results/metrics/index_build_<date>.json.
 """
 

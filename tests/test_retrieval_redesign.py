@@ -134,7 +134,7 @@ class DenseManifestTest(unittest.TestCase):
                          "Instruct: Find papers\nQuery: ")
         self.assertEqual(query_instruction("local", {"query_instruction": "custom: "}), "custom: ")
 
-    def test_manifest_rejects_stale_instruction_length_and_mapping(self) -> None:
+    def test_manifest_accepts_query_changes_but_rejects_document_changes_and_mapping(self) -> None:
         from retrieval import dense
 
         with tempfile.TemporaryDirectory() as folder:
@@ -145,7 +145,9 @@ class DenseManifestTest(unittest.TestCase):
             meta_path = root / "dense/meta.json"
             meta = json.loads(meta_path.read_text())
             try:
-                for field, value in [("query_instruction", "wrong"), ("max_length", 123)]:
+                meta_path.write_text(json.dumps({**meta, "query_instruction": "another query task"}))
+                dense.DenseRetriever(root / "dense", lookup, encoder)
+                for field, value in [("document_prompt", "wrong"), ("max_length", 123)]:
                     meta_path.write_text(json.dumps({**meta, field: value}))
                     with self.assertRaisesRegex(RuntimeError, "rebuild"):
                         dense.DenseRetriever(root / "dense", lookup, encoder)

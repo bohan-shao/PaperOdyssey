@@ -2,7 +2,7 @@
 
 ## Goal
 
-The D36 diagnostic is implemented in `retrieval_probe.py`; the general retrieval/review/IAA
+The D38 diagnostic is implemented in `retrieval_probe.py`; the general retrieval/review/IAA
 stubs below remain pending. Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
 for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
 `eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
@@ -11,6 +11,10 @@ under configured `paths.results`. Run in a fresh process, without an online serv
 the components. Queries come from indexed source text; these proxy labels are not human
 relevance judgments. See `docs/EVALUATION.md` and `retrieval/README.md` for measured results
 and limitations. Set `HF_HUB_OFFLINE=1` when using locally cached models.
+The revised probe pairs raw terms with the request template, reports their metrics separately,
+and uses unique run directories/filenames for all four sparse/hybrid/rerank combinations.
+`row_setup_ms` is a warm-up/setup measurement with possible model/cache reuse, not a process
+cold start. See [retrieval/REVIEW.md](../retrieval/REVIEW.md) for the D39 audit and diagnostic results.
 
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
 performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
@@ -46,6 +50,8 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   budget check (hybrid+rerank p95 < 500 ms), throughput at 1/4/8 concurrent callers, an efSearch
   sweep (HNSW time + recall@50 vs exact search) and a rerank-depth sweep (time + top-10
   agreement with depth 50); cold-start load time is reported separately
+- Parent rows include actual expanded/unchanged/no-parent text counts. `mean_candidates` is
+  the selected pool before reranking/final truncation, not the raw sparse/dense union.
 - Configurations are switched in memory, never in config.yaml; every row sets all switches
 - Percentiles: linear interpolation between ranks (numpy's default)
 - First run on the 50-paper sample (RTX 5070): hybrid+rerank p95 410 ms (within budget, rerank

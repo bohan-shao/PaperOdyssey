@@ -41,10 +41,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 
-from config import PROJECT_ROOT, get_config
+from config import get_config
 from kb import store as kb_store
 
 from .lookup import LookupStore, get_lookup_store
+from .index_paths import index_directory, validate_destination
 from .sparse import category_token
 from .types import RetrievalFilters, ScoredPassage
 
@@ -66,10 +67,24 @@ class Encoder:
         from sentence_transformers import SentenceTransformer
 
         cfg = get_config()["retrieval"]["dense"]
+        # Direct callers (e.g. semantic chunking or diagnostics) may use a different model.
+        if model_name != cfg.get("model_name"):
+            cfg = {}
         device = device or cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = SentenceTransformer(model_name, device=device)
         if cfg.get("max_length") is not None:
-            self.model.max_seq_length = int(cfg["max_length"])
+            requested = int(cfg["max_length"])
+            if requested <= 0:
+                raise ValueError("dense.max_length must be positive")
+            transformer = self.model[0]
+            architecture = getattr(getattr(transformer, "auto_model", None), "config", None)
+            limits = [getattr(architecture, "max_position_embeddings", None),
+                      getattr(self.model.tokenizer, "model_max_length", None)]
+            limits = [n for n in limits if isinstance(n, int) and 0 < n < 1_000_000_000]
+            ceiling = min(limits) if limits else self.model.max_seq_length
+            self.model.max_seq_length = min(requested, ceiling)
+            if requested > ceiling:
+                log.warning("dense.max_length=%s capped at %s for %s", requested, ceiling, model_name)
         self.max_length = self.model.max_seq_length
         self.query_instruction = query_instruction(model_name, cfg)
         if fp16 and device.startswith("cuda"):
@@ -166,6 +181,7 @@ def build_index(passages_path: str | Path, faiss_dir: str | Path,
     Raises:
         RuntimeError: when there are no passages to index.
     """
+    out = validate_destination(faiss_dir, passages_path, "dense")
     import faiss
 
     t0 = time.perf_counter()
@@ -174,7 +190,6 @@ def build_index(passages_path: str | Path, faiss_dir: str | Path,
     index = faiss.IndexHNSWFlat(encoder.dim, hnsw["M"], faiss.METRIC_INNER_PRODUCT)
     index.hnsw.efConstruction = hnsw["efConstruction"]
 
-    out = Path(faiss_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
     with Path(passages_path).open(encoding="utf-8") as fh:
         total = sum(1 for _ in fh)
@@ -204,13 +219,16 @@ def build_index(passages_path: str | Path, faiss_dir: str | Path,
         meta = {
             "model_name": encoder.name, "dim": encoder.dim, "num_vectors": index.ntotal,
             "metric": "inner_product", "normalized": True,
+            "document_prompt": "",
             "query_instruction": getattr(encoder, "query_instruction", QUERY_INSTRUCTION),
             "max_length": getattr(encoder, "max_length", None),
             "hnsw": {"M": hnsw["M"], "efConstruction": hnsw["efConstruction"]},
             "faiss_version": faiss.__version__,
         }
         (tmp / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-        shutil.rmtree(out, ignore_errors=True)
+        validate_destination(out, passages_path, "dense")
+        if out.exists():
+            shutil.rmtree(out)
         tmp.rename(out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -250,9 +268,9 @@ class DenseRetriever:
             raise RuntimeError(f"FAISS index {faiss_dir} was built with {meta['model_name']!r} but "
                                f"queries would be encoded with {model_name!r}; rebuild the dense index")
         self._encoder = encoder or get_encoder()
-        expected_instruction = getattr(self._encoder, "query_instruction", QUERY_INSTRUCTION)
-        if meta.get("query_instruction", QUERY_INSTRUCTION) != expected_instruction:
-            raise RuntimeError("FAISS query instruction differs from the index manifest; rebuild the dense index")
+        # Query instructions are experiment provenance, not part of document encoding.
+        if meta.get("document_prompt", "") != "":
+            raise RuntimeError("FAISS document prompt differs from the encoder; rebuild the dense index")
         if meta.get("max_length") != getattr(self._encoder, "max_length", None):
             # Pre-manifest BGE indexes used the model's 512-token limit.
             legacy_bge = ("max_length" not in meta and "bge-" in model_name.casefold()
@@ -353,10 +371,7 @@ class DenseRetriever:
 def index_path(cfg: dict | None = None) -> Path:
     """Resolve under paths.indices; accept legacy indices/faiss and explicit absolute paths."""
     cfg = cfg or get_config()
-    subdir = Path(cfg["retrieval"]["dense"]["faiss_dir"])
-    if not subdir.is_absolute() and subdir.parts and subdir.parts[0] == "indices":
-        subdir = Path(*subdir.parts[1:])
-    return PROJECT_ROOT / str(cfg["paths"]["indices"]) / subdir
+    return index_directory(cfg["retrieval"]["dense"]["faiss_dir"], cfg)
 
 
 _RETRIEVER: DenseRetriever | None = None

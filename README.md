@@ -47,7 +47,7 @@ Online query:
 
 Detailed design and decision log: see [docs/DESIGN.md](docs/DESIGN.md).
 
-The D36 retriever keeps dense+sparse search, broadens each channel to 150, selects 50 candidates
+The D38 retriever keeps dense+sparse search, broadens each channel to 150, selects 50 candidates
 across papers/sections, and reranks to ten diverse passages. Corpus analysis, switches,
 SQLite BM25 (no Java), Qwen3 embedding configuration, and the reproducible small-sample probe
 are documented in [retrieval/README.md](retrieval/README.md). `get_config(path)` selects the

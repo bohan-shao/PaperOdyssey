@@ -2,8 +2,10 @@
 
 `retrieval.pipeline.retrieve(query, filters=None, top_k=None) -> RetrieveResult` remains the
 only retrieval entry point for orchestration, downstream and quality experiments. The default
-still combines sparse and dense retrieval. D36 changes candidate handling, not public fields
-or signatures. Contracts: `docs/SCHEMA.md`; decisions: `docs/DESIGN.md`.
+still combines sparse and dense retrieval. D38 changes candidate handling, not public fields
+or signatures. D39 corrects verified review findings; see [REVIEW.md](REVIEW.md) for evidence,
+regression coverage and remaining environment limits. Contracts: `docs/SCHEMA.md`;
+decisions: `docs/DESIGN.md`.
 
 ## Shard 0 findings (2026-10-13)
 
@@ -82,10 +84,10 @@ sum of BM25/cosine scores. Zero-weight channels contribute no candidates; ties a
 | `query.py` | Pure semantic/lexical query views and known-prefix removal |
 | `sparse.py` | Pyserini (default), SQLite or rank-bm25; no silent backend fallback |
 | `sqlite_bm25.py` | Contentless disk-backed FTS5 index over title/section/body; exact metadata filters before LIMIT |
-| `dense.py` | Unit float32 vectors, FAISS HNSW, model/instruction/token-limit manifest validation |
+| `dense.py` | Unit float32 vectors, FAISS HNSW, model/document-prompt/token-limit validation |
 | `fusion.py` | Full weighted RRF union with stable ties and finite nonnegative weights |
 | `selection.py` | Paper/section quotas and exact body deduplication before/after reranking |
-| `rerank.py` | CrossEncoder sigmoid scoring, serialized inference, batch size 16 |
+| `rerank.py` | CrossEncoder sigmoid scoring, serialized inference, reference batch size 64 |
 | `lookup.py` | Primary-key hydration, missing-ID errors, bounded parent excerpts |
 | `pipeline.py` | Parallel sparse/dense, sequential cold loading, selected-pool count, stage timings |
 
@@ -100,6 +102,14 @@ The known prefix is removed before indexing the body, avoiding duplicate title w
 The switch defaults **off** pending labeled evaluation; enabling it on another backend raises.
 SQLite is a scalable no-Java alternative; rank-bm25 remains useful for small baseline samples.
 Pyserini remains the production default until a labeled backend comparison supports a switch.
+All backends normalize category aliases such as `cs.CL`, `cs_CL`, and `cs CL` identically.
+SQLite format v2 applies that normalization at build and search time; rebuild v1 SQLite indexes.
+Each SQLite query owns a read-only connection, allowing concurrent readers without a shared
+query lock. Stop online readers before an offline index replacement.
+
+Lexical query processing preserves dots and underscores within technical names/versions
+(`GPT-3.5`, `Llama 3.1`, `cs.CL`), leaving final tokenization to the selected backend. It must
+not split a Lucene index term into separate query terms.
 
 **Production models remain BGE-large-en-v1.5 + bge-reranker-v2-m3.** Changing models without
 measuring this corpus would not establish a gain. The machine has an 8 GiB RTX 4070 Laptop
@@ -122,8 +132,11 @@ retrieval:
 Qwen queries use `Instruct: ...\nQuery: ...`; documents have no instruction. Auto mode recognizes
 BGE/Qwen3 model names; plain mode supports MiniLM. Local paths should specify `query_format`
 or `query_instruction`. An explicit empty SentenceTransformer prompt prevents accidental
-additional model prompts. The manifest records effective instruction and document token limit;
-mismatches require rebuilding. Mapping row order is validated. Qwen3 requires transformers
+additional model prompts. The manifest records the query instruction for provenance; query-only
+instruction/format/task changes do not require rebuilding unprompted document vectors. Model,
+document prompt and effective document token limit must match. Direct `Encoder(other_model)`
+calls retain that model's defaults instead of inheriting unrelated dense settings; configured
+token limits are capped at the model/tokenizer limit. Mapping row order is validated. Qwen3 requires transformers
 >=4.51.0. See the [official embedding card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B).
 Instruction/manifest behavior is covered by offline tests; Qwen weights were not downloaded
 or evaluated in this change. At 1,024 float32 dimensions, Shard 0 alone needs about 0.83 GiB
@@ -146,6 +159,10 @@ Inputs use `paths.processed` plus `kb.store.*` filenames. Sparse/dense subdirect
 under `paths.indices`; defaults are `bm25` and `faiss`. Absolute paths and legacy
 `indices/bm25` / `indices/faiss` spellings work. Lookup remains
 `paths.indices/retrieval.lookup.db_file`. The selected CLI config is reused by package calls.
+Index destinations must be dedicated directories: the shared root (`indices`, `.`, or an
+absolute root), relative escapes, links, input-containing directories, and directories with
+foreign artifacts or no index manifest are rejected before a build/replacement. Lookup output
+and its temporary file cannot overwrite the KB inputs. Separate absolute index locations remain supported.
 Restart after model/index/backend changes; online singletons are not hot-reloaded.
 
 Layouts: `lookup.sqlite`; sparse `meta.json` + `lucene/`, `rankbm25.pkl`, or `bm25.sqlite`;
@@ -155,17 +172,22 @@ Candidate/query-view changes do not. Compare in separate directories and close r
 replacing indexes on Windows. Build with `python scripts/build_indexes.py --config <full-config.yaml>`.
 
 Parent mode defaults off. When on, return up to 6,000 characters around the matched child,
-keeping the title prefix. Unlocatable/oversized children remain unchanged; `max_chars: 0`
+keeping the title prefix. Whitespace-only differences can be anchored without changing the
+parent's original text. Unlocatable, ambiguous or oversized children remain unchanged and
+emit structured warnings (`parent_excerpt_outcome`, `passage_id`); `max_chars: 0`
 restores whole sections. ID/score/rank still identify the child; reranking always sees the child.
 Downstream QA reloads original children by ID, so parent mode currently changes retrieval/review
 context, not QA's evidence-loading contract.
 
-## Small-scale validation
+## Historical small-scale validation (2026-10-13)
 
 The seeded probe uses 300 complete papers (9,994 passages, 4,635 sections), 60 queries and
 seed 42. Queries alternate partial title and abstract terms. Source labels are weak and
 non-exhaustive: this diagnoses source finding/candidate crowding, not general relevance or
 answer quality. Source metrics deduplicate papers within the first ten returned passages.
+Every historical query also prepended `Find papers on`, which the configured stopword list
+removes. The query-only MRR gain below is confounded by that template and must not be claimed
+as a gain on natural user queries. The revised paired diagnostic is summarized in [REVIEW.md](REVIEW.md).
 
 Sparse-only results:
 
@@ -215,11 +237,17 @@ python -m unittest tests.test_retrieval tests.test_retrieval_redesign tests.test
 
 The probe makes no LLM/API calls. Neural mode uses real cached MiniLM embedding/cross-encoder
 models on CPU; it cannot establish BGE/Qwen superiority. Reports preserve stage latency,
-cold start, versions, corpus hash, queries and config snapshots. Set `HF_HUB_OFFLINE=1` for
+row setup, versions, corpus hash, queries and config snapshots. `row_setup_ms` includes loading
+the row's indexes and a warm-up request; models/OS caches can be reused, so it is not comparable
+process cold-start latency. New runs use unique directories and four distinct mode names
+(`sparse`, `sparse_rerank`, `hybrid`, `hybrid_rerank`). Each source query runs as raw terms and
+with a request template; main metrics/latencies use raw terms and `by_query_style` reports
+the template separately. The query generator's vocabulary is independent of retrieval tuning.
+Set `HF_HUB_OFFLINE=1` for
 cached-model runs. Tests never download models. See `docs/EVALUATION.md` for the ablation
 protocol and separate human-label requirement.
 
-The full repository test attempt also encountered missing non-retrieval dependencies
+The historical full repository test attempt also encountered missing non-retrieval dependencies
 (`httpx2`, `tenacity`, `pandas`, `streamlit`) and a downstream fixture that replaces an open
 SQLite database on Windows. It is not reported as a clean full-suite pass. Detailed output:
 `data/results/tests_retrieval_redesign.log`. Pyserini/BGE-reranker live tests require the

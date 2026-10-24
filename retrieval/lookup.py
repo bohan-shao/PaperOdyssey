@@ -23,6 +23,8 @@ different passages files, so it raises instead of silently dropping hits.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 import threading
 import time
@@ -36,6 +38,8 @@ from kb import store as kb_store
 
 from .types import ScoredPassage
 from .query import passage_body
+
+log = logging.getLogger(__name__)
 
 PASSAGE_COLUMNS = (
     "passage_id", "paper_id", "arxiv_id", "title", "section", "year", "categories",
@@ -112,9 +116,12 @@ def build_lookup(passages_path: str | Path, sections_path: str | Path,
         sqlite3.IntegrityError: a passage_id / parent_section_id appears twice.
     """
     t0 = time.perf_counter()
-    db = Path(db_path)
-    db.parent.mkdir(parents=True, exist_ok=True)
+    db = Path(db_path).resolve()
     tmp = db.with_name(db.name + ".tmp")
+    sources = {Path(passages_path).resolve(), Path(sections_path).resolve()}
+    if db in sources or tmp in sources:
+        raise ValueError("lookup output and temporary file must not overwrite KB inputs")
+    db.parent.mkdir(parents=True, exist_ok=True)
     tmp.unlink(missing_ok=True)
     conn = sqlite3.connect(tmp)
     try:
@@ -167,6 +174,8 @@ class LookupStore:
 
     def _fetch(self, table: str, key: str, ids: Iterable[str]) -> dict[str, dict]:
         wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return {}
         found: dict[str, dict] = {}
         with self._lock:
             conn = self._conn()
@@ -247,23 +256,46 @@ def _require(found: dict[str, dict], ids: Iterable[str], kind: str) -> None:
 def parent_excerpt(parent: str, child: ScoredPassage, max_chars: int) -> str:
     """Bound a parent around the matched child; never replace evidence with an unrelated prefix.
 
-    Zero means unbounded legacy mode. If the child cannot be found verbatim or itself exceeds
-    the budget, preserve the child (the budget is then a soft upper bound).
+    Zero means unbounded legacy mode. Whitespace-only differences can be anchored; ambiguous,
+    missing or oversized anchors preserve the child and emit a structured warning. The budget
+    is then a soft upper bound. No approximate text matching changes the evidence.
     """
+    text, outcome = _parent_excerpt(parent, child, max_chars)
+    log.log(logging.WARNING if outcome.startswith("fallback_") else logging.DEBUG,
+            "parent excerpt %s for %s", outcome, child.passage_id,
+            extra={"parent_excerpt_outcome": outcome, "passage_id": child.passage_id})
+    return text
+
+
+def _parent_excerpt(parent: str, child: ScoredPassage, max_chars: int) -> tuple[str, str]:
+    """Return text and an observable outcome without changing the retrieval contract."""
     if max_chars < 0:
         raise ValueError("parent_doc.max_chars must be non-negative")
     if max_chars == 0 or len(parent) <= max_chars:
-        return parent
+        return parent, "full_parent"
     body = passage_body(child.text, child.title)
-    position = parent.find(body)
     prefix, sep, _ = parent.partition("\n")
     header = prefix + sep if sep and prefix.startswith(f"[{child.title}]") else ""
     budget = max_chars - len(header)
-    if not body or position < 0 or len(body) > budget:
-        return child.text
-    start = max(len(header), position - (budget - len(body)) // 2)
+    if not body.strip():
+        return child.text, "fallback_empty"
+    if len(body) > budget:
+        return child.text, "fallback_oversized"
+    # Sentence packing can normalize line breaks/spaces. Preserve original parent offsets.
+    pattern = r"\s+".join(re.escape(word) for word in body.split())
+    matches = list(islice(re.finditer(pattern, parent[len(header):]), 2))
+    if not matches:
+        return child.text, "fallback_unmatched"
+    if len(matches) > 1:
+        return child.text, "fallback_ambiguous"
+    match = matches[0]
+    position, end = len(header) + match.start(), len(header) + match.end()
+    if end - position > budget:
+        return child.text, "fallback_oversized"
+    start = max(len(header), position - (budget - (end - position)) // 2)
     start = min(start, max(len(header), len(parent) - budget))
-    return header + parent[start:start + budget]
+    outcome = "exact_window" if parent[position:end] == body else "whitespace_window"
+    return header + parent[start:start + budget], outcome
 
 
 # ---------------------------------------------------------------- config / singleton

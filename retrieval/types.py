@@ -28,7 +28,8 @@ class ScoredPassage:
     Attributes:
         passage_id: globally unique passage ID (SCHEMA.md §2).
         paper_id: ID of the containing paper.
-        text: passage text (in parent-document mode, the parent text; see the kb docs).
+        text: child text, or a bounded parent excerpt in parent-document mode; a failed
+            anchor or oversized child preserves the child (SCHEMA.md section 9).
         score: the score at the current stage (BM25 score / cosine similarity / rerank score).
         rank: the rank at the current stage (1-based).
         stage: the stage that produced this record ("bm25"|"dense"|"hybrid"|"rerank").
@@ -54,7 +55,8 @@ class RetrieveResult:
 
     Attributes:
         hits: the sorted top-k passages (rank 1..top_k).
-        total_candidates: number of candidates after fusion, before reranking.
+        total_candidates: selected pool size before reranking/final truncation, bounded
+            by fusion.top_k for hybrid and single-channel retrieval, even without reranking.
         latency_ms: per-stage latencies (for Q2 timing / report performance).
     """
 

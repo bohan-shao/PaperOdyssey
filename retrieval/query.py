@@ -6,7 +6,8 @@ import re
 import unicodedata
 
 _DASHES = str.maketrans({c: "-" for c in "‐‑‒–—−"})
-_WORDS = re.compile(r"[^\W_]+", re.UNICODE)
+# Preserve dotted versions/names and underscores for the backend's own analyzer.
+_WORDS = re.compile(r"[^\W_]+(?:[._][^\W_]+)*", re.UNICODE)
 
 
 def normalize_text(text: str) -> str:

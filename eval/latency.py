@@ -148,6 +148,7 @@ def measure_config(section: dict, queries: Sequence[str], overrides: dict[str, o
     """Per-stage latency of retrieve() for every query under one configuration."""
     stages: dict[str, list[float]] = {}
     hits = candidates = 0
+    parent_counts = {"expanded": 0, "unchanged": 0, "no_parent": 0}
     with config_overrides(section, {**BASE, **overrides}):
         for q in queries[:_UNMEASURED]:
             retrieve(q, filters)
@@ -157,9 +158,18 @@ def measure_config(section: dict, queries: Sequence[str], overrides: dict[str, o
                 stages.setdefault(key.removesuffix("_ms"), []).append(ms)
             hits += len(result.hits)
             candidates += result.total_candidates
+            if section.get("parent_doc", {}).get("enabled", False):
+                from retrieval.lookup import get_lookup_store
+
+                children = get_lookup_store().get_passages(h.passage_id for h in result.hits)
+                for hit in result.hits:
+                    outcome = ("no_parent" if not hit.parent_section_id else "unchanged"
+                               if hit.text == children[hit.passage_id]["text"] else "expanded")
+                    parent_counts[outcome] += 1
     n = max(len(queries), 1)
     return {"overrides": overrides, "filters": asdict(filters) if filters else None,
             "latency_ms": {stage: summarize(v) for stage, v in stages.items()},
+            "parent_text_counts": parent_counts,
             "mean_hits": round(hits / n, 2), "mean_candidates": round(candidates / n, 2)}
 
 
