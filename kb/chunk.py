@@ -90,7 +90,8 @@ _ABBREV = {
     "e.g", "i.e", "et al", "al", "etc", "fig", "figs", "eq", "eqs", "sec", "secs", "tab", "cf",
     "vs", "resp", "approx", "dr", "prof", "mr", "ms", "vol", "pp", "ref", "eds", "ed",
 }
-_SPLIT_RE = re.compile(r"(?<=[.!?])[\"')\]]?\s+(?=[\"'(\[]?[A-Z0-9])")
+# a closing quote/bracket after the stop stays with its sentence ("(see Fig. 3.) Next")
+_SPLIT_RE = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][\"')\]]))\s+(?=[\"'(\[]?[A-Z0-9])")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -104,9 +105,10 @@ def split_sentences(text: str) -> list[str]:
         buf = ""
         for piece in pieces:
             buf = f"{buf} {piece}".strip() if buf else piece.strip()
-            last = buf.rsplit(None, 1)[-1].rstrip(".").lower() if buf else ""
+            end = buf.rstrip("\"')]")  # judge the word before a closing quote/bracket
+            last = end.rsplit(None, 1)[-1].rstrip(".").lower() if end else ""
             # keep going when the "sentence" ended on an abbreviation or a single initial ("J.")
-            if last in _ABBREV or re.fullmatch(r"[a-z]", last) or buf.endswith(("et al.", "e.g.", "i.e.")):
+            if last in _ABBREV or re.fullmatch(r"[a-z]", last) or end.endswith(("et al.", "e.g.", "i.e.")):
                 continue
             out.append(buf)
             buf = ""
@@ -260,6 +262,72 @@ def _sentence_encoder(model_name: str):
     return SentenceTransformer(model_name)
 
 
+def _semantic_groups(units: list[Unit], sims: np.ndarray, similarity_threshold: float,
+                     min_tokens: int, max_tokens: int) -> list[list[Unit]]:
+    """Cut a section's sentences where the cosine to the previous one drops (see chunk_semantic)."""
+    groups: list[list[Unit]] = [[units[0]]]
+    size = units[0][1]
+    for k in range(1, len(units)):
+        n_tok = units[k][1]
+        topic_shift = sims[k - 1] < similarity_threshold and size >= min_tokens
+        if topic_shift or size + n_tok > max_tokens:
+            groups.append([])
+            size = 0
+        groups[-1].append(units[k])
+        size += n_tok
+    if len(groups) > 1 and sum(u[1] for u in groups[-1]) < min_tokens:
+        tail = groups.pop()
+        groups[-1].extend(tail)  # may slightly exceed max_tokens; keeps the tail self-contained
+    return groups
+
+
+def chunk_semantic_batch(
+    papers: list[tuple[str, Iterable[dict[str, str]], dict | None]],
+    similarity_threshold: float,
+    min_tokens: int,
+    max_tokens: int,
+    *,
+    prefix_fmt: str = DEFAULT_PREFIX,
+    tokenizer: Tokenizer | None = None,
+    model_name: str = "BAAI/bge-small-en-v1.5",
+    embed_fn: Callable[[list[str]], np.ndarray] | None = None,
+) -> list[list[dict]]:
+    """`chunk_semantic` for several papers at once: the sentences of all their sections are embedded
+    in one `embed_fn` call (the encoder works in large batches), then each section is cut as alone.
+
+    Args:
+        papers: (paper_id, sections, meta) per paper.
+
+    Returns:
+        One list of passages per paper, in the order given.
+    """
+    tok = tokenizer or get_tokenizer()
+    if embed_fn is None:
+        encoder = _sentence_encoder(model_name)
+        embed_fn = lambda sents: encoder.encode(sents, normalize_embeddings=True, batch_size=64)  # noqa: E731
+
+    units_of = [[_sentence_units(sec["text"], tok, max_tokens) for sec in sections] for _, sections, _ in papers]
+    sentences = [u[0] for paper in units_of for units in paper if len(units) > 1 for u in units]
+    emb = np.asarray(embed_fn(sentences)) if sentences else np.zeros((0, 0))
+    out: list[list[dict]] = []
+    row = 0
+    for (paper_id, sections, meta), paper in zip(papers, units_of):
+        m = _meta(meta)
+        passages: list[dict] = []
+        for s_idx, (sec, units) in enumerate(zip(sections, paper)):
+            if not units:
+                continue
+            sims = np.ones(0)
+            if len(units) > 1:
+                e = emb[row:row + len(units)]
+                row += len(units)
+                sims = (e[:-1] * e[1:]).sum(axis=1)
+            for g in _semantic_groups(units, sims, similarity_threshold, min_tokens, max_tokens):
+                passages.append(_make_passage(paper_id, m, sec["section"], s_idx, len(passages), _join(g), prefix_fmt))
+        out.append(passages)
+    return out
+
+
 def chunk_semantic(
     paper_id: str,
     sections: Iterable[dict[str, str]],
@@ -283,39 +351,12 @@ def chunk_semantic(
     Args:
         embed_fn: optional override (list[str] -> L2-normalized [n, d] array), e.g. for tests;
             defaults to sentence-transformers `model_name` (config `kb.chunk.semantic_model`).
+            Called once per paper, with the sentences of all its multi-sentence sections.
     """
-    tok = tokenizer or get_tokenizer()
-    m = _meta(meta)
-    if embed_fn is None:
-        encoder = _sentence_encoder(model_name)
-        embed_fn = lambda sents: encoder.encode(sents, normalize_embeddings=True, batch_size=64)  # noqa: E731
-
-    passages: list[dict] = []
-    for s_idx, sec in enumerate(sections):
-        units = _sentence_units(sec["text"], tok, max_tokens)
-        if not units:
-            continue
-        sims = np.ones(max(0, len(units) - 1))
-        if len(units) > 1:
-            emb = np.asarray(embed_fn([u[0] for u in units]))
-            sims = (emb[:-1] * emb[1:]).sum(axis=1)
-        groups: list[list[Unit]] = [[units[0]]]
-        size = units[0][1]
-        for k in range(1, len(units)):
-            n_tok = units[k][1]
-            topic_shift = sims[k - 1] < similarity_threshold and size >= min_tokens
-            if topic_shift or size + n_tok > max_tokens:
-                groups.append([])
-                size = 0
-            groups[-1].append(units[k])
-            size += n_tok
-        if len(groups) > 1 and sum(u[1] for u in groups[-1]) < min_tokens:
-            tail = groups.pop()
-            groups[-1].extend(tail)  # may slightly exceed max_tokens; keeps the tail self-contained
-        for g in groups:
-            body = _join(g)
-            passages.append(_make_passage(paper_id, m, sec["section"], s_idx, len(passages), body, prefix_fmt))
-    return passages
+    sections = list(sections)
+    return chunk_semantic_batch([(paper_id, sections, meta)], similarity_threshold, min_tokens, max_tokens,
+                                prefix_fmt=prefix_fmt, tokenizer=tokenizer, model_name=model_name,
+                                embed_fn=embed_fn)[0]
 
 
 # ---------------------------------------------------------------- ablation B: parent documents (D22)
@@ -349,6 +390,29 @@ def build_parent_records(
             "text": f"{prefix}\n{sec['text']}" if prefix else sec["text"],
         })
     return records
+
+
+def sections_from_parents(records: Iterable[dict], prefix_fmt: str = DEFAULT_PREFIX) -> list[dict[str, str]]:
+    """The parsed sections of one paper back from its `sections.jsonl` records (inverse of
+    `build_parent_records`): [{section, text}] in section order, the prefix line removed.
+
+    Raises:
+        ValueError: the records are not one paper's sections 0..n-1, or a text does not start
+            with the prefix `prefix_fmt` gives (built with another prefix format).
+    """
+    recs = sorted(records, key=lambda r: r["section_index"])
+    if [r["section_index"] for r in recs] != list(range(len(recs))) or len({r["paper_id"] for r in recs}) > 1:
+        raise ValueError("not one paper's sections 0..n-1")
+    out = []
+    for r in recs:
+        prefix = prefix_fmt.format(title=r["title"], section=r["section"] or "Body").strip()
+        text = r["text"]
+        if prefix:
+            if not text.startswith(prefix + "\n"):
+                raise ValueError(f"{r['parent_section_id']}: text does not start with the prefix {prefix!r}")
+            text = text[len(prefix) + 1:]
+        out.append({"section": r["section"], "text": text})
+    return out
 
 
 def build_parent_map(passages: list[dict], sections: Iterable[dict[str, str]]) -> list[dict]:
