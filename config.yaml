@@ -160,6 +160,12 @@ llm:
 # ---- eval/ evaluation ----
 eval:
   dev_ratio: 0.1                # dev/eval split
+  annotation:                   # eval set (D39, scripts/eval_set.py); files under paths.eval
+    drafts_file: drafts.jsonl   # LLM-drafted questions, all rounds
+    sheets_dir: annotation      # marking sheets round<R>_part<P>_<annotator>.csv and to_rewrite.csv
+    rewrite_file: to_rewrite.csv
+    eval_set_file: eval_set.jsonl
+    annotators: [A, B, C]       # names in the sheet file names; the same names every time
   # (bertscore / ragas config sections return with the downstream task — see eval/README.md)
 
 # ---- ui/ ----
