@@ -12,7 +12,7 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   - Hit@K, P@K, R@K (K=1,3,5,10 by default), MRR@10, NDCG@10, macro-averaged; `per_query` gives the
     position of each query's first gold paper (failed -> succeeded examples of an ablation)
   - gold supports two granularities: paper-level (gold_paper_ids) and passage-level (gold_passage_ids);
-    at paper level a paper takes the position of its best-ranked passage. The conventions are in the
+    every id counts once, at its best-ranked position (at paper level, a paper's best passage). The conventions are in the
     module docstring; checked against hand-computed values in `tests/test_eval.py`
   - hits come from `data/results/retrieval_results/` (run once for each of the four config variants)
 - Output JSON: `data/results/metrics/retrieval_<stage>_<date>.json`

@@ -57,6 +57,7 @@ Mark alone and do not discuss rows until everyone is done (agreement is computed
 Use `note` for anything worth discussing later. Only `y` / `n` are accepted. Keep the file as CSV and its
 name unchanged (Excel: File > Save As > "CSV UTF-8"; Google Sheets: File > Download > CSV, then
 give the download the original file name).
-Rows most annotators mark `n` go to `to_rewrite.csv`, where one person writes a better question
-(`new_question`, same rules as the LLM's: no title copying, no names the paper introduces); everyone then
-marks the new version in the next round's sheet.
+Rows most annotators mark `n`, and a question identical to an earlier accepted one, go to `to_rewrite.csv`
+(`reason` says which), where one person writes a better question (`new_question`, same rules as the LLM's:
+no title copying, no names the paper introduces) and its kind (`new_type`: definitional, method-comparison,
+survey, paper-locating or technical-detail); everyone then marks the new version in the next round's sheet.
