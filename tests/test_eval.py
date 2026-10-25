@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import shutil
 import tempfile
 import threading
 import unittest
@@ -62,6 +63,19 @@ class RetrievalMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(out["per_granularity"]["passage"]["MRR@10"], 1 / 4)
         self.assertEqual(out["per_query"], {"q1": {"first_gold_rank": 3}, "q2": {"first_gold_rank": None}})
 
+    def test_a_repeated_passage_counts_once(self) -> None:
+        hits = [hit("A_0", 1), hit("A_0", 2), hit("B_0", 3)]  # A_0 found by two sub-queries
+        self.assertEqual(rm.ranking(hits, "passage"), ["A_0", "B_0"])
+        self.assertEqual(rm.ndcg_at_k(hits, {"A_0"}, level="passage"), 1.0)
+        self.assertEqual(rm.precision_at_k(hits, {"A_0"}, 2, level="passage"), 0.5)
+
+    def test_every_key_is_there_without_gold(self) -> None:
+        out = rm.compute_retrieval_metrics({}, {"q": {"gold_paper_ids": []}}, [1, 5])
+        self.assertEqual(out["n_queries"], 0)
+        for key in ("Hit@1", "P@5", "R@5", "MRR@10", "NDCG@10"):
+            self.assertIsNone(out[key])
+        self.assertEqual(out["per_query"], {})
+
 
 def item(qid: str, *labels: bool) -> dict:
     return {"query_id": qid, "votes": [["P"] if v else [] for v in labels], "paper_ids": ["P"]}
@@ -107,8 +121,10 @@ class IAATest(unittest.TestCase):
 class FakeClient:
     model = "fake-llm"
 
-    def __init__(self, fail_titles: set[str] = frozenset()) -> None:
+    def __init__(self, fail_titles: set[str] = frozenset(), fail_all: bool = False, same_question: bool = False) -> None:
         self.fail_titles = set(fail_titles)
+        self.fail_all = fail_all
+        self.same_question = same_question
         self.calls = 0
         self._lock = threading.Lock()
 
@@ -116,9 +132,10 @@ class FakeClient:
         with self._lock:
             self.calls += 1
         title = json.loads(messages[1]["content"])["title"]
-        if title in self.fail_titles:
+        if self.fail_all or title in self.fail_titles:
             raise RuntimeError("provider failure")
-        return {"question": f"  Which work studies\n {title.lower()}? ", "type": "Survey"}
+        topic = "topics" if self.same_question else title.lower()
+        return {"question": f"  Which work studies\n {topic}? ", "type": "Survey"}
 
 
 def papers_db(path: Path) -> None:
@@ -129,16 +146,20 @@ def papers_db(path: Path) -> None:
     store.upsert_papers(rows, path)
 
 
-def mark(path: Path, fits: dict[str, str]) -> None:
-    """Fill the fits column of a marking sheet the way an annotator would."""
+def edit_csv(path: Path, columns: list[str], change) -> None:
+    """Rewrite a CSV with change(rows) -> rows, the way a person edits it in a spreadsheet."""
     with path.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
-    for row in rows:
-        row["fits"] = fits.get(row["query_id"], row["fits"])
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=questions.SHEET_COLUMNS)
+        writer = csv.DictWriter(fh, fieldnames=columns)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(change(rows))
+
+
+def mark(path: Path, fits: dict[str, str]) -> None:
+    """Fill the fits column of a marking sheet the way an annotator would."""
+    edit_csv(path, questions.SHEET_COLUMNS,
+             lambda rows: [{**r, "fits": fits.get(r["query_id"], r["fits"])} for r in rows])
 
 
 class QuestionsTest(unittest.TestCase):
@@ -160,13 +181,16 @@ class QuestionsTest(unittest.TestCase):
     def test_sample_is_seeded_built_papers_and_a_larger_n_extends_it(self) -> None:
         five, ten = questions.sample_papers(5, 42, self.db), questions.sample_papers(10, 42, self.db)
         self.assertEqual([p["paper_id"] for p in five], [p["paper_id"] for p in ten[:5]])
-        every = {p["paper_id"] for p in questions.sample_papers(28, 42, self.db)}
-        self.assertNotIn("0000", every)
-        self.assertNotIn("0001", every)
+        order = [p["paper_id"] for p in questions.sample_papers(28, 42, self.db)]
+        self.assertNotIn("0000", order)  # not built
+        self.assertNotIn("0001", order)  # abstract too short
         with self.assertRaises(ValueError):
             questions.sample_papers(29, 42, self.db)
+        store.upsert_papers([{"paper_id": order[3], "num_chunks": 0}], self.db)  # a KB rebuild loses a paper
+        self.assertEqual([p["paper_id"] for p in questions.sample_papers(27, 42, self.db)],
+                         [pid for pid in order if pid != order[3]])  # the others keep their order
 
-    def test_draft_retries_failures_on_a_rerun_and_refuses_another_sample(self) -> None:
+    def test_draft_retries_failures_on_a_rerun(self) -> None:
         papers = questions.sample_papers(6, 42, self.db)
         first = questions.draft_questions(papers, self.drafts, FakeClient({papers[2]["title"]}), workers=3)
         self.assertEqual(first, {"drafted": 5, "skipped": 0, "failed": 1})
@@ -176,25 +200,46 @@ class QuestionsTest(unittest.TestCase):
         self.assertEqual(client.calls, 1)
         drafts = questions.latest_drafts(self.drafts)
         self.assertEqual(list(drafts), [f"Q{i:04d}" for i in range(1, 7)])
-        q3 = drafts["Q0003"]
-        self.assertEqual(q3["paper_id"], papers[2]["paper_id"])
-        self.assertEqual(q3["question"], f"Which work studies {papers[2]['title'].lower()}?")
-        self.assertEqual((q3["question_type"], q3["source"], q3["round"]), ("survey", "llm:fake-llm", 1))
-        with self.assertRaises(ValueError):
-            questions.draft_questions(questions.sample_papers(6, 7, self.db), self.drafts, FakeClient())
+        ids = [p["paper_id"] for p in papers]
+        self.assertEqual([d["paper_id"] for d in drafts.values()], ids[:2] + ids[3:] + ids[2:3])
+        q6 = drafts["Q0006"]
+        self.assertEqual(q6["question"], f"Which work studies {papers[2]['title'].lower()}?")
+        self.assertEqual((q6["question_type"], q6["source"], q6["round"]), ("survey", "llm:fake-llm", 1))
 
-    def test_a_failing_first_call_stops_the_draft(self) -> None:
-        papers = questions.sample_papers(4, 42, self.db)
-        client = FakeClient({papers[0]["title"]})  # e.g. no API key
-        with self.assertRaises(RuntimeError):
-            questions.draft_questions(papers, self.drafts, client, workers=2)
-        self.assertEqual(client.calls, 1)
-        self.assertFalse(self.drafts.exists())
+    def test_a_paper_that_always_fails_does_not_block_the_others(self) -> None:
+        papers = questions.sample_papers(8, 42, self.db)
+        bad = {papers[0]["title"]}  # e.g. the provider refuses this paper every time
+        questions.draft_questions(papers[:4], self.drafts, FakeClient(bad), workers=2)
+        self.assertEqual(questions.draft_questions(papers, self.drafts, FakeClient(bad), workers=2),
+                         {"drafted": 4, "skipped": 3, "failed": 1})
+
+    def test_failures_in_a_row_stop_the_run(self) -> None:
+        client = FakeClient(fail_all=True)  # e.g. no API key
+        with self.assertRaises(RuntimeError) as ctx:
+            questions.draft_questions(questions.sample_papers(20, 42, self.db), self.drafts, client, workers=1)
+        self.assertIn("10 failed LLM calls in a row", str(ctx.exception))
+        self.assertLessEqual(client.calls, 12)  # at most 2 x workers calls were under way
+        self.assertEqual(questions.read_drafts(self.drafts), [])
+
+    def test_a_torn_last_line_does_not_swallow_the_next_question(self) -> None:
+        papers = questions.sample_papers(3, 42, self.db)
+        questions.draft_questions(papers[:2], self.drafts, FakeClient(), workers=1)
+        with self.drafts.open("a", encoding="utf-8") as fh:
+            fh.write('{"query_id": "Q0003", "rou')  # the process was killed mid-write
+        self.assertEqual(questions.draft_questions(papers, self.drafts, FakeClient(), workers=1)["drafted"], 1)
+        self.assertEqual([d["query_id"] for d in questions.read_drafts(self.drafts)], ["Q0001", "Q0002", "Q0003"])
+
+    def test_type_spellings(self) -> None:
+        for raw, want in [("Method Comparison", "method-comparison"), ("technical_detail", "technical-detail"),
+                          (" SURVEY ", "survey"), ("opinion", "other"), (None, "other")]:
+            self.assertEqual(questions._norm_type(raw), want)
 
     def test_marking_rounds_build_the_eval_set(self) -> None:
         questions.draft_questions(questions.sample_papers(3, 42, self.db), self.drafts, FakeClient(), workers=2)
         a, b, c = questions.write_sheets(self.drafts, self.sheets)  # the pilot
         self.assertEqual(a.name, "round1_part1_A.csv")
+        self.assertEqual(json.loads((self.sheets / "round1_part1.json").read_text())["query_ids"],
+                         ["Q0001", "Q0002", "Q0003"])
         with self.assertRaises(ValueError):  # every question already has a sheet
             questions.write_sheets(self.drafts, self.sheets)
         questions.draft_questions(questions.sample_papers(4, 42, self.db), self.drafts, FakeClient(), workers=2)
@@ -223,13 +268,10 @@ class QuestionsTest(unittest.TestCase):
         rewrite = self.sheets / "to_rewrite.csv"
         with rewrite.open(encoding="utf-8-sig", newline="") as fh:
             rows = list(csv.DictReader(fh))
-        self.assertEqual([r["query_id"] for r in rows], ["Q0003"])
-        rows[0]["new_question"] = "A better  question?"
-        with rewrite.open("w", encoding="utf-8-sig", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=questions.REWRITE_COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
-        with self.assertRaises(FileExistsError):  # a filled-in rewrite list is never overwritten
+        self.assertEqual([(r["query_id"], r["reason"]) for r in rows], [("Q0003", "rejected")])
+        edit_csv(rewrite, questions.REWRITE_COLUMNS,
+                 lambda rows: [{**r, "new_question": "A better  question?", "new_type": "Technical detail"} for r in rows])
+        with self.assertRaises(FileExistsError):  # new questions not applied yet are never overwritten
             self.build()
         self.assertEqual(questions.apply_rewrites(rewrite, self.drafts), 1)
         self.assertEqual(questions.apply_rewrites(rewrite, self.drafts), 0)  # already applied
@@ -242,14 +284,55 @@ class QuestionsTest(unittest.TestCase):
         self.assertEqual((summary["accepted"], summary["pending"], summary["rejected"]), (4, 0, 0))
         self.assertEqual(summary["iaa"]["n_items"], 5)  # round 1 of Q0001-Q0004 and round 2 of Q0003
         q3 = store.read_records(self.dir / "eval" / "eval_set.jsonl")[2]
-        self.assertEqual((q3["input_text"], q3["round"], q3["question_source"]), ("A better question?", 2, "human"))
+        self.assertEqual((q3["input_text"], q3["round"], q3["question_source"], q3["question_type"]),
+                         ("A better question?", 2, "human", "technical-detail"))
 
-    def test_a_mark_other_than_y_or_n_is_an_error(self) -> None:
-        questions.draft_questions(questions.sample_papers(2, 42, self.db), self.drafts, FakeClient(), workers=1)
+    def test_sheets_follow_the_handed_out_list_not_a_sheet_people_edit(self) -> None:
+        questions.draft_questions(questions.sample_papers(3, 42, self.db), self.drafts, FakeClient(), workers=1)
         a, _, _ = questions.write_sheets(self.drafts, self.sheets)
+        edit_csv(a, questions.SHEET_COLUMNS, lambda rows: [r for r in rows if r["query_id"] != "Q0002"])  # A deletes a row
+        mark(a, {"Q0001": "maybe"})  # and types a bad mark
+        questions.draft_questions(questions.sample_papers(4, 42, self.db), self.drafts, FakeClient(), workers=1)
+        _, b2, _ = questions.write_sheets(self.drafts, self.sheets)
+        self.assertEqual(list(questions.read_sheet(b2)), [("Q0004", 1)])  # Q0002 is not handed out again
+
+    def test_a_blank_cell_never_erases_a_mark_and_two_marks_are_an_error(self) -> None:
+        questions.draft_questions(questions.sample_papers(2, 42, self.db), self.drafts, FakeClient(), workers=1)
+        a, b, _ = questions.write_sheets(self.drafts, self.sheets)
+        mark(a, {"Q0001": "y"})
+        stray = self.sheets / "round1_part9_A.csv"  # a second, blank copy of the same rows
+        shutil.copy(b, stray)
+        self.assertEqual(questions.read_marks(self.sheets, "A"), {("Q0001", 1): True})
+        mark(stray, {"Q0001": "n"})
+        with self.assertRaises(ValueError) as ctx:
+            questions.read_marks(self.sheets, "A")
+        self.assertIn("round1_part9_A.csv", str(ctx.exception))
+
+    def test_blank_rows_are_skipped_and_errors_name_the_file_and_row(self) -> None:
+        questions.draft_questions(questions.sample_papers(1, 42, self.db), self.drafts, FakeClient(), workers=1)
+        a, _, _ = questions.write_sheets(self.drafts, self.sheets)
+        mark(a, {"Q0001": "y"})
+        with a.open("a", encoding="utf-8") as fh:
+            fh.write(",,,,,,,\n")  # an empty row a spreadsheet app saved
+        self.assertEqual(questions.read_sheet(a), {("Q0001", 1): True})
+        edit_csv(a, questions.SHEET_COLUMNS, lambda rows: [{**r, "round": "x"} if r["query_id"] else r for r in rows])
+        with self.assertRaises(ValueError) as ctx:
+            questions.read_sheet(a)
+        self.assertIn(f"{a}, row 2", str(ctx.exception))
         mark(a, {"Q0001": "maybe"})
         with self.assertRaises(ValueError):
             questions.read_sheet(a)
+
+    def test_a_duplicate_question_goes_to_the_rewrite_list(self) -> None:
+        questions.draft_questions(questions.sample_papers(2, 42, self.db), self.drafts,
+                                  FakeClient(same_question=True), workers=1)
+        for path in questions.write_sheets(self.drafts, self.sheets):
+            mark(path, {"Q0001": "y", "Q0002": "y"})
+        summary = self.build()
+        self.assertEqual((summary["accepted"], summary["duplicates"]), (1, 1))
+        with (self.sheets / "to_rewrite.csv").open(encoding="utf-8-sig", newline="") as fh:
+            self.assertEqual([(r["query_id"], r["reason"]) for r in csv.DictReader(fh)],
+                             [("Q0002", "same question as Q0001")])
 
     def test_split_is_stable_per_query(self) -> None:
         splits = [questions._split(f"Q{i:04d}", 42, 0.1) for i in range(1, 1001)]
