@@ -131,7 +131,9 @@ class FakeClient:
     def chat_json(self, messages: list[dict], schema_desc: str) -> dict:
         with self._lock:
             self.calls += 1
-        title = json.loads(messages[1]["content"])["title"]
+        content = json.loads(messages[1]["content"])
+        assert content["form"] in ("question", "request")
+        title = content["title"]
         if self.fail_all or title in self.fail_titles:
             raise RuntimeError("provider failure")
         topic = "topics" if self.same_question else title.lower()
@@ -205,6 +207,9 @@ class QuestionsTest(unittest.TestCase):
         q6 = drafts["Q0006"]
         self.assertEqual(q6["question"], f"Which work studies {papers[2]['title'].lower()}?")
         self.assertEqual((q6["question_type"], q6["source"], q6["round"]), ("survey", "llm:fake-llm", 1))
+        self.assertEqual(q6["question_form"], questions.question_form(q6["paper_id"]))
+        forms = [questions.question_form(f"{i:04d}.{i:05d}") for i in range(1000)]
+        self.assertTrue(350 <= forms.count("request") <= 450)
 
     def test_a_paper_that_always_fails_does_not_block_the_others(self) -> None:
         papers = questions.sample_papers(8, 42, self.db)

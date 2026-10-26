@@ -11,6 +11,8 @@
 3. **gold answer** (for generation evaluation): reference answer
 
 ## Workflow (D39, agreed by the team on 2026-10-24)
+For the annotators: [HOW_TO_MARK.md](HOW_TO_MARK.md) (what to do, with an example).
+
 Questions are drafted by the LLM from one paper each and checked by people; that paper is the gold paper.
 
 ```bash
