@@ -51,17 +51,19 @@ ANNOTATORS = ("A", "B", "C")
 TYPES = ("definitional", "method-comparison", "survey", "paper-locating", "technical-detail")
 MIN_ABSTRACT_CHARS = 200
 MAX_FAILURES_IN_A_ROW = 10  # then the key, model or connection is wrong, not one paper
-PROMPT_VERSION = "q1"
+PROMPT_VERSION = "q3"  # pilots of 2026-10-26: q1 allowed two sentences and 40 words, q2 had no forms
 SHEET_COLUMNS = ["query_id", "round", "question", "paper_title", "year", "abstract", "fits", "note"]
 REWRITE_COLUMNS = ["query_id", "round", "reason", "paper_title", "abstract", "question", "new_question", "new_type"]
 _YES, _NO = {"y", "yes", "1", "true"}, {"n", "no", "0", "false"}
 
 INSTRUCTIONS = f"""You help build an evaluation set for a search engine over arXiv papers in NLP, AI and machine learning.
 The user gives the title and abstract of one paper. Write one search request that a researcher could type into the search engine, to which this paper is a clearly good answer.
+The user also gives the form to write: "question" (a question, e.g. starting with How, What or Which) or "request" (a search request, e.g. "Papers on ..." or "Looking for work that ...").
 
 Rules:
-- One or two sentences, at most 40 words, plain English, in the researcher's own words.
-- Ask about the paper's problem, idea, method or finding, specifically enough that this paper clearly fits.
+- One sentence of 12 to 25 words that asks for one thing, in plain English and the researcher's own words.
+- Ask about the paper's problem, idea or method, specifically enough that this paper clearly fits.
+- Do not state the paper's results or conclusions: the researcher does not know them yet.
 - Write as someone who has not seen the paper: do not copy the title or long phrases of the abstract, and do not use names the paper introduces (its model, method, dataset or benchmark names), author names, arXiv ids or years.
 - Do not refer to "this paper" or "the paper".
 
@@ -109,16 +111,23 @@ def _norm_type(value: object) -> str:
     return qtype if qtype in TYPES else "other"
 
 
+def question_form(paper_id: str) -> str:
+    """"request" for 40% of the papers (by a hash of the id), else "question", so not every item is a how-question."""
+    return "request" if _hash(0, f"form:{paper_id}") % 10 < 4 else "question"
+
+
 def draft_question(paper: dict, client) -> dict:
-    """{"question", "question_type"} for one paper (one chat_json call)."""
+    """{"question", "question_type", "question_form"} for one paper (one chat_json call)."""
+    form = question_form(paper["paper_id"])
     messages = [{"role": "system", "content": INSTRUCTIONS},
-                {"role": "user", "content": json.dumps({"title": paper["title"], "abstract": paper["abstract"]},
-                                                       ensure_ascii=False)}]
+                {"role": "user", "content": json.dumps({"title": paper["title"], "abstract": paper["abstract"],
+                                                        "form": form}, ensure_ascii=False)}]
     reply = client.chat_json(messages, _SCHEMA)
     question = reply.get("question") if isinstance(reply, dict) else None
     if not isinstance(question, str) or not question.strip():
         raise ValueError(f"{paper['paper_id']}: no question in the reply {reply!r}")
-    return {"question": " ".join(question.split()), "question_type": _norm_type(reply.get("type"))}
+    return {"question": " ".join(question.split()), "question_type": _norm_type(reply.get("type")),
+            "question_form": form}
 
 
 def read_drafts(path: str | Path) -> list[dict]:
@@ -338,6 +347,7 @@ def build_eval_set(drafts_path: str | Path, sheet_dir: str | Path, eval_set_path
                                 for a, v in zip(annotators, votes)],
                 "majority_paper_ids": [d["paper_id"]], "split": split,
                 "question_type": d["question_type"], "question_source": d["source"], "round": d["round"],
+                "question_form": d.get("question_form"),
             })
 
     _write_rewrites(to_rewrite, Path(rewrite_path), latest)  # first: it refuses to drop unapplied new questions
@@ -387,7 +397,7 @@ def apply_rewrites(rewrite_path: str | Path, drafts_path: str | Path) -> int:
             if d["round"] != int(row["round"]):
                 continue
             added.append({**d, "round": d["round"] + 1, "question": new, "question_type": _norm_type(row.get("new_type")),
-                          "source": "human", "prompt_version": None})
+                          "question_form": None, "source": "human", "prompt_version": None})
     with _open_append(Path(drafts_path)) as fh:
         fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in added)
     return len(added)

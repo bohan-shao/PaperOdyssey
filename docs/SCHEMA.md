@@ -134,7 +134,8 @@ Constraints:
   from; `annotations[].papers` is `[that paper]` when the annotator accepted the question, else `[]`.
   `gold_passage_ids` is `[]` and `gold_answer` is `""` (not collected). Extra fields: `question_type` (one of the
   five types, or `"other"`; for a rewritten question the type its writer gave), `question_source` (`"llm:<model>"` for a drafted question, `"human"` for a rewritten
-  one) and `round` (1 = the LLM draft, 2+ = rewritten by a team member and marked again).
+  one) `round` (1 = the LLM draft, 2+ = rewritten by a team member and marked again) and `question_form`
+  (`"question"` or `"request"`, the form the LLM was asked to write; null for a rewritten one).
 
 ## 8. Retrieval/Evaluation Intermediates (`data/results/retrieval_results/`)
 
