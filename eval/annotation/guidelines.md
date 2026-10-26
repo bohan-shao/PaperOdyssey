@@ -45,6 +45,8 @@ Given a user input (a research need), decide whether a paper **is relevant**:
 
 ## 6. Marking the drafted questions (D39, the procedure in use)
 
+A short step-by-step version with an example is in [HOW_TO_MARK.md](HOW_TO_MARK.md).
+
 Each row of your sheet (`data/eval/annotation/round<R>_part<P>_<you>.csv`) is a search request the LLM wrote
 from one paper, with that paper's title and abstract. Mark `fits`:
 
