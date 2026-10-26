@@ -130,6 +130,12 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 Constraints:
 - **Deduplication** (keep only one of similar inputs), **balance** (query types: definitional / method-comparison / survey / paper-locating / technical-detail, as balanced as possible).
 - Annotation guidelines: `eval/annotation/guidelines.md`; IAA computation: Fleiss' κ over 3 annotators + percentage agreement (usable only at ≥80%).
+- Built by `eval/annotation/questions.py` (D39): one gold paper per item, the paper the question was drafted
+  from; `annotations[].papers` is `[that paper]` when the annotator accepted the question, else `[]`.
+  `gold_passage_ids` is `[]` and `gold_answer` is `""` (not collected). Extra fields: `question_type` (one of the
+  five types, or `"other"`; for a rewritten question the type its writer gave), `question_source` (`"llm:<model>"` for a drafted question, `"human"` for a rewritten
+  one) `round` (1 = the LLM draft, 2+ = rewritten by a team member and marked again) and `question_form`
+  (`"question"` or `"request"`, the form the LLM was asked to write; null for a rewritten one).
 
 ## 8. Retrieval/Evaluation Intermediates (`data/results/retrieval_results/`)
 
@@ -148,7 +154,7 @@ Constraints:
 
 Retrieval's existing public signature remains
 `retrieve(query: str, filters: RetrievalFilters | None = None, top_k: int | None = None) -> RetrieveResult`.
-No fields change in D38/D39. `total_candidates` counts the selected pool before reranking/final
+No fields change in D38/D40. `total_candidates` counts the selected pool before reranking/final
 truncation, capped by `fusion.top_k` for both hybrid and single-channel runs, including when
 reranking is disabled; it is not the raw recall union size.
 `latency_ms` may additionally contain `query_ms` and `selection_ms`; timings remain integer

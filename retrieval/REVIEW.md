@@ -4,8 +4,12 @@ Scope: the 14 leads in the supplied `pr_review_checklist.md`, verified against `
 The initial tracked worktree was clean; the supplied checklist and reference corpus were
 untracked and remain untouched. Remote refs were fetched: `origin/main` is `55cef08`.
 Its independent KB changes were inspected, not merged or committed. D36/D37 are reproduced
-from that commit for numbering compatibility; retrieval uses D38 and review corrections D39.
+from that commit for numbering compatibility; retrieval uses D38 and review corrections D40.
 Dense + sparse hybrid retrieval and all public retrieval fields/signatures remain intact.
+
+Merge integration on 2026-10-26 brings in main `64e3ef9`, including the KB and evaluation
+implementations. The review decision was renumbered from D39 to D40 to retain the upstream
+evaluation workflow's D39. The verification results below describe the original 2026-10-24 audit.
 
 ## Item-by-item disposition
 

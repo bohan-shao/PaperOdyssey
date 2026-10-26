@@ -2,7 +2,7 @@
 
 Usage:
     python scripts/build_kb.py --config config.yaml [--limit N] [--rebuild] [--workers W]
-        [--chunk-mode section_fixed|semantic] [--passages-file NAME] [--stats-only]
+        [--chunk-mode section_fixed|semantic] [--passages-file NAME] [--from-sections] [--stats-only]
 
 Pipeline (per paper, parallel over processes):
     kb.parse.parse_pdf -> kb.parse.quality_check -> (+ metadata abstract if no Abstract section; the
@@ -23,6 +23,11 @@ before (raw/parse_failures.jsonl) are skipped unless --retry-failed. The corpus 
 Ablation (D21): `--chunk-mode semantic --passages-file passages_semantic.jsonl` builds a
 separate passages file without touching the baseline: papers.sqlite num_chunks, sections.jsonl
 and the parse quality/QA files keep the baseline's values.
+`--from-sections` (D36) chunks the parsed sections stored in processed/sections.jsonl instead of
+the PDFs (kb.rechunk), so passages can be built after a shard merge (D35), when no machine holds
+every PDF: an ablation file with `--passages-file`, or, with `--rebuild` and no `--passages-file`,
+the baseline passages.jsonl and papers.sqlite num_chunks again (e.g. after a chunker fix, D37);
+sections.jsonl and the parse quality/QA files are never changed.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ import logging
 import random
 import sys
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -41,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tqdm import tqdm  # noqa: E402
 
 from config import PROJECT_ROOT, get_config  # noqa: E402
-from kb import chunk, store  # noqa: E402
+from kb import chunk, rechunk, store  # noqa: E402
 from kb.fetch import read_metadata_csv  # noqa: E402
 from kb.parse import ParseOptions, PDFParseError, drop_leading_abstract, parse_pdf, quality_check  # noqa: E402
 from kb.stats import compute_corpus_stats, parse_summary, write_qa_csv, write_stats_report  # noqa: E402
@@ -115,6 +121,8 @@ def main() -> None:
     parser.add_argument("--chunk-mode", choices=["section_fixed", "semantic"], default=None,
                         help="override kb.chunk.mode (Q3 ablation)")
     parser.add_argument("--passages-file", default=None, help="override kb.store.passages_file (ablation outputs)")
+    parser.add_argument("--from-sections", action="store_true",
+                        help="chunk the parsed sections in processed/sections.jsonl instead of the PDFs")
     parser.add_argument("--stats-only", action="store_true", help="only recompute corpus statistics")
     args = parser.parse_args()
 
@@ -142,7 +150,19 @@ def main() -> None:
     # (papers.sqlite num_chunks, parse quality/QA files, sections.jsonl) stay the baseline's
     ablation = args.passages_file is not None
 
-    if not args.stats_only:
+    rechunked: dict = {}
+    if args.from_sections and not args.stats_only:
+        if args.rebuild:
+            store.reset_jsonl(passages_path)
+        t0 = time.time()
+        with tqdm(total=rechunk.paper_count(sections_path), desc=f"{mode} from sections", unit="paper") as bar:
+            rechunked = rechunk.rechunk_from_sections(sections_path, passages_path, cfg, mode, progress=bar.update)
+        if not ablation:  # the baseline's num_chunks follow its passages (0 for papers without any)
+            store.reset_num_chunks(sqlite_path)
+            store.set_num_chunks(dict(Counter(p["paper_id"] for p in store.iter_passages(passages_path))), sqlite_path)
+        log.info("from %s: %d papers (%d chunks), %d already in %s, in %.0fs", sections_path.name,
+                 rechunked["papers"], rechunked["passages"], rechunked["skipped"], passages_path.name, time.time() - t0)
+    elif not args.stats_only:
         meta = read_metadata_csv(raw / "metadata.csv")
         meta = meta[meta["pdf_path"] != ""]
         if args.rebuild:
@@ -208,8 +228,14 @@ def main() -> None:
         write_qa_csv(qa_path, qa_path.with_suffix(".csv"))
 
     stats = compute_corpus_stats(passages_path, sections_path)
+    settings = (("semantic_threshold", "semantic_model", "semantic_min_tokens", "semantic_max_tokens") if mode == "semantic"
+                else ("chunk_tokens", "overlap_tokens", "min_new_tokens"))
     stats["chunking"] = {"mode": mode, **{k: kb["chunk"].get(k) for k in (
-        "chunk_tokens", "overlap_tokens", "min_new_tokens", "tokenizer", "tiktoken_encoding", "prefix")}}
+        *settings, "tokenizer", "tiktoken_encoding", "prefix")}}
+    if args.from_sections:
+        stats["chunking"]["source"] = sections_path.name
+        if "embedding_device" in rechunked:
+            stats["chunking"]["embedding_device"] = rechunked["embedding_device"]
     stats["pipeline"] = parse_summary(raw, stats["n_documents"])
     write_stats_report(stats, stats_path)
     pipe = stats["pipeline"]

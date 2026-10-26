@@ -2,8 +2,9 @@
 
 ## Goal
 
-The D38 diagnostic is implemented in `retrieval_probe.py`; the general retrieval/review/IAA
-stubs below remain pending. Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
+The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, IAA and
+annotation tooling are also implemented, while review metrics remain pending.
+Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
 for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
 `eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
 isolated sample indexes, queries, config snapshots, timings and per-query known-source metrics
@@ -14,7 +15,7 @@ and limitations. Set `HF_HUB_OFFLINE=1` when using locally cached models.
 The revised probe pairs raw terms with the request template, reports their metrics separately,
 and uses unique run directories/filenames for all four sparse/hybrid/rerank combinations.
 `row_setup_ms` is a warm-up/setup measurement with possible model/cache reuse, not a process
-cold start. See [retrieval/REVIEW.md](../retrieval/REVIEW.md) for the D39 audit and diagnostic results.
+cold start. See [retrieval/REVIEW.md](../retrieval/REVIEW.md) for the D40 audit and diagnostic results.
 
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
 performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
@@ -22,9 +23,12 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
 ## Implementation requirements
 
 ### retrieval_metrics.py — Retrieval metrics (Q3)
-- `compute_retrieval_metrics(hits_per_query, gold_per_query, k_list)`:
-  - P@K, R@K (K=5,10), MRR@10, NDCG@10
-  - gold supports two granularities: paper-level (gold_paper_ids) and passage-level (gold_passage_ids)
+- `compute_retrieval_metrics(hits_per_query, gold_per_query, k_list)`: **implemented**
+  - Hit@K, P@K, R@K (K=1,3,5,10 by default), MRR@10, NDCG@10, macro-averaged; `per_query` gives the
+    position of each query's first gold paper (failed -> succeeded examples of an ablation)
+  - gold supports two granularities: paper-level (gold_paper_ids) and passage-level (gold_passage_ids);
+    every id counts once, at its best-ranked position (at paper level, a paper's best passage). The conventions are in the
+    module docstring; checked against hand-computed values in `tests/test_eval.py`
   - hits come from `data/results/retrieval_results/` (run once for each of the four config variants)
 - Output JSON: `data/results/metrics/retrieval_<stage>_<date>.json`
   (including a config snapshot + dependency versions, EVALUATION.md §9)
@@ -36,11 +40,12 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
 
 ### annotation/ — Evaluation set (Q4 hard requirement)
 - Goal: 1000 items, 3 annotators, majority vote, IAA>=80% (percentage agreement + Fleiss' kappa)
-- `guidelines.md`: annotation guidelines (relevance definition, examples, workflow)
-- Tooling: start with manual annotation in Excel/spreadsheet templates (`data/eval/annotation/`),
-  optionally upgrade to a simple annotation web page later (stretch, does not block the main line)
-- Output: `data/eval/eval_set.jsonl` (SCHEMA.md §7)
-- IAA computation: `eval/annotation/iaa.py` (Fleiss' kappa + percentage agreement)
+- **Implemented (D39)**: `questions.py` + `scripts/eval_set.py`: the LLM drafts one search request per
+  sampled paper, the 3 annotators mark it y/n in CSV sheets (`data/eval/annotation/`), majority vote ->
+  `data/eval/eval_set.jsonl` (SCHEMA.md §7), rejected questions are rewritten and marked again.
+  Steps and commands: `annotation/README.md`; marking rules: `guidelines.md` §6
+- IAA computation: `eval/annotation/iaa.py` (Fleiss' kappa + percentage agreement), **implemented**;
+  unit = one (question, paper) pair, report in `data/results/metrics/iaa_<date>.json`
 
 ### latency.py — Retrieval-core latency benchmark (Q2, EVALUATION.md §7)
 - Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100]` (needs the built

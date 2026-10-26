@@ -15,10 +15,17 @@ Both run on the same evaluation set.
 - Constraints: deduplication, type balance (definitional / method-comparison / survey / paper-locating / technical-detail)
 - Annotation content: per item = paper-level relevance annotation (mandatory, 1,000 items) + passage-level relevance annotation (subset of 100–200 items, to validate evidence granularity) + gold answer (for generation evaluation; fine-grained annotation can be limited to the subset)
 - dev/eval split: ~10% dev for tuning, 90% eval for the final reported metrics
+- **Procedure in use (D39)**: the LLM drafts one search request per randomly sampled paper; all 3 annotators
+  mark independently whether that paper is a good answer (y/n); questions most of them accept enter the set with
+  their paper as the only gold paper, rejected ones are rewritten by a person and marked again
+  (`scripts/eval_set.py`, `eval/annotation/questions.py`). Agreement is over these y/n marks. Passage-level gold
+  and gold answers are not collected; the bullets above describe the original plan.
 
 ## 2. Retrieval Metrics (Q3)
 
-- **P@K, R@K** (K=5,10), **MRR@10**, **NDCG@10**
+- **Hit@K** (K=1,3,5,10; the main number, as each question has one gold paper), **P@K, R@K**, **MRR@10**, **NDCG@10**
+  (`eval/retrieval_metrics.py`). With one gold paper per question the scores are a lower bound: another relevant
+  paper in the top K earns nothing.
 - Comparison matrix (same evaluation set, same batch of queries):
 
 | Configuration | Switch (config.yaml) |
@@ -125,8 +132,9 @@ The source paper is a **weak, non-exhaustive label**. These are known-source pro
 not held-out human relevance judgments: source text remains indexed and source recall is
 optimistic. `source_recall@10`, source MRR/NDCG and distinct-paper count are computed over
 distinct papers represented in the first ten returned passages. Diversity is not precision.
-The source formulas have hand-computed regression tests. Production retrieval metric stubs
-remain unchanged; this diagnostic does not satisfy the 1,000-item/three-annotator requirement.
+The source formulas have hand-computed regression tests. The production retrieval metrics
+and D39 annotation workflow are separate from this diagnostic, which does not satisfy the
+1,000-item/three-annotator requirement.
 
 Rows compare legacy 50/50/50 budgets, query processing alone, 150/150 depth alone, diversity
 alone, the combination, SQLite instead of rank-bm25, and SQLite field weighting. The depth

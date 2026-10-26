@@ -3,7 +3,7 @@
 `retrieval.pipeline.retrieve(query, filters=None, top_k=None) -> RetrieveResult` remains the
 only retrieval entry point for orchestration, downstream and quality experiments. The default
 still combines sparse and dense retrieval. D38 changes candidate handling, not public fields
-or signatures. D39 corrects verified review findings; see [REVIEW.md](REVIEW.md) for evidence,
+or signatures. D40 corrects verified review findings; see [REVIEW.md](REVIEW.md) for evidence,
 regression coverage and remaining environment limits. Contracts: `docs/SCHEMA.md`;
 decisions: `docs/DESIGN.md`.
 

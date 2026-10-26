@@ -38,6 +38,10 @@ Meet the assignment's hard requirements: ≥10,000 documents, ≥100,000 words, 
 - Output: document count, chunk count, total word count (token or word; state the convention), type count (unique words)
 - Output `data/results/corpus_stats.json` + print a report table
 
+### rechunk.py — Passages from the parsed sections (D36)
+- `rechunk_from_sections(sections_path, passages_path, cfg, mode)`: the passages of any chunk mode from
+  `sections.jsonl`, no PDFs needed (`build_kb.py --from-sections`); resumable; papers in file order
+
 ### merge.py — Merging shard builds (D35)
 - `merge_shards(shards, out, cfg)`: the members' shard builds (`data/` folders) into one KB with the layout of one build
 - Refuses before writing anything when the shards don't fit together (another selection, a paper in two shards, a
@@ -76,8 +80,11 @@ python scripts/merge_kb_shards.py --out merged/data shard0/data shard1/data shar
 #      or point those paths at merged/data, before build_indexes.py
 
 # Q3 ablation A (semantic chunking, D21; needs sentence-transformers). Baseline files are left alone.
-# Needs every PDF on this machine; after a shard merge no machine has them (D35)
 python scripts/build_kb.py --chunk-mode semantic --passages-file passages_semantic.jsonl
+#   -> after a shard merge (D35) no machine has every PDF: chunk the parsed sections in sections.jsonl (D36)
+python scripts/build_kb.py --chunk-mode semantic --passages-file passages_semantic.jsonl --from-sections
+#   -> index it with a config copy (kb.store.passages_file: passages_semantic.jsonl, and other folders in
+#      paths.indices / retrieval.sparse.index_dir / retrieval.dense.faiss_dir, so the baseline indexes stay)
 ```
 
 All shards must be built with the same code and the same pymupdf (pinned in `requirements.txt`, 1.28.2, which
@@ -96,7 +103,7 @@ batch still fails, `download_papers.py` exits **before selection** (never select
 data); just rerun it. A failed PDF download or parse is logged (`raw/download_failures.jsonl`,
 `raw/parse_failures.jsonl`) and skipped; `build_kb.py --retry-failed` retries parse failures.
 
-### Decisions (report material; see DESIGN.md D25/D26, D30-D35)
+### Decisions (report material; see DESIGN.md D25/D26, D30-D37)
 
 | Stage | What we do |
 |---|---|
@@ -192,6 +199,19 @@ All three shards merged (`merge_kb_shards.py`, D35): 20,000 selected, 19,956 PDF
 built, 15 rejected (0.08%), 658,869 passages, 302,135 sections, 113,578,347 words, 1,158,401 types, 1,805-1,816
 papers per year (2015-2025). The hard checks pass on the merged files, and its passages, sections and failure
 files are the shards' files one after another (line ends aside).
+
+Passages rebuilt from the merged sections.jsonl (D36), with no PDFs: with the old splitter they equal the merged
+passages.jsonl byte for byte; with the splitter fix (D37) the KB has 658,871 passages (4,179 passages only gain a
+restored bracket or quote, 26 move a chunk or overlap edge by one sentence, 2 papers get one more passage) and the
+hard checks pass. This is the passages.jsonl to index.
+
+Semantic passages for Q3 ablation A (D21, D27), built from the merged sections.jsonl (D36) on Apple MPS in 3 h 17 min
+with the same splitter: 653,929 passages, 173.7 words each on average (median 149; fixed-size: 204.0), for the same
+19,941 papers and 113,578,347 words. On 200 random papers MPS and CPU give identical chunks, as do 200 papers or 1
+paper per encoder call. Checks: ids, keys, parent sections and metadata right; every paper, in sections.jsonl order;
+each section's chunks hold its sentences once and in order, with no word lost or repeated (all 302,135 sections).
+1.7% of the chunks are over 500 tokens (max 605: a final piece under 100 tokens joins the chunk before it) and 4.3%
+under 100 (short sections).
 
 How the rules were checked: every paper whose section names changed between successive full builds
 was listed and reviewed (311, then 116); random samples of 500-900 papers were re-parsed after each
