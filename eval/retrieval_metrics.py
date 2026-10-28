@@ -19,6 +19,7 @@ Conventions (cited by the report):
   out at that level (passage level: only the annotated subset). A level without any query reports
   n_queries 0 and None for every metric.
 - Input hits are [{passage_id, paper_id, rank}] (retrieval_results JSON, SCHEMA.md §8).
+- K must be a positive integer; empty k_list is rejected rather than replaced by defaults.
 
 Checked against hand-computed values in tests/test_eval.py.
 """
@@ -37,18 +38,26 @@ def ranking(hits: list[dict], level: str = "paper") -> list[str]:
     return list(dict.fromkeys(h[key] for h in sorted(hits, key=lambda h: h["rank"])))
 
 
+def _validate_k(k: int) -> None:
+    if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
+        raise ValueError("metric k must be a positive integer")
+
+
 # The metrics on a ranking (list of ids); the public functions below take hits.
 
 
 def _found(ranked: list[str], gold: Collection[str], k: int) -> int:
+    _validate_k(k)
     return len(set(ranked[:k]) & set(gold))
 
 
 def _mrr(ranked: list[str], gold: Collection[str], k: int) -> float:
+    _validate_k(k)
     return next((1 / pos for pos, i in enumerate(ranked[:k], start=1) if i in gold), 0.0)
 
 
 def _ndcg(ranked: list[str], gold: Collection[str] | Mapping[str, float], k: int, graded: bool) -> float:
+    _validate_k(k)
     grades = dict(gold) if graded and isinstance(gold, Mapping) else {g: 1.0 for g in gold}
     dcg = sum(grades.get(i, 0.0) / math.log2(pos + 1) for pos, i in enumerate(ranked[:k], start=1))
     idcg = sum(g / math.log2(pos + 1) for pos, g in enumerate(sorted(grades.values(), reverse=True)[:k], start=1))
@@ -67,6 +76,7 @@ def precision_at_k(hits: list[dict], gold_ids: set[str], k: int, *, level: str =
 
 def recall_at_k(hits: list[dict], gold_ids: set[str], k: int, *, level: str = "paper") -> float:
     """R@K."""
+    _validate_k(k)
     return _found(ranking(hits, level), gold_ids, k) / len(gold_ids) if gold_ids else 0.0
 
 
@@ -117,7 +127,12 @@ def compute_retrieval_metrics(
          "per_query": {query_id: {"first_gold_rank": paper position or None}}}; the top-level
         numbers are the paper-level ones. `per_query` gives the failed -> succeeded examples of an ablation.
     """
-    k_list = sorted(set(k_list or [1, 3, 5, 10]))
+    k_list = [1, 3, 5, 10] if k_list is None else k_list
+    if not k_list:
+        raise ValueError("k_list must not be empty")
+    for k in k_list:
+        _validate_k(k)
+    k_list = sorted(set(k_list))
     papers = {qid: set(g.get("gold_paper_ids") or []) for qid, g in gold_per_query.items()}
     passages = {qid: set(g.get("gold_passage_ids") or []) for qid, g in gold_per_query.items()}
     papers = {qid: ids for qid, ids in papers.items() if ids}

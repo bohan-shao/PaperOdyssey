@@ -1,7 +1,7 @@
-"""BM25 sparse retrieval: Pyserini (Lucene) by default, rank-bm25 as the no-Java fallback.
+"""BM25 sparse retrieval: Pyserini by default; SQLite FTS5 or rank-bm25 without Java.
 
 - `build_index(passages_path, index_dir)`: indexes passages.jsonl with the configured backend
-  (`retrieval.sparse.backend: pyserini|rankbm25`) into a temp dir, then swaps it in (a rebuild
+  (`retrieval.sparse.backend: pyserini|sqlite|rankbm25`) into a temp dir, then swaps it in (a rebuild
   overwrites). Layout: `index_dir/meta.json` (backend, doc count) + `lucene/` or `rankbm25.pkl`.
 - `SparseRetriever(index_dir, lookup)`: opens the index (refusing one built by the other backend)
   and serves `search(query, filters, top_k) -> (hits, latency_ms)`; hits are hydrated through
@@ -38,13 +38,14 @@ import threading
 import time
 from pathlib import Path
 
-from config import PROJECT_ROOT, get_config
+from config import get_config
 from kb import store as kb_store
 
 from .lookup import LookupStore, get_lookup_store
+from .index_paths import index_directory, publish_index, validate_destination
 from .types import RetrievalFilters, ScoredPassage
 
-BACKENDS = ("pyserini", "rankbm25")
+BACKENDS = ("pyserini", "rankbm25", "sqlite")
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
@@ -129,7 +130,7 @@ def build_index(passages_path: str | Path, index_dir: str | Path, backend: str |
     Args:
         passages_path: data/processed/passages.jsonl.
         index_dir: data/indices/bm25.
-        backend: "pyserini" | "rankbm25"; default `retrieval.sparse.backend`.
+        backend: "pyserini" | "sqlite" | "rankbm25"; default `retrieval.sparse.backend`.
         threads: Lucene indexing threads (default: CPU count, at most 8).
 
     Returns:
@@ -140,23 +141,33 @@ def build_index(passages_path: str | Path, index_dir: str | Path, backend: str |
     """
     t0 = time.perf_counter()
     sparse_cfg = get_config()["retrieval"]["sparse"]
+    bm25 = sparse_cfg.get("bm25", {})
     backend = backend or sparse_cfg["backend"]
     if backend not in BACKENDS:
         raise ValueError(f"unknown sparse backend {backend!r} (expected one of {BACKENDS})")
-    out = Path(index_dir)
+    out = validate_destination(index_dir, passages_path, "sparse")
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent))
     tmp.chmod(0o755)  # mkdtemp makes it owner-only; the index is shared data
     try:
         if backend == "pyserini":
             n = _build_pyserini(passages_path, tmp, threads or min(8, os.cpu_count() or 1))
+        elif backend == "sqlite":
+            from .sqlite_bm25 import build
+
+            n = build(passages_path, tmp)
         else:
-            bm25 = sparse_cfg.get("bm25", {})
             n = _build_rankbm25(passages_path, tmp, bm25.get("k1", 0.9), bm25.get("b", 0.4))
-        (tmp / "meta.json").write_text(json.dumps({"backend": backend, "num_docs": n}) + "\n",
+        meta = {"backend": backend, "num_docs": n}
+        if backend == "rankbm25":
+            meta["bm25"] = {"k1": bm25.get("k1", 0.9), "b": bm25.get("b", 0.4)}
+        if backend == "sqlite":
+            meta.update({"format_version": 2, "bm25": {"k1": 1.2, "b": 0.75},
+                         "analyzer": "porter unicode61", "fields": ["title", "section", "body"]})
+        (tmp / "meta.json").write_text(json.dumps(meta) + "\n",
                                        encoding="utf-8")
-        shutil.rmtree(out, ignore_errors=True)
-        tmp.rename(out)
+        validate_destination(out, passages_path, "sparse")
+        publish_index(tmp, out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
@@ -220,10 +231,12 @@ class _PyseriniBackend:
 
 
 class _RankBM25Backend:
-    def __init__(self, index_dir: Path) -> None:
+    def __init__(self, index_dir: Path, k1: float, b: float) -> None:
         with (index_dir / "rankbm25.pkl").open("rb") as fh:
             index = pickle.load(fh)
         self._bm25 = index["bm25"]
+        # IDF and lengths do not depend on k1/b. Apply query-time tuning to legacy pickles too.
+        self._bm25.k1, self._bm25.b = k1, b
         self._ids: list[str] = index["ids"]
         self._years = index["years"]
         self._by_category = index["by_category"]
@@ -235,7 +248,13 @@ class _RankBM25Backend:
         if not tokens:
             return []
         scores = self._bm25.get_scores(tokens)
-        mask = scores > 0  # like Lucene: only passages sharing a query term
+        mask = scores > 0
+        # rank-bm25 can assign zero/negative IDF in small or repetitive collections.
+        # Matching is lexical overlap, not score positivity; keep the fast path otherwise.
+        if any(t in self._bm25.idf and self._bm25.idf[t] <= 0 for t in tokens):
+            terms = set(tokens)
+            mask = np.fromiter((bool(terms.intersection(freqs)) for freqs in self._bm25.doc_freqs),
+                               dtype=bool, count=len(self._ids))
         if filters is not None:
             if filters.year_min is not None:
                 mask &= self._years >= filters.year_min
@@ -263,6 +282,8 @@ class SparseRetriever:
                  k1: float | None = None, b: float | None = None) -> None:
         sparse_cfg = get_config()["retrieval"]["sparse"]
         backend = backend or sparse_cfg["backend"]
+        if backend != "sqlite" and sparse_cfg.get("field_weighting", {}).get("enabled", False):
+            raise ValueError("field_weighting requires retrieval.sparse.backend=sqlite")
         bm25 = sparse_cfg.get("bm25", {})
         k1 = bm25.get("k1", 0.9) if k1 is None else k1
         b = bm25.get("b", 0.4) if b is None else b
@@ -271,27 +292,41 @@ class SparseRetriever:
         if not meta_path.exists():
             raise RuntimeError(f"BM25 index not found: {index_dir} "
                                "(run scripts/build_indexes.py --only sparse)")
-        built_with = json.loads(meta_path.read_text(encoding="utf-8"))["backend"]
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        built_with = meta["backend"]
         if built_with != backend:
             raise RuntimeError(f"BM25 index {index_dir} was built with {built_with!r} but the "
                                f"configured backend is {backend!r}; rebuild the sparse index")
         self.backend = backend
         self._lookup = lookup
-        self._impl = _PyseriniBackend(index_dir, k1, b) if backend == "pyserini" else _RankBM25Backend(index_dir)
+        if backend == "pyserini":
+            self._impl = _PyseriniBackend(index_dir, k1, b)
+        elif backend == "rankbm25":
+            self._impl = _RankBM25Backend(index_dir, k1, b)
+        elif backend == "sqlite":
+            from .sqlite_bm25 import SQLiteBM25
+
+            if meta.get("format_version") != 2:
+                raise RuntimeError("SQLite category normalization changed; rebuild the sparse index")
+            fields = sparse_cfg.get("field_weighting", {})
+            weights = fields.get("weights", [2.0, 0.5, 1.0]) if fields.get("enabled", False) else [1.0] * 3
+            self._impl = SQLiteBM25(index_dir, weights)
+        else:
+            raise ValueError(f"unknown sparse backend {backend!r}")
 
     def search(self, query: str, filters: RetrievalFilters | None,
                top_k: int) -> tuple[list[ScoredPassage], int]:
         """BM25 top_k for one query (filters restrict candidates, never scores)."""
         t0 = time.perf_counter()
-        ranked = self._impl.search(query, filters, top_k)
+        ranked = self._impl.search(query, filters, top_k) if query.strip() and top_k > 0 else []
         hits = self._lookup.hydrate(ranked, stage="bm25")
         return hits, round((time.perf_counter() - t0) * 1000)
 
 
 def index_path(cfg: dict | None = None) -> Path:
-    """The configured index dir; `retrieval.sparse.index_dir` is relative to the data dir."""
+    """Resolve under paths.indices; accept legacy indices/bm25 and explicit absolute paths."""
     cfg = cfg or get_config()
-    return (PROJECT_ROOT / str(cfg["paths"]["indices"])).parent / str(cfg["retrieval"]["sparse"]["index_dir"])
+    return index_directory(cfg["retrieval"]["sparse"]["index_dir"], cfg)
 
 
 _RETRIEVER: SparseRetriever | None = None

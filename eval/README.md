@@ -2,6 +2,28 @@
 
 ## Goal
 
+The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, IAA and
+annotation tooling are also implemented, while review metrics remain pending.
+Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
+for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
+`eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
+isolated sample indexes, queries, config snapshots, timings and per-query known-source metrics
+under configured `paths.results`. Run in a fresh process, without an online server sharing
+the components. Queries come from indexed source text; these proxy labels are not human
+relevance judgments. See `docs/EVALUATION.md` and `retrieval/README.md` for measured results
+and limitations. Set `HF_HUB_OFFLINE=1` when using locally cached models.
+The revised probe pairs raw terms with the request template, reports their metrics separately,
+and uses unique run directories/filenames for all four sparse/hybrid/rerank combinations.
+`row_setup_ms` is a warm-up/setup measurement with possible model/cache reuse, not a process
+cold start. See [retrieval/REVIEW.md](../retrieval/REVIEW.md) for the D40 audit and diagnostic results.
+The D41 report format is version 2: source metrics delegate to `retrieval_metrics.py` (sort all
+returned hits by rank, deduplicate papers, then apply positive integer K). Diversity is separately
+named `distinct_papers_in_top_10_passages`. The pipeline still returns at most ten passages.
+Sparse-only `depth_only` is omitted with an explicit reason; compare `depth_with_diversity`
+against `diversity_only`. `comparisons` records the appropriate control for each row.
+The shared internal `runtime.py` rejects previously loaded components and releases experiment
+readers/models on exit. The probe also restores temporary Torch/FAISS thread settings.
+
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
 performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
 
@@ -40,7 +62,20 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   budget check (hybrid+rerank p95 < 500 ms), throughput at 1/4/8 concurrent callers, an efSearch
   sweep (HNSW time + recall@50 vs exact search) and a rerank-depth sweep (time + top-10
   agreement with depth 50); cold-start load time is reported separately
-- Configurations are switched in memory, never in config.yaml; every row sets all switches
+- Parent rows include actual expanded/unchanged/no-parent text counts. `mean_candidates` is
+  the selected pool before reranking/final truncation, not the raw sparse/dense union.
+- Configurations are switched in memory, never in config.yaml. Protocol `legacy_50_v2` fixes
+  query processing/diversity/field weighting off, 50/50/50 candidates, ten outputs, equal RRF
+  weights (k=60), BM25 0.9/0.4, efSearch 128, filtered exact threshold 50,000, parallel retrieval,
+  and rerank batch size 64/max length 512 before loading components. Model/backend/index
+  identity remains configured. Every row records its effective retrieval config, and the report
+  includes requested/baseline configs and the full query batch. The CLI accepts `--config`.
+  Actual index paths/manifests are recorded; the latest build-log path is unverified context
+  and is not assumed to describe the measured indexes (`index_build` is null in v2).
+- Run in a fresh dedicated process; loaded components from another configuration are rejected.
+  `cold_start_s` is retained for compatibility but measures component load plus warm-up, with
+  possibly warm OS/model file caches. Rerank sweeps collect up to the largest requested depth
+  and record actual pair counts, including when the corpus cannot fill that depth.
 - Percentiles: linear interpolation between ranks (numpy's default)
 - First run on the 50-paper sample (RTX 5070): hybrid+rerank p95 410 ms (within budget, rerank
   ≈ 95% of it); throughput flat at ~2.6 qps from 1 to 8 callers (the reranker runs one call at a

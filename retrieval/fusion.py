@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+import math
 
 from .types import ScoredPassage
 
@@ -52,9 +53,9 @@ def reciprocal_rank_fusion(
         ValueError: k < 0, a rank below 1, or weights that are not two non-negative numbers
             with at least one above 0.
     """
-    if k < 0:
+    if not math.isfinite(k) or k < 0:
         raise ValueError(f"RRF k must be >= 0, got {k}")
-    if len(weights) != 2 or any(w < 0 for w in weights) or not any(weights):
+    if len(weights) != 2 or any(not math.isfinite(w) or w < 0 for w in weights) or not any(weights):
         raise ValueError(f"weights must be two non-negative numbers, not both 0; got {weights!r}")
 
     fused: dict[str, float] = {}
@@ -75,6 +76,6 @@ def reciprocal_rank_fusion(
 
     order = sorted(fused, key=lambda pid: (-fused[pid], best_rank[pid], pid))
     if top_k is not None:
-        order = order[:top_k]
+        order = order[:max(0, top_k)]
     return [replace(first_hit[pid], score=fused[pid], rank=rank, stage="hybrid")
             for rank, pid in enumerate(order, start=1)]
