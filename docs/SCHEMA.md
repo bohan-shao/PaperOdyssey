@@ -152,9 +152,17 @@ Constraints:
 
 ## 9. Type Definition Locations
 
+Evaluation rankings sort all supplied hits by `rank`, deduplicate the selected identifier
+(paper or passage), and only then apply a positive integer K. At paper level, a paper takes
+its best passage's position in the deduplicated ranking. The D41 probe uses these same
+Recall/MRR/NDCG functions; its separate `distinct_papers_in_top_10_passages` statistic applies
+a passage cutoff. Probe report `format_version: 2` / `metric_version: paper_ranking_v2`
+identifies this convention; historical reports retain their original definitions. Retrieval
+still returns a passage list, so ten returned passages need not contain ten distinct papers.
+
 Retrieval's existing public signature remains
 `retrieve(query: str, filters: RetrievalFilters | None = None, top_k: int | None = None) -> RetrieveResult`.
-No fields change in D38/D40. `total_candidates` counts the selected pool before reranking/final
+No fields change in D38/D40/D41. `total_candidates` counts the selected pool before reranking/final
 truncation, capped by `fusion.top_k` for both hybrid and single-channel runs, including when
 reranking is disabled; it is not the raw recall union size.
 `latency_ms` may additionally contain `query_ms` and `selection_ms`; timings remain integer

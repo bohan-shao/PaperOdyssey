@@ -103,3 +103,70 @@ processes after configuration/index changes. Repeat Pyserini tests in the Java r
 environment, install the full project dependencies for the full suite, and measure BGE/A40
 batch sizes and human-labeled relevance separately. No models or dependencies were installed
 for this review, and no runtime code depends on the temporary reference corpus directory.
+
+## Final PR #16 review (2026-10-28, D41)
+
+Verified against branch head `246d4e6`, with a clean tracked worktree. Fetching remote refs
+left `origin/main` at `64e3ef9`; no new merge was needed. The supplied reference corpus and
+review checklist remain untouched. Dense + sparse defaults and retrieval contracts are unchanged.
+
+| Priority / finding | Verified behavior and correction |
+|---|---|
+| P0: index links | Shared path resolution rejected links during reads, including system ancestor aliases such as macOS `/var`. Reads now keep the logical path and permit linked indexes. Builders reject the destination leaf link, resolve ancestor aliases, and retain protected-root/input/artifact checks. |
+| P0: YAML `on` | PyYAML parsed the unquoted stopword as `True`, leaving `on` in lexical queries. Quote the default and validate custom stopwords as strings at config load and query processing. |
+| P1: latency baseline | Only five flags were fixed; enabled query processing/diversity and deeper budgets leaked into legacy rows. `legacy_50_v2` fixes active ranking controls before component loading. Reports include requested/effective settings, complete queries, actual index paths/manifests, and qualified startup timing. Loaded runtimes are rejected and experiment-owned resources are cleared on exit. |
+| P1: sparse depth | Increasing sparse top-k to 150 without selection kept the same top-50 prefix. Sparse-only `depth_only` is explicitly skipped; `depth_with_diversity` vs `diversity_only` tests depth with the same 50-candidate scoring budget. Hybrid retains its isolated depth row. |
+| P1: metric consistency | Probe formulas cut passages before deduplication and trusted list order; canonical metrics sort, deduplicate, then apply K. The probe now delegates Recall/MRR/NDCG, names passage diversity separately, and versions its report. Invalid K values are rejected. |
+| Additional: index publication | Deleting the old index before renaming the new one could lose it on failure. Both builders now rename through a sibling backup and restore the old index if publication fails. Offline readers must still be closed. |
+| Additional: lexical matches | rank-bm25 discarded zero/negative-IDF matches in tiny/repetitive corpora. Such queries now use lexical overlap to determine candidates while retaining BM25 ordering. No index rebuild is needed. |
+| Additional: parallel failures | A dense failure could return while its sparse worker still used readers/config. Cancel or drain the sibling before propagating the original error. |
+| Additional: experiments | Add benchmark `--config`; collect enough candidates for requested rerank sweeps and report actual pair counts; do not attribute unrelated latest build logs to measured indexes; reject sample output paths that escape the isolated directory; detect metadata/passage sample mismatches; hash passages as a stream; restore Torch/FAISS thread settings. |
+
+The sparse diagnostic uses the same seed-42 sample as the earlier review: 300 papers,
+9,994 passages and 60 paired raw/template queries. Main raw-term metrics:
+
+| Variant | Source recall@10 | Source MRR@10 | Distinct papers in top 10 passages | Warm p50 ms |
+|---|---:|---:|---:|---:|
+| Legacy | 0.9833 | 0.9750 | 3.30 | 60.5 |
+| Query only | 0.9833 | 0.9750 | 3.25 | 58.5 |
+| Diversity only | 0.9833 | 0.9750 | 7.08 | 67.0 |
+| Depth with diversity | 0.9833 | 0.9750 | 7.45 | 66.5 |
+| Combined | 0.9833 | 0.9750 | 7.38 | 64.5 |
+| SQLite | 0.9833 | 0.9722 | 7.43 | 25.0 |
+| SQLite fields | 0.9833 | 0.9833 | 7.33 | 28.0 |
+
+The depth comparison is now meaningful, without evidence of a source-relevance gain on this
+sample. These known-source labels remain optimistic/incomplete; the small differences do not
+justify changing production models or enabling field weighting. Timings describe this local
+CPU run, not a performance comparison with previous machines/runs. Report:
+`data/results/metrics/ablation_retrieval_probe_sparse_2026-10-28T031801_6ad2ef04.json`.
+
+Real cached MiniLM embedding + reranking also completed all eight rows on 12 papers / 514
+passages / four paired queries. All source recalls and MRRs were 1.0; this is a functional
+smoke check, not a meaningful model-quality comparison. The matching latency CLI smoke run
+used `--config`, one title query, and rerank depths 10/150; actual pair counts were 10/150.
+Configuration restoration and complete runtime cleanup were asserted after the CLI returned.
+Hybrid + rerank took 1,436 ms on that CPU query, above the 500 ms target; one query cannot
+establish a representative p95 or a production GPU budget. Artifacts:
+
+- `data/results/metrics/ablation_retrieval_probe_hybrid_rerank_2026-10-28T032001_e1f77e55.json`
+- `data/results/metrics/pr16_latency_smoke.json`
+- `data/results/pr16_final_sparse_probe.log`, `pr16_final_hybrid_probe.log`, `pr16_final_latency_smoke.log`
+
+Final validation:
+
+- New regression module: 17 tests, 15 passed, two native directory-symlink tests skipped because
+  Windows symlink creation is unavailable. Mocked ancestor-alias and leaf-link checks pass.
+- Full discovery: 177 tests, 162 passed, ten skipped, five errors solely from missing local
+  `httpx2`, `tenacity`, `pandas`, or `streamlit`. Optional Java/BGE tests account for the other
+  eight skips. Log: `data/results/pr16_final_tests.log`.
+- `scripts/sanity_check.py` and Git whitespace checks pass. PyCharm build reports success with
+  limited diagnostics; production helpers have no reported IDE errors. The IDE flags some
+  imported globals used as mock targets in the new tests; those runtime tests pass.
+- Two new source/test files are staged; existing tracked edits are unstaged. No commit or push.
+  No models/dependencies were installed and no temporary reference-data path was introduced.
+
+Remaining validation: native macOS aliases, Java/Pyserini, full project dependencies, and
+production BGE/GPU performance. Keep offline index rebuilds separate from readers/builders;
+backup-based publication is rollback protection for exceptions, not crash-atomic multi-file
+publication. Human-labeled relevance remains required before selecting models or defaults.

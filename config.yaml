@@ -78,7 +78,7 @@ retrieval:
   query_processing:
     enabled: true              # Q3 ablation: normalized semantic query + deduplicated lexical view
     max_terms: 64
-    stopwords: [a, an, the, and, or, of, to, in, on, for, with, by, from, is, are,
+    stopwords: [a, an, the, and, or, of, to, in, "on", for, with, by, from, is, are,
                 was, were, be, been, being, do, does, did, how, what, which, that,
                 this, these, those, can, could, would, should, please, find, papers]
   diversity:

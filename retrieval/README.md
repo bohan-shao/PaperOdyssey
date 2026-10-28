@@ -3,7 +3,7 @@
 `retrieval.pipeline.retrieve(query, filters=None, top_k=None) -> RetrieveResult` remains the
 only retrieval entry point for orchestration, downstream and quality experiments. The default
 still combines sparse and dense retrieval. D38 changes candidate handling, not public fields
-or signatures. D40 corrects verified review findings; see [REVIEW.md](REVIEW.md) for evidence,
+or signatures. D40/D41 correct verified review findings; see [REVIEW.md](REVIEW.md) for evidence,
 regression coverage and remaining environment limits. Contracts: `docs/SCHEMA.md`;
 decisions: `docs/DESIGN.md`.
 
@@ -64,6 +64,7 @@ query + optional metadata filters
 `query_processing.enabled` normalizes Unicode/dashes/whitespace, deduplicates lexical terms
 and removes configured stopwords. Dense/reranker retain the complete normalized question,
 including negation. No automatic acronym expansion, LLM call or implicit filter is introduced.
+Stopwords must be strings; quote YAML 1.1 boolean-like words such as `"on"` in custom configs.
 
 `diversity.enabled` applies soft quotas: before rerank, four passages per paper and two per
 parent; finally, two per paper and one per parent. Deferred passages fill spare slots for
@@ -90,6 +91,11 @@ sum of BM25/cosine scores. Zero-weight channels contribute no candidates; ties a
 | `rerank.py` | CrossEncoder sigmoid scoring, serialized inference, reference batch size 64 |
 | `lookup.py` | Primary-key hydration, missing-ID errors, bounded parent excerpts |
 | `pipeline.py` | Parallel sparse/dense, sequential cold loading, selected-pool count, stage timings |
+
+The rank-bm25 fallback checks lexical overlap when query terms have zero/negative IDF, so
+small or repetitive corpora retain matching documents even when BM25 scores are nonpositive.
+Parallel retrieval drains a started sibling task before propagating failure, preventing an
+offline experiment from closing its readers or restoring config while that task is active.
 
 Pyserini uses Porter/stopwords and configurable k1=0.9, b=0.4. rank-bm25 retains its lowercase
 alphanumeric analyzer and applies configured k1/b when loaded, including old pickles. SQLite
@@ -160,8 +166,13 @@ under `paths.indices`; defaults are `bm25` and `faiss`. Absolute paths and legac
 `indices/bm25` / `indices/faiss` spellings work. Lookup remains
 `paths.indices/retrieval.lookup.db_file`. The selected CLI config is reused by package calls.
 Index destinations must be dedicated directories: the shared root (`indices`, `.`, or an
-absolute root), relative escapes, links, input-containing directories, and directories with
-foreign artifacts or no index manifest are rejected before a build/replacement. Lookup output
+absolute root), relative escapes, input-containing directories, and directories with
+foreign artifacts or no index manifest are rejected before a build/replacement. Reads support
+linked index directories. Builders reject a link at the destination itself, but allow ancestor
+aliases (including macOS `/var`) after resolving and checking protected paths. Rebuild a linked
+index using its explicit target. Publication renames the old index to a sibling backup and
+restores it if publication fails; readers must be closed, and concurrent rebuilds are unsupported.
+Lookup output
 and its temporary file cannot overwrite the KB inputs. Separate absolute index locations remain supported.
 Restart after model/index/backend changes; online singletons are not hot-reloaded.
 
@@ -243,6 +254,9 @@ process cold-start latency. New runs use unique directories and four distinct mo
 (`sparse`, `sparse_rerank`, `hybrid`, `hybrid_rerank`). Each source query runs as raw terms and
 with a request template; main metrics/latencies use raw terms and `by_query_style` reports
 the template separately. The query generator's vocabulary is independent of retrieval tuning.
+D41 reports use canonical paper metrics (sort, deduplicate, then apply K), and separately report
+`distinct_papers_in_top_10_passages`. Sparse-only `depth_only` is marked inapplicable; compare
+`depth_with_diversity` against `diversity_only` to test recall depth at the same scoring budget.
 Set `HF_HUB_OFFLINE=1` for
 cached-model runs. Tests never download models. See `docs/EVALUATION.md` for the ablation
 protocol and separate human-label requirement.

@@ -13,7 +13,6 @@ import copy
 import hashlib
 import importlib.metadata
 import json
-import math
 import platform
 import random
 import re
@@ -27,7 +26,9 @@ from config import get_config, get_path
 from kb import store
 from retrieval import lookup, pipeline, sparse
 
-from .latency import config_overrides, summarize
+from .latency import BASE, config_overrides, summarize
+from . import retrieval_metrics as metrics
+from .runtime import clear_runtime as _clear_runtime, require_fresh_runtime
 
 # Fixed generation vocabulary, independent of the retrieval settings being evaluated.
 _QUERY_STOPWORDS = frozenset("a an and are as at be by for from in is it of on or that the this to was were with".split())
@@ -44,12 +45,13 @@ def report_path(report: dict) -> Path:
 
 
 def source_metrics(hits: list, source: str, k: int = 10) -> dict[str, float]:
-    """Known-source metrics over distinct papers represented in the first k returned passages."""
-    papers = list(dict.fromkeys(h.paper_id for h in hits[:k]))
-    rank = papers.index(source) + 1 if source in papers else 0
-    return {f"source_recall@{k}": float(bool(rank)), f"source_mrr@{k}": 1 / rank if rank else 0.0,
-            f"source_ndcg@{k}": 1 / math.log2(rank + 1) if rank else 0.0,
-            f"distinct_papers@{k}": float(len(papers))}
+    """Canonical paper-level metrics; diversity separately counts the first k passages."""
+    records = [{"paper_id": h.paper_id, "passage_id": h.passage_id, "rank": h.rank} for h in hits]
+    ordered = sorted(records, key=lambda h: h["rank"])
+    return {f"source_recall@{k}": metrics.recall_at_k(records, {source}, k),
+            f"source_mrr@{k}": metrics.mrr_at_k(records, {source}, k),
+            f"source_ndcg@{k}": metrics.ndcg_at_k(records, {source}, k),
+            f"distinct_papers_in_top_{k}_passages": float(len({h["paper_id"] for h in ordered[:k]}))}
 
 
 def _queries(papers: list[dict], count: int, seed: int) -> list[dict]:
@@ -83,6 +85,10 @@ def prepare_sample(paper_count: int, query_count: int) -> dict:
     cfg = get_config()
     source = get_path("processed")
     names = cfg["kb"]["store"]
+    for key in ("passages_file", "sections_file"):
+        name = Path(names[key])
+        if name.anchor or ".." in name.parts:
+            raise ValueError(f"probe requires a relative KB {key} within paths.processed")
     papers = sorted((p for p in store.iter_papers(source / names["sqlite_file"])
                      if p.get("num_chunks", 0) > 0), key=lambda p: p["paper_id"])
     if not papers:
@@ -94,50 +100,54 @@ def prepare_sample(paper_count: int, query_count: int) -> dict:
     processed = root / "processed"
     processed.mkdir(parents=True, exist_ok=True)
     counts = {}
+    indexed_papers: set[str] = set()
     for key in ("passages_file", "sections_file"):
         n = 0
+        (processed / names[key]).parent.mkdir(parents=True, exist_ok=True)
         with (source / names[key]).open(encoding="utf-8") as src, \
                 (processed / names[key]).open("w", encoding="utf-8", newline="\n") as dst:
             for line in src:
-                if json.loads(line)["paper_id"] in ids:
+                paper_id = json.loads(line)["paper_id"]
+                if paper_id in ids:
                     dst.write(line.rstrip("\r\n") + "\n")
                     n += 1
+                    if key == "passages_file":
+                        indexed_papers.add(paper_id)
         counts[key] = n
+    if indexed_papers != ids:
+        raise ValueError("sampled paper metadata and passage file disagree; rebuild or select the matching KB")
     queries = _queries(sample, query_count, cfg["seed"])
     (root / "queries.jsonl").write_text("".join(json.dumps(q) + "\n" for q in queries), encoding="utf-8")
-    corpus_hash = hashlib.sha256((processed / names["passages_file"]).read_bytes()).hexdigest()
+    with (processed / names["passages_file"]).open("rb") as stream:
+        corpus_hash = hashlib.file_digest(stream, "sha256").hexdigest()
     return {"root": str(root), "run_id": run_id, "processed": str(processed), "paper_ids": sorted(ids),
             "num_papers": len(ids), "counts": counts, "queries": queries, "passages_sha256": corpus_hash}
 
 
-def _clear_runtime(*, release_models: bool = False) -> None:
-    """Release experiment-owned components between rows; never call in an online server."""
-    from retrieval import dense, rerank
-
-    stores = {lookup._STORE}
-    for retriever in (sparse._RETRIEVER, dense._RETRIEVER):
-        if retriever is not None:
-            stores.add(retriever._lookup)
-    # Drop all retrievers referencing a store before closing it.
-    sparse._RETRIEVER = dense._RETRIEVER = None
-    for store_ in stores:
-        if store_ is not None:
-            store_.close()
-    lookup._STORE = None
-    pipeline._LOADED.clear()
-    if release_models:
-        dense._ENCODER = None
-        rerank._RERANKER = None
+def ablation_rows(hybrid: bool) -> tuple[dict[str, dict], dict[str, str]]:
+    """Return effective experiments and explicit reasons for inapplicable rows."""
+    rows = {"legacy": {}, "query_only": {"query_processing.enabled": True}}
+    skipped = {}
+    deeper = {"sparse.top_k": 150, "dense.top_k": 150}
+    if hybrid:
+        rows["depth_only"] = deeper
+    else:
+        skipped["depth_only"] = ("Sparse ranking has an unchanged top-50 prefix at a fixed candidate budget; "
+                                 "compare depth_with_diversity against diversity_only instead.")
+    rows["diversity_only"] = {"diversity.enabled": True}
+    rows["depth_with_diversity"] = {**deeper, "diversity.enabled": True}
+    rows["combined"] = {**rows["depth_with_diversity"], "query_processing.enabled": True}
+    rows["sqlite"] = {**rows["combined"], "sparse.backend": "sqlite"}
+    rows["sqlite_fields"] = {**rows["sqlite"], "sparse.field_weighting.enabled": True}
+    return rows, skipped
 
 
 def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
               reranking: bool = False) -> dict:
     """Build sample indexes and compare legacy budgets, isolated switches and combined changes."""
-    from retrieval import dense, rerank
+    from retrieval import dense
 
-    if (pipeline._LOADED or lookup._STORE is not None or sparse._RETRIEVER is not None
-            or dense._RETRIEVER is not None or dense._ENCODER is not None or rerank._RERANKER is not None):
-        raise RuntimeError("run the probe in a fresh dedicated process")
+    require_fresh_runtime()
     cfg = get_config()
     settings = cfg["eval"]["retrieval_probe"]
     sample = prepare_sample(paper_count, query_count)
@@ -145,10 +155,13 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
     names = cfg["kb"]["store"]
     passages = Path(sample["processed"]) / names["passages_file"]
     sections = Path(sample["processed"]) / names["sections_file"]
-    report: dict = {"label_kind": "known_source_proxy", "limitations":
+    report: dict = {"format_version": 2, "metric_version": "paper_ranking_v2",
+              "label_kind": "known_source_proxy", "limitations":
               "Queries derive from indexed source text; incomplete qrels, not held-out relevance labels. "
                "Model proxies do not measure BGE/Qwen quality. Latency is local warm sequential latency.",
               "metric_scope": "Raw source terms; paired request-template results are reported separately.",
+              "ranking_scope": "Sort all returned hits by rank, deduplicate papers, then apply metric k; "
+                               "retrieval still returns at most 10 passages. Diversity uses a passage cutoff.",
               "setup_timing": "row_setup_ms includes index loading and one warm-up query. Models and OS caches "
                               "may be reused across rows; this is not comparable process cold-start latency.",
               "mode": probe_mode(hybrid, reranking),
@@ -175,6 +188,7 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
                  "retrieval.rerank.device": "cpu",
                  "retrieval.rerank.batch_size": settings["batch_size"],
                  "retrieval.rerank.max_length": settings["rerank_max_length"]}
+    old_torch_threads = old_faiss_threads = None
     with config_overrides(cfg, overrides):
         try:
             report["build"]["lookup"] = lookup.build_lookup(passages, sections, lookup.lookup_path())
@@ -183,23 +197,24 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
             if hybrid or reranking:
                 import torch
 
+                old_torch_threads = torch.get_num_threads()
                 torch.set_num_threads(settings["cpu_threads"])
             if hybrid:
                 import faiss
 
+                old_faiss_threads = faiss.omp_get_max_threads()
                 faiss.omp_set_num_threads(settings["cpu_threads"])
                 cfg["retrieval"]["dense"]["faiss_dir"] = str(root / "indices/faiss")
                 report["build"]["dense"] = dense.build_index(passages, dense.index_path())
-            base = {"sparse.top_k": 50, "dense.top_k": 50, "fusion.top_k": 50,
-                    "query_processing.enabled": False, "diversity.enabled": False,
-                    "sparse.backend": "rankbm25", "sparse.field_weighting.enabled": False}
-            rows = {"legacy": {}, "query_only": {"query_processing.enabled": True},
-                    "depth_only": {"sparse.top_k": 150, "dense.top_k": 150},
-                    "diversity_only": {"diversity.enabled": True},
-                    "combined": {"query_processing.enabled": True, "diversity.enabled": True,
-                                 "sparse.top_k": 150, "dense.top_k": 150}}
-            rows["sqlite"] = {**rows["combined"], "sparse.backend": "sqlite"}
-            rows["sqlite_fields"] = {**rows["sqlite"], "sparse.field_weighting.enabled": True}
+            base = {**BASE, "dense.enabled": hybrid, "rerank.enabled": reranking,
+                    "parallel": False, "sparse.backend": "rankbm25",
+                    "rerank.batch_size": settings["batch_size"], "rerank.max_length": settings["rerank_max_length"]}
+            rows, report["skipped_rows"] = ablation_rows(hybrid)
+            report["comparisons"] = {"query_only": "legacy", "diversity_only": "legacy",
+                                     "depth_with_diversity": "diversity_only", "combined": "depth_with_diversity",
+                                     "sqlite": "combined", "sqlite_fields": "sqlite"}
+            if hybrid:
+                report["comparisons"]["depth_only"] = "legacy"
             for name, changes in rows.items():
                 print(f"probe: {name}", flush=True)
                 with config_overrides(cfg["retrieval"], {**base, **changes}):
@@ -235,4 +250,8 @@ def run_probe(paper_count: int, query_count: int, *, hybrid: bool = False,
                     (root / "progress.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         finally:
             _clear_runtime(release_models=True)
+            if old_torch_threads is not None:
+                torch.set_num_threads(old_torch_threads)
+            if old_faiss_threads is not None:
+                faiss.omp_set_num_threads(old_faiss_threads)
     return report

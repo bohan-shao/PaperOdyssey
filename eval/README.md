@@ -16,6 +16,13 @@ The revised probe pairs raw terms with the request template, reports their metri
 and uses unique run directories/filenames for all four sparse/hybrid/rerank combinations.
 `row_setup_ms` is a warm-up/setup measurement with possible model/cache reuse, not a process
 cold start. See [retrieval/REVIEW.md](../retrieval/REVIEW.md) for the D40 audit and diagnostic results.
+The D41 report format is version 2: source metrics delegate to `retrieval_metrics.py` (sort all
+returned hits by rank, deduplicate papers, then apply positive integer K). Diversity is separately
+named `distinct_papers_in_top_10_passages`. The pipeline still returns at most ten passages.
+Sparse-only `depth_only` is omitted with an explicit reason; compare `depth_with_diversity`
+against `diversity_only`. `comparisons` records the appropriate control for each row.
+The shared internal `runtime.py` rejects previously loaded components and releases experiment
+readers/models on exit. The probe also restores temporary Torch/FAISS thread settings.
 
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
 performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
@@ -57,7 +64,18 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   agreement with depth 50); cold-start load time is reported separately
 - Parent rows include actual expanded/unchanged/no-parent text counts. `mean_candidates` is
   the selected pool before reranking/final truncation, not the raw sparse/dense union.
-- Configurations are switched in memory, never in config.yaml; every row sets all switches
+- Configurations are switched in memory, never in config.yaml. Protocol `legacy_50_v2` fixes
+  query processing/diversity/field weighting off, 50/50/50 candidates, ten outputs, equal RRF
+  weights (k=60), BM25 0.9/0.4, efSearch 128, filtered exact threshold 50,000, parallel retrieval,
+  and rerank batch size 64/max length 512 before loading components. Model/backend/index
+  identity remains configured. Every row records its effective retrieval config, and the report
+  includes requested/baseline configs and the full query batch. The CLI accepts `--config`.
+  Actual index paths/manifests are recorded; the latest build-log path is unverified context
+  and is not assumed to describe the measured indexes (`index_build` is null in v2).
+- Run in a fresh dedicated process; loaded components from another configuration are rejected.
+  `cold_start_s` is retained for compatibility but measures component load plus warm-up, with
+  possibly warm OS/model file caches. Rerank sweeps collect up to the largest requested depth
+  and record actual pair counts, including when the corpus cannot fill that depth.
 - Percentiles: linear interpolation between ranks (numpy's default)
 - First run on the 50-paper sample (RTX 5070): hybrid+rerank p95 410 ms (within budget, rerank
   ≈ 95% of it); throughput flat at ~2.6 qps from 1 to 8 callers (the reranker runs one call at a

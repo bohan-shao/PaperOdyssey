@@ -45,7 +45,7 @@ from config import get_config
 from kb import store as kb_store
 
 from .lookup import LookupStore, get_lookup_store
-from .index_paths import index_directory, validate_destination
+from .index_paths import index_directory, publish_index, validate_destination
 from .sparse import category_token
 from .types import RetrievalFilters, ScoredPassage
 
@@ -227,9 +227,7 @@ def build_index(passages_path: str | Path, faiss_dir: str | Path,
         }
         (tmp / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         validate_destination(out, passages_path, "dense")
-        if out.exists():
-            shutil.rmtree(out)
-        tmp.rename(out)
+        publish_index(tmp, out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise

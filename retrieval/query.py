@@ -20,7 +20,10 @@ def query_views(query: str, cfg: dict) -> tuple[str, str]:
     if not cfg.get("enabled", False):
         return query, query
     semantic = " ".join(normalize_text(query).split())
-    stopwords = set(cfg.get("stopwords", []))
+    words = cfg.get("stopwords", [])
+    if not isinstance(words, list) or any(not isinstance(w, str) for w in words):
+        raise ValueError("query_processing.stopwords must contain strings; quote YAML boolean-like words")
+    stopwords = {w.lower() for w in words}
     tokens = list(dict.fromkeys(_WORDS.findall(semantic.lower())))
     content = [t for t in tokens if t not in stopwords]
     limit = int(cfg.get("max_terms", 64))

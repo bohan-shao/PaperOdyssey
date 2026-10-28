@@ -130,18 +130,32 @@ stopwords. The revised diagnostic found raw-term MRR unchanged at 0.975 (see ret
 Neither query form represents independently collected natural user queries.
 The source paper is a **weak, non-exhaustive label**. These are known-source probes,
 not held-out human relevance judgments: source text remains indexed and source recall is
-optimistic. `source_recall@10`, source MRR/NDCG and distinct-paper count are computed over
-distinct papers represented in the first ten returned passages. Diversity is not precision.
-The source formulas have hand-computed regression tests. The production retrieval metrics
-and D39 annotation workflow are separate from this diagnostic, which does not satisfy the
+optimistic. In D41 report format 2 (`metric_version: paper_ranking_v2`), `source_recall@10`,
+source MRR/NDCG call the canonical retrieval metric functions: sort all returned hits by rank,
+deduplicate papers, then apply K. `distinct_papers_in_top_10_passages` separately counts unique
+papers in the first ten passages. The probe requests at most ten passages, so this need not
+fill ten paper positions. Diversity is not precision. Older reports retain their historical
+passage-cutoff definitions; do not mix report versions without recomputing from saved hits.
+The source formulas have hand-computed parity tests. The D39 annotation workflow remains
+separate from this diagnostic, which does not satisfy the
 1,000-item/three-annotator requirement.
 
-Rows compare legacy 50/50/50 budgets, query processing alone, 150/150 depth alone, diversity
-alone, the combination, SQLite instead of rank-bm25, and SQLite field weighting. The depth
-row changes the two channel budgets as one coupled recall-budget experiment; it is not an
-isolated per-channel ablation. Compare `sqlite_fields` only against `sqlite` to isolate field
+Rows compare legacy 50/50/50 budgets, query processing alone, diversity alone, depth with
+diversity, the combination, SQLite instead of rank-bm25, and SQLite field weighting. Hybrid
+mode additionally tests 150/150 depth alone; sparse-only marks `depth_only` inapplicable
+because the unchanged top-50 prefix cannot affect output. Compare `depth_with_diversity`
+against `diversity_only` to test depth without increasing the 50-candidate scoring budget.
+In hybrid mode the two channel budgets change together; this is not an isolated per-channel
+ablation. `comparisons` records controls. Compare `sqlite_fields` only against `sqlite` to isolate field
 weights. Baseline/combined rows keep the same model and index. The CPU MiniLM model pair
 is a resource-limited proxy, not a BGE-vs-Qwen3 comparison. No LLM/API calls or token costs.
+
+The latency runner uses protocol `legacy_50_v2` in a fresh process, fixing ranking switches,
+budgets and scoring parameters before loading models. Model/backend/index identity remains
+configured, not silently substituted. Every row saves effective settings; reports save full
+queries, requested settings and baseline overrides. Rerank-depth sweeps expand the collection
+budget to the largest requested depth and report actual pairs, so undersized pools are visible.
+`cold_start_s` covers component loading and warm-up, not process creation or cold filesystem caches.
 
 Before selecting a new production model/default, repeat on manually annotated dev queries,
 then evaluate untouched held-out queries at paper and passage granularity. Include filtered,

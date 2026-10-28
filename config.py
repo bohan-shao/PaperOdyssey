@@ -99,6 +99,10 @@ def _read_config(cfg_path: Path) -> dict:
     missing = [k for k in REQUIRED_SECTIONS if k not in cfg]
     if missing:
         raise ValueError(f"{cfg_path} missing required sections: {missing}")
+    stopwords = cfg.get("retrieval", {}).get("query_processing", {}).get("stopwords", [])
+    if not isinstance(stopwords, list) or any(not isinstance(word, str) for word in stopwords):
+        raise ValueError("retrieval.query_processing.stopwords must be a list of strings; "
+                         "quote YAML words such as 'on', 'off', 'yes' and 'no'")
     return cfg
 
 

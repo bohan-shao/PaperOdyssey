@@ -20,3 +20,10 @@ Conventions:
 - Usage `python scripts/xxx.py --config config.yaml [args]`; `--help` must work
 - Output paths all come from config.yaml; print stage progress (tqdm) + write log files
 - Re-runnable (idempotent): resumable downloads, index rebuild overwrites, evaluation results carry a date suffix
+
+`benchmark_retrieval.py --config <full-config.yaml>` uses the fixed `legacy_50_v2` ranking
+protocol with the configured models/backends/indexes, and saves complete queries and per-row
+effective settings. Use `--out` to retain multiple runs on the same day. Start it in a fresh
+process; see `eval/README.md` for baseline and startup timing definitions.
+Probe format v2 shares the canonical paper metrics. Sparse-only depth is tested by comparing
+`depth_with_diversity` with `diversity_only`; `depth_only` is explicitly skipped for that mode.

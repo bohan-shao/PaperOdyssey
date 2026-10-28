@@ -119,8 +119,19 @@ def _candidates(query: str, filters: RetrievalFilters | None, cfg: dict,
         pending = _POOL.submit(_run, "sparse retrieval", _sparse_search, *sparse_args)
     elif use_sparse:
         sparse_hits, latency["sparse_ms"] = _run("sparse retrieval", _sparse_search, *sparse_args)
-    if use_dense:
-        dense_hits, latency["dense_ms"] = _run("dense retrieval", _dense_search, *dense_args)
+    try:
+        if use_dense:
+            dense_hits, latency["dense_ms"] = _run("dense retrieval", _dense_search, *dense_args)
+    except BaseException:
+        # Offline experiments may close readers/restore config as soon as retrieve returns.
+        # Drain the sibling worker before propagating the original dense failure.
+        if pending is not None:
+            pending.cancel()
+            try:
+                pending.result()
+            except BaseException:
+                pass
+        raise
     if pending is not None:
         sparse_hits, latency["sparse_ms"] = pending.result()
 

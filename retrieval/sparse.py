@@ -42,7 +42,7 @@ from config import get_config
 from kb import store as kb_store
 
 from .lookup import LookupStore, get_lookup_store
-from .index_paths import index_directory, validate_destination
+from .index_paths import index_directory, publish_index, validate_destination
 from .types import RetrievalFilters, ScoredPassage
 
 BACKENDS = ("pyserini", "rankbm25", "sqlite")
@@ -167,9 +167,7 @@ def build_index(passages_path: str | Path, index_dir: str | Path, backend: str |
         (tmp / "meta.json").write_text(json.dumps(meta) + "\n",
                                        encoding="utf-8")
         validate_destination(out, passages_path, "sparse")
-        if out.exists():
-            shutil.rmtree(out)
-        tmp.rename(out)
+        publish_index(tmp, out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
@@ -250,7 +248,13 @@ class _RankBM25Backend:
         if not tokens:
             return []
         scores = self._bm25.get_scores(tokens)
-        mask = scores > 0  # like Lucene: only passages sharing a query term
+        mask = scores > 0
+        # rank-bm25 can assign zero/negative IDF in small or repetitive collections.
+        # Matching is lexical overlap, not score positivity; keep the fast path otherwise.
+        if any(t in self._bm25.idf and self._bm25.idf[t] <= 0 for t in tokens):
+            terms = set(tokens)
+            mask = np.fromiter((bool(terms.intersection(freqs)) for freqs in self._bm25.doc_freqs),
+                               dtype=bool, count=len(self._ids))
         if filters is not None:
             if filters.year_min is not None:
                 mask &= self._years >= filters.year_min

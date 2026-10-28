@@ -168,7 +168,7 @@ class ProbeMetricTest(unittest.TestCase):
         self.assertEqual(metrics["source_recall@10"], 1)
         self.assertEqual(metrics["source_mrr@10"], 0.5)
         self.assertAlmostEqual(metrics["source_ndcg@10"], 1 / 1.584962500721156)
-        self.assertEqual(metrics["distinct_papers@10"], 3)
+        self.assertEqual(metrics["distinct_papers_in_top_10_passages"], 3)
         self.assertEqual(source_metrics(hits, "missing")["source_recall@10"], 0)
 
 

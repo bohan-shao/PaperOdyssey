@@ -17,8 +17,8 @@ by `scripts/benchmark_retrieval.py`):
   of the top 10 that agrees with reranking all of them (a label-free cost/quality trade-off).
 - examples: the 5 UI example inputs with their top hits (Q2: "write 5 queries, produce results,
   measure latency").
-- environment, config snapshot, corpus size and the latest index build report (EVALUATION.md
-  section 9).
+- environment, config snapshot, corpus size and manifests of the actual indexes. The latest
+  build report is supplementary, unverified context (EVALUATION.md section 9).
 
 Queries are paper titles sampled from papers.sqlite with the configured seed (latency needs no
 relevance labels). Configurations are switched by overriding the in-memory config
@@ -53,12 +53,21 @@ from config import get_config, get_path
 from kb import store as kb_store
 from retrieval.pipeline import retrieve, warm_up
 from retrieval.types import RetrievalFilters, ScoredPassage
+from .runtime import clear_runtime, require_fresh_runtime
 
 log = logging.getLogger(__name__)
 
-# Every row sets all switches, so results never depend on what config.yaml currently says.
+# Versioned legacy experiment protocol. Model/backend/index identity comes from the config;
+# all active ranking switches and budgets below are fixed before loading any components.
 BASE = {"sparse.enabled": True, "dense.enabled": True, "rerank.enabled": True,
-        "parent_doc.enabled": False, "filters.enabled": True}
+        "parent_doc.enabled": False, "parent_doc.max_chars": 6000, "filters.enabled": True,
+        "query_processing.enabled": False, "diversity.enabled": False,
+        "sparse.field_weighting.enabled": False, "parallel": True,
+        "sparse.top_k": 50, "dense.top_k": 50, "fusion.top_k": 50, "rerank.top_k": 10,
+        "fusion.rrf_k": 60, "fusion.weights": [1.0, 1.0],
+        "sparse.bm25.k1": 0.9, "sparse.bm25.b": 0.4,
+        "dense.hnsw.efSearch": 128, "dense.filter_exact_max": 50000,
+        "rerank.batch_size": 64, "rerank.max_length": 512}
 FILTERS = RetrievalFilters(year_min=2020, categories=["cs.CL"])  # "recent NLP papers"
 CONFIGS: dict[str, tuple[dict[str, object], RetrievalFilters | None]] = {
     "bm25": ({"dense.enabled": False, "rerank.enabled": False}, None),
@@ -150,6 +159,7 @@ def measure_config(section: dict, queries: Sequence[str], overrides: dict[str, o
     hits = candidates = 0
     parent_counts = {"expanded": 0, "unchanged": 0, "no_parent": 0}
     with config_overrides(section, {**BASE, **overrides}):
+        effective_config = copy.deepcopy(section)
         for q in queries[:_UNMEASURED]:
             retrieve(q, filters)
         for q in queries:
@@ -167,7 +177,8 @@ def measure_config(section: dict, queries: Sequence[str], overrides: dict[str, o
                                if hit.text == children[hit.passage_id]["text"] else "expanded")
                     parent_counts[outcome] += 1
     n = max(len(queries), 1)
-    return {"overrides": overrides, "filters": asdict(filters) if filters else None,
+    return {"overrides": overrides, "effective_config": effective_config,
+            "filters": asdict(filters) if filters else None,
             "latency_ms": {stage: summarize(v) for stage, v in stages.items()},
             "parent_text_counts": parent_counts,
             "mean_hits": round(hits / n, 2), "mean_candidates": round(candidates / n, 2)}
@@ -220,6 +231,8 @@ def sweep_rerank_depth(queries: Sequence[str], candidates: Sequence[Sequence[Sco
     Args:
         candidates: candidates[i] is the fused list (best first) for queries[i].
     """
+    if not queries or len(queries) != len(candidates) or not depths or any(d <= 0 for d in depths) or top_k <= 0:
+        raise ValueError("rerank sweep requires paired nonempty inputs and positive depths/top_k")
     times: dict[int, list[float]] = {d: [] for d in depths}
     tops: dict[int, list[list[str]]] = {d: [] for d in depths}
     for q, cands in zip(queries, candidates):
@@ -229,7 +242,8 @@ def sweep_rerank_depth(queries: Sequence[str], candidates: Sequence[Sequence[Sco
             times[d].append((time.perf_counter() - start) * 1000)
             tops[d].append([h.passage_id for h in top])
     reference = tops[max(depths)]
-    return [{"depth": d, "rerank_ms": summarize(times[d]),
+    return [{"depth": d, "actual_pairs": summarize([min(d, len(c)) for c in candidates]),
+             "rerank_ms": summarize(times[d]),
              "top_k_agreement": round(statistics.fmean(overlap_at_k(ids, ref) for ids, ref
                                                        in zip(tops[d], reference)), 4)}
             for d in depths]
@@ -272,14 +286,40 @@ def environment() -> dict:
 def run_benchmark(n_queries: int = 100, concurrency: Sequence[int] = (1, 4, 8),
                   ef_values: Sequence[int] = (32, 64, 128, 256),
                   rerank_depths: Sequence[int] = (10, 20, 30, 50)) -> dict:
+    """Run the fixed legacy protocol with configured models/indexes in a fresh process."""
+    if n_queries <= 0 or any(not values or any(v <= 0 for v in values)
+                             for values in (concurrency, ef_values, rerank_depths)):
+        raise ValueError("benchmark query count, concurrency, ef values and depths must be positive")
+    require_fresh_runtime()
+    section = get_config()["retrieval"]
+    requested = copy.deepcopy(section)
+    try:
+        with config_overrides(section, BASE):
+            report = _run_benchmark(n_queries, concurrency, ef_values, rerank_depths)
+            report["requested_config_snapshot"] = requested
+            return report
+    finally:
+        clear_runtime(release_models=True)
+
+
+def _depth_candidates(section: dict, queries: Sequence[str], depth: int) -> tuple[list, dict]:
+    overrides = {**BASE, "rerank.enabled": False, "fusion.top_k": depth,
+                 "sparse.top_k": max(BASE["sparse.top_k"], depth),
+                 "dense.top_k": max(BASE["dense.top_k"], depth)}
+    with config_overrides(section, overrides):
+        return [retrieve(q, top_k=depth).hits for q in queries], copy.deepcopy(section)
+
+
+def _run_benchmark(n_queries: int, concurrency: Sequence[int], ef_values: Sequence[int],
+                   rerank_depths: Sequence[int]) -> dict:
     """Run every measurement against the configured indexes and return the report."""
-    from retrieval import dense, rerank
+    from retrieval import dense, lookup, rerank, sparse
 
     cfg = get_config()
     section = cfg["retrieval"]
     seed = cfg.get("seed", 42)
-    queries = sample_title_queries(get_path("processed") / cfg["kb"]["store"]["sqlite_file"],
-                                   n_queries, seed)
+    paper_db = get_path("processed") / cfg["kb"]["store"]["sqlite_file"]
+    queries = sample_title_queries(paper_db, n_queries, seed)
     if not queries:
         raise RuntimeError("no paper titles in papers.sqlite to use as queries")
 
@@ -308,8 +348,7 @@ def run_benchmark(n_queries: int = 100, concurrency: Sequence[int] = (1, 4, 8),
     ef_rows = sweep_ef_search(query_vecs, retriever.index, ef_values, k)
 
     log.info("rerank depth sweep %s", list(rerank_depths))
-    with config_overrides(section, {**BASE, "rerank.enabled": False}):
-        fused = [retrieve(q, top_k=max(rerank_depths)).hits for q in queries]
+    fused, depth_config = _depth_candidates(section, queries, max(rerank_depths))
     top_k = section["rerank"].get("top_k", 10)
     depth_rows = sweep_rerank_depth(queries, fused, rerank_depths, rerank.rerank, top_k)
 
@@ -318,19 +357,28 @@ def run_benchmark(n_queries: int = 100, concurrency: Sequence[int] = (1, 4, 8),
     metrics_dir = get_path("results") / "metrics"
     builds = sorted(metrics_dir.glob("index_build_*.json"))
     return {
+        "format_version": 2, "baseline": "legacy_50_v2", "baseline_overrides": copy.deepcopy(BASE),
         "created": datetime.now().isoformat(timespec="seconds"),
         "queries": {"source": "paper titles from papers.sqlite", "n": len(queries), "seed": seed,
-                    "first": queries[:5]},
+                    "metadata_path": str(paper_db.resolve()), "first": queries[:5], "all": queries},
         "corpus": {"passages": retriever.index.ntotal,
+                   "lookup_path": str(lookup.lookup_path().resolve()),
+                   "indexes": {name: {"path": str(path.resolve()),
+                                       "manifest": json.loads((path / "meta.json").read_text(encoding="utf-8"))}
+                               for name, path in (("sparse", sparse.index_path()), ("dense", dense.index_path()))},
                    "index_build_report": str(builds[-1]) if builds else None,
-                   "index_build": json.loads(builds[-1].read_text(encoding="utf-8")) if builds else None},
+                   "index_build": None,
+                   "index_build_verified": False,
+                   "index_build_note": "Latest build log is supplementary; it may describe different index paths."},
         "cold_start_s": cold_start_s,
+        "startup_definition": "Previously unloaded retrieval components plus one warm-up request; "
+                              "OS and model file caches may be warm. Not whole-process startup.",
         "configs": configs,
         "budget": {"limit_ms": BUDGET_MS, "config": "hybrid_rerank", "p95_ms": p95,
                    "within": p95 <= BUDGET_MS},
         "throughput": throughput,
         "ef_search_sweep": {"k": k, "rows": ef_rows},
-        "rerank_depth_sweep": {"top_k": top_k, "rows": depth_rows},
+        "rerank_depth_sweep": {"top_k": top_k, "candidate_config": depth_config, "rows": depth_rows},
         "examples": examples,
         "environment": environment(),
         "config_snapshot": copy.deepcopy(section),
