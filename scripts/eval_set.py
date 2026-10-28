@@ -2,8 +2,9 @@
 
 Usage:
     python scripts/eval_set.py draft --n 1000 [--workers 8] [--papers PATH]   # needs an LLM key in .env
-    python scripts/eval_set.py sheets [--round 1]
+    python scripts/eval_set.py sheets [--round 1] [--per-question 2]
     python scripts/eval_set.py build
+    python scripts/eval_set.py tiebreak [--round 1]                         # after build reports ties
     python scripts/eval_set.py rewrites                                      # after filling to_rewrite.csv
 
 File names and the annotators come from config `eval.annotation` (files under `paths.eval`):
@@ -40,7 +41,11 @@ def main() -> None:
     p.add_argument("--papers", type=Path, default=None, help="papers.sqlite or a folder holding it (default from config)")
     p = sub.add_parser("sheets", help="write one marking sheet per annotator (questions without a sheet yet)")
     p.add_argument("--round", type=int, default=1)
+    p.add_argument("--per-question", type=int, default=None,
+                   help="annotators per question (default: all; e.g. 2 of 5, balanced over the pairs)")
     sub.add_parser("build", help="majority vote -> eval_set.jsonl, agreement report, to_rewrite.csv")
+    p = sub.add_parser("tiebreak", help="sheets for one more annotator on each evenly split question")
+    p.add_argument("--round", type=int, default=1)
     sub.add_parser("rewrites", help="add the new questions of to_rewrite.csv as the next round")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -72,7 +77,10 @@ def run(args: argparse.Namespace, cfg: dict, paths: dict[str, Path]) -> None:
         print(f"{result['drafted']} drafted, {result['skipped']} already there, {result['failed']} failed "
               f"(rerun to retry) -> {drafts}")
     elif args.cmd == "sheets":
-        for path in questions.write_sheets(drafts, sheet_dir, args.round, annotators):
+        for path in questions.write_sheets(drafts, sheet_dir, args.round, annotators, args.per_question):
+            print(path)
+    elif args.cmd == "tiebreak":
+        for path in questions.write_tiebreak_sheets(drafts, sheet_dir, args.round, annotators):
             print(path)
     elif args.cmd == "build":
         summary = questions.build_eval_set(

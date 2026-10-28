@@ -22,7 +22,9 @@ python scripts/eval_set.py sheets             # data/eval/annotation/round1_part
 python scripts/eval_set.py build              # eval_set.jsonl + metrics/iaa_<date>.json + to_rewrite.csv
 #   discuss the pilot's disagreements; adjust guidelines.md (or the prompt, before drafting more)
 python scripts/eval_set.py draft --n 1100     # the rest (the first 50 stay; ~10% spare for rejected questions)
-python scripts/eval_set.py sheets             # round1_part2_*.csv: only the questions not handed out yet
+python scripts/eval_set.py sheets --per-question 2   # round1_part2_*.csv: the rest, 2 annotators each (D41)
+python scripts/eval_set.py build
+python scripts/eval_set.py tiebreak           # evenly split questions -> one more annotator each
 python scripts/eval_set.py build
 #   one person writes `new_question` (and `new_type`) for the rows of to_rewrite.csv, then:
 python scripts/eval_set.py rewrites           # adds them as round 2

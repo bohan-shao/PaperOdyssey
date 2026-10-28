@@ -1,4 +1,4 @@
-"""Evaluation-set questions: LLM-drafted search requests, checked by three annotators (Q4, D39).
+"""Evaluation-set questions: LLM-drafted search requests, checked by people (Q4, D39, D41).
 
 The team's procedure (agreed on 2026-10-24):
 
@@ -9,11 +9,12 @@ The team's procedure (agreed on 2026-10-24):
    researcher could type, from the title and abstract only (`INSTRUCTIONS`); one line per question
    in drafts.jsonl, query ids Q0001.. in the order written. Resumable: papers already in the file
    are skipped, so a rerun drafts the ones that failed and a larger N adds new ones.
-3. `write_sheets`: one CSV per annotator with the same rows (round<R>_part<P>_<annotator>.csv),
-   for the questions not handed out yet; which questions each part holds is recorded in
-   round<R>_part<P>.json, so a pilot can come first and the rest later. Each annotator marks
+3. `write_sheets`: one CSV per annotator (round<R>_part<P>_<annotator>.csv) for the questions not
+   handed out yet; round<R>_part<P>.json records which questions went to whom, so a pilot can come
+   first and the rest later. Every question goes to all annotators, or to `per_question` of them
+   balanced over the groups (D41: the pilot to 3, the rest to 2 of 5). Each annotator marks
    alone, without discussing, whether the paper is a good answer to the question (`fits` y/n;
-   guidelines.md §6).
+   guidelines.md §6). An evenly split question goes to one more annotator (`write_tiebreak_sheets`).
 4. `build_eval_set`: a question that most annotators accept enters eval_set.jsonl (SCHEMA.md §7)
    with its paper as the gold paper; agreement over every question version marked by all
    annotators goes to iaa_<date>.json; rejected questions, and a question identical to an earlier
@@ -37,7 +38,7 @@ import re
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from itertools import islice
+from itertools import combinations, islice
 from pathlib import Path
 from typing import TextIO
 
@@ -217,41 +218,97 @@ def sheets_of(sheet_dir: str | Path, annotator: str) -> list[tuple[int, int, Pat
 
 
 def _parts(sheet_dir: str | Path, round_: int) -> list[dict]:
-    """The manifests of a round's parts: {"round", "part", "annotators", "query_ids"}."""
+    """The manifests of a round's parts: {"round", "part", "annotators", "query_ids", "assigned"
+    (query_id -> annotators; absent in early manifests: everyone), "tiebreak" (optional)}."""
     parts = [json.loads(p.read_text("utf-8")) for p in Path(sheet_dir).glob(f"round{round_}_part*.json")]
     return sorted(parts, key=lambda m: m["part"])
 
 
-def write_sheets(drafts_path: str | Path, sheet_dir: str | Path, round_: int = 1,
-                 annotators: tuple[str, ...] = ANNOTATORS) -> list[Path]:
-    """Marking sheets, one per annotator with the same rows, for the questions whose latest round
-    is `round_` and that no earlier part of the round handed out (its manifest says which).
+def handed_out(sheet_dir: str | Path, round_: int) -> dict[str, tuple[list[str], list[str]]]:
+    """query_id -> (its annotators, its tie-breakers) over the round's parts."""
+    out: dict[str, tuple[list[str], list[str]]] = {}
+    for m in _parts(sheet_dir, round_):
+        assigned = m.get("assigned") or {qid: m["annotators"] for qid in m["query_ids"]}
+        for qid, names in assigned.items():
+            main, extra = out.setdefault(qid, ([], []))
+            (extra if m.get("tiebreak") else main).extend(names)
+    return out
 
-    Never overwrites a sheet (it may hold marks).
-    """
-    parts = _parts(sheet_dir, round_)
-    handed_out = {qid for m in parts for qid in m["query_ids"]}
-    rows = [d for d in latest_drafts(drafts_path).values() if d["round"] == round_ and d["query_id"] not in handed_out]
-    if not rows:
-        raise ValueError(f"no round-{round_} questions without a marking sheet in {drafts_path}")
-    part = 1 + max((m["part"] for m in parts), default=0)
-    sheet_dir = Path(sheet_dir)
-    paths = [sheet_dir / f"round{round_}_part{part}_{a}.csv" for a in annotators]
+
+def _write_part(sheet_dir: Path, round_: int, rows: list[dict], assigned: dict[str, list[str]],
+                annotators: tuple[str, ...], meta: dict) -> list[Path]:
+    """One sheet per annotator with their rows, and the part's manifest; never overwrites."""
+    part = 1 + max((m["part"] for m in _parts(sheet_dir, round_)), default=0)
+    per_annotator = {a: [d for d in rows if a in assigned[d["query_id"]]] for a in annotators}
+    paths = {a: sheet_dir / f"round{round_}_part{part}_{a}.csv" for a in annotators if per_annotator[a]}
     manifest = sheet_dir / f"round{round_}_part{part}.json"
-    existing = [str(p) for p in [*paths, manifest] if p.exists()]
+    existing = [str(p) for p in [*paths.values(), manifest] if p.exists()]
     if existing:
         raise FileExistsError(f"not overwriting marking sheets: {existing}")
     sheet_dir.mkdir(parents=True, exist_ok=True)
-    for path in paths:
+    for a, path in paths.items():
         with path.open("w", encoding="utf-8-sig", newline="") as fh:  # BOM: Excel opens it as UTF-8
             writer = csv.writer(fh, lineterminator="\n")
             writer.writerow(SHEET_COLUMNS)
-            for d in rows:
+            for d in per_annotator[a]:
                 writer.writerow([d["query_id"], d["round"], d["question"], d["title"], d.get("year") or "",
                                  d["abstract"], "", ""])
-    manifest.write_text(json.dumps({"round": round_, "part": part, "annotators": list(annotators),
-                                    "query_ids": [d["query_id"] for d in rows]}, indent=1) + "\n", encoding="utf-8")
-    return paths
+    manifest.write_text(json.dumps({"round": round_, "part": part, "annotators": list(paths), **meta,
+                                    "query_ids": [d["query_id"] for d in rows], "assigned": assigned},
+                                   indent=1) + "\n", encoding="utf-8")
+    return list(paths.values())
+
+
+def write_sheets(drafts_path: str | Path, sheet_dir: str | Path, round_: int = 1,
+                 annotators: tuple[str, ...] = ANNOTATORS, per_question: int | None = None) -> list[Path]:
+    """Marking sheets for the questions whose latest round is `round_` and that no earlier part of
+    the round handed out (its manifest says which).
+
+    Every question goes to `per_question` annotators (default: all). With fewer than all, the
+    questions go to each group of that size in turn (e.g. the 10 pairs of 5 people), so everyone
+    gets the same number of rows and every pair shares the same number of questions. Each
+    annotator's sheet holds only their rows. Never overwrites a sheet (it may hold marks).
+    """
+    k = per_question or len(annotators)
+    if not 1 <= k <= len(annotators):
+        raise ValueError(f"per_question must be between 1 and {len(annotators)}, not {k}")
+    done = handed_out(sheet_dir, round_)
+    rows = [d for d in latest_drafts(drafts_path).values() if d["round"] == round_ and d["query_id"] not in done]
+    if not rows:
+        raise ValueError(f"no round-{round_} questions without a marking sheet in {drafts_path}")
+    groups = list(combinations(annotators, k))
+    assigned = {d["query_id"]: list(groups[i % len(groups)]) for i, d in enumerate(rows)}
+    return _write_part(Path(sheet_dir), round_, rows, assigned, annotators, {"per_question": k})
+
+
+def write_tiebreak_sheets(drafts_path: str | Path, sheet_dir: str | Path, round_: int = 1,
+                          annotators: tuple[str, ...] = ANNOTATORS) -> list[Path]:
+    """Sheets for the questions of the round whose annotators are split evenly (one y, one n):
+    each goes to one more annotator who has not seen it, the one with the fewest such rows so far.
+    The tie-breaker's mark decides the vote; agreement is computed without it."""
+    marks = {a: read_marks(sheet_dir, a) for a in annotators}
+    done = handed_out(sheet_dir, round_)
+    latest = latest_drafts(drafts_path)
+    load = dict.fromkeys(annotators, 0)
+    rows, assigned = [], {}
+    for qid, (main, extra) in done.items():
+        d = latest.get(qid)
+        if d is None or d["round"] != round_ or extra:
+            continue
+        votes = [marks.get(a, {}).get((qid, round_)) for a in main]
+        if None in votes or 2 * sum(votes) != len(votes):
+            continue
+        candidates = [a for a in annotators if a not in main]
+        if not candidates:
+            raise ValueError(f"{qid}: every annotator has already marked it")
+        pick = min(candidates, key=lambda a: load[a])  # the first of the least loaded, in config order
+        load[pick] += 1
+        rows.append(d)
+        assigned[qid] = [pick]
+    if not rows:
+        raise ValueError(f"no round-{round_} question is split evenly and waiting for a tie-breaker")
+    rows.sort(key=lambda d: d["query_id"])
+    return _write_part(Path(sheet_dir), round_, rows, assigned, annotators, {"tiebreak": True})
 
 
 def read_sheet(path: str | Path) -> dict[tuple[str, int], bool | None]:
@@ -310,26 +367,42 @@ def build_eval_set(drafts_path: str | Path, sheet_dir: str | Path, eval_set_path
                    seed: int = 42) -> dict:
     """Majority vote, agreement report and the list of questions to rewrite.
 
-    Returns {"questions", "pending", "accepted", "rejected", "duplicates", "dev", "eval", "iaa"}.
+    A question's votes are those of the annotators its sheets went to (`handed_out`), tie-breakers
+    included. More y than n accepts it, more n rejects it, an even split waits for a tie-breaker
+    (`write_tiebreak_sheets`). Agreement leaves the tie-breakers out (they saw only split
+    questions) and is reported per number of annotators, as Fleiss' kappa needs the same number
+    on every question: {"by_annotator_count": {"3": {...}, "2": {...}}, ...}.
+
+    Returns {"questions", "pending", "tied", "accepted", "rejected", "duplicates", "dev", "eval", "iaa"}.
     """
-    marks = {a: read_marks(sheet_dir, a) for a in annotators}
+    drafts = read_drafts(drafts_path)
+    rounds = {d["round"] for d in drafts}
+    done = {r: handed_out(sheet_dir, r) for r in rounds}
+    names = set(annotators) | {a for r in done.values() for main, extra in r.values() for a in main + extra}
+    marks = {a: read_marks(sheet_dir, a) for a in sorted(names)}
 
-    def labels(d: dict) -> list[bool | None]:
-        return [marks[a].get((d["query_id"], d["round"])) for a in annotators]
+    def votes(d: dict) -> tuple[list[tuple[str, bool | None]], list[tuple[str, bool | None]]]:
+        main, extra = done[d["round"]].get(d["query_id"], ([], []))
+        key = (d["query_id"], d["round"])
+        return [(a, marks[a].get(key)) for a in main], [(a, marks[a].get(key)) for a in extra]
 
-    marked = [(d, votes) for d in read_drafts(drafts_path) if None not in (votes := labels(d))]
+    marked = [(d, [v for _, v in main]) for d in drafts if (main := votes(d)[0]) and None not in dict(main).values()]
     if not marked:
-        raise ValueError("no question is marked by every annotator yet")
+        raise ValueError("no question is marked by all its annotators yet")
 
     latest = latest_drafts(drafts_path)
     records, to_rewrite, seen = [], [], {}
-    summary = {"questions": 0, "pending": 0, "accepted": 0, "rejected": 0, "duplicates": 0, "dev": 0, "eval": 0}
+    summary = {"questions": 0, "pending": 0, "tied": 0, "accepted": 0, "rejected": 0, "duplicates": 0,
+               "dev": 0, "eval": 0}
     for qid, d in latest.items():
         summary["questions"] += 1
-        votes = labels(d)
-        if None in votes:
+        main, extra = votes(d)
+        values = [v for _, v in main + extra]
+        if not main or None in values:
             summary["pending"] += 1
-        elif 2 * sum(votes) <= len(votes):
+        elif 2 * sum(values) == len(values):
+            summary["tied"] += 1
+        elif 2 * sum(values) < len(values):
             summary["rejected"] += 1
             to_rewrite.append((d, "rejected"))
         elif _norm(d["question"]) in seen:  # the first of two identical questions stays
@@ -343,8 +416,9 @@ def build_eval_set(drafts_path: str | Path, sheet_dir: str | Path, eval_set_path
             records.append({
                 "query_id": qid, "input_text": d["question"], "gold_paper_ids": [d["paper_id"]],
                 "gold_passage_ids": [], "gold_answer": "",
-                "annotations": [{"annotator": a, "papers": [d["paper_id"]] if v else [], "answer": ""}
-                                for a, v in zip(annotators, votes)],
+                "annotations": [{"annotator": a, "papers": [d["paper_id"]] if v else [], "answer": ""} for a, v in main]
+                + [{"annotator": a, "papers": [d["paper_id"]] if v else [], "answer": "", "tiebreak": True}
+                   for a, v in extra],
                 "majority_paper_ids": [d["paper_id"]], "split": split,
                 "question_type": d["question_type"], "question_source": d["source"], "round": d["round"],
                 "question_form": d.get("question_form"),
@@ -355,12 +429,18 @@ def build_eval_set(drafts_path: str | Path, sheet_dir: str | Path, eval_set_path
     eval_set_path.parent.mkdir(parents=True, exist_ok=True)
     text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
     eval_set_path.write_text(text, encoding="utf-8")
-    summary["iaa"] = iaa.compute_iaa_report(
-        [{"query_id": f"{d['query_id']}/r{d['round']}", "votes": [[d["paper_id"]] if v else [] for v in votes],
-          "paper_ids": [d["paper_id"]]} for d, votes in marked],
-        str(iaa_path),
-        extra={"annotators": list(annotators), "eval_set": eval_set_path.name,
-               "eval_set_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "accepted": summary["accepted"]})
+    by_count: dict[str, list[dict]] = {}
+    for d, values in marked:
+        by_count.setdefault(str(len(values)), []).append(
+            {"query_id": f"{d['query_id']}/r{d['round']}", "votes": [[d["paper_id"]] if v else [] for v in values],
+             "paper_ids": [d["paper_id"]]})
+    report = {"by_annotator_count": {n: iaa.summarize(items) for n, items in sorted(by_count.items(), reverse=True)},
+              "annotators": sorted(names), "eval_set": eval_set_path.name,
+              "eval_set_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "accepted": summary["accepted"]}
+    iaa_path = Path(iaa_path)
+    iaa_path.parent.mkdir(parents=True, exist_ok=True)
+    iaa_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    summary["iaa"] = report
     return summary
 
 

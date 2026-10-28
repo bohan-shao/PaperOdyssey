@@ -5,6 +5,7 @@ Expected metric values are worked out by hand in the comments; the LLM is a fake
 
 from __future__ import annotations
 
+import collections
 import csv
 import json
 import math
@@ -261,7 +262,7 @@ class QuestionsTest(unittest.TestCase):
         self.assertEqual({k: summary[k] for k in ("questions", "pending", "accepted", "rejected")},
                          {"questions": 4, "pending": 1, "accepted": 2, "rejected": 1})
         # 3 fully marked units: (3 yes), (2 yes), (1 yes) -> 1 of 3 unanimous
-        self.assertAlmostEqual(summary["iaa"]["percentage_agreement"], 1 / 3)
+        self.assertAlmostEqual(summary["iaa"]["by_annotator_count"]["3"]["percentage_agreement"], 1 / 3)
         records = store.read_records(self.dir / "eval" / "eval_set.jsonl")
         self.assertEqual([r["query_id"] for r in records], ["Q0001", "Q0002"])
         q2 = records[1]
@@ -287,7 +288,7 @@ class QuestionsTest(unittest.TestCase):
         mark(c2, {"Q0004": "n"})
         summary = self.build()
         self.assertEqual((summary["accepted"], summary["pending"], summary["rejected"]), (4, 0, 0))
-        self.assertEqual(summary["iaa"]["n_items"], 5)  # round 1 of Q0001-Q0004 and round 2 of Q0003
+        self.assertEqual(summary["iaa"]["by_annotator_count"]["3"]["n_items"], 5)  # round 1 of Q0001-Q0004, round 2 of Q0003
         q3 = store.read_records(self.dir / "eval" / "eval_set.jsonl")[2]
         self.assertEqual((q3["input_text"], q3["round"], q3["question_source"], q3["question_type"]),
                          ("A better question?", 2, "human", "technical-detail"))
@@ -338,6 +339,49 @@ class QuestionsTest(unittest.TestCase):
         with (self.sheets / "to_rewrite.csv").open(encoding="utf-8-sig", newline="") as fh:
             self.assertEqual([(r["query_id"], r["reason"]) for r in csv.DictReader(fh)],
                              [("Q0002", "same question as Q0001")])
+
+    def test_two_annotators_per_question_with_tie_breaks(self) -> None:
+        five = ("A", "B", "C", "D", "E")
+        questions.draft_questions(questions.sample_papers(3, 42, self.db), self.drafts, FakeClient(), workers=1)
+        for path in questions.write_sheets(self.drafts, self.sheets, annotators=("A", "B", "C")):  # pilot: all three
+            mark(path, {"Q0001": "y", "Q0002": "y", "Q0003": "y"})
+        questions.draft_questions(questions.sample_papers(23, 42, self.db), self.drafts, FakeClient(), workers=1)
+        paths = questions.write_sheets(self.drafts, self.sheets, annotators=five, per_question=2)
+        self.assertEqual([p.name for p in paths], [f"round1_part2_{a}.csv" for a in five])
+        rows = {a: list(questions.read_sheet(p)) for a, p in zip(five, paths)}
+        self.assertEqual({a: len(r) for a, r in rows.items()}, dict.fromkeys(five, 8))  # 20 questions x 2 / 5
+        done = questions.handed_out(self.sheets, 1)
+        pairs = collections.Counter(tuple(done[f"Q{i:04d}"][0]) for i in range(4, 24))
+        self.assertEqual(len(pairs), 10)  # every pair of the five...
+        self.assertEqual(set(pairs.values()), {2})  # ...shares two questions
+        self.assertEqual(done["Q0001"], (["A", "B", "C"], []))  # the pilot's early manifest: everyone
+        for a, path in zip(five, paths):  # Q0004 and Q0005 split evenly, the rest accepted
+            mark(path, {qid: "n" if qid in ("Q0004", "Q0005") and a == done[qid][0][0] else "y" for qid, _ in rows[a]})
+        summary = self.build_with(five)
+        self.assertEqual((summary["accepted"], summary["tied"], summary["pending"]), (21, 2, 0))
+        groups = summary["iaa"]["by_annotator_count"]
+        self.assertEqual((groups["3"]["n_items"], groups["2"]["n_items"]), (3, 20))
+        self.assertAlmostEqual(groups["2"]["percentage_agreement"], 18 / 20)
+
+        tiebreak = questions.write_tiebreak_sheets(self.drafts, self.sheets, annotators=five)
+        extra = questions.handed_out(self.sheets, 1)
+        for qid in ("Q0004", "Q0005"):
+            self.assertEqual(len(extra[qid][1]), 1)
+            self.assertNotIn(extra[qid][1][0], extra[qid][0])  # someone who has not seen it
+        self.assertNotEqual(extra["Q0004"][1], extra["Q0005"][1])  # spread over the annotators
+        with self.assertRaises(ValueError):  # both already have a tie-breaker
+            questions.write_tiebreak_sheets(self.drafts, self.sheets, annotators=five)
+        for path in tiebreak:
+            mark(path, {"Q0004": "n", "Q0005": "y"})
+        summary = self.build_with(five)
+        self.assertEqual((summary["accepted"], summary["rejected"], summary["tied"]), (22, 1, 0))
+        self.assertAlmostEqual(summary["iaa"]["by_annotator_count"]["2"]["percentage_agreement"], 18 / 20)  # unchanged
+        q5 = next(r for r in store.read_records(self.dir / "eval" / "eval_set.jsonl") if r["query_id"] == "Q0005")
+        self.assertEqual([x.get("tiebreak", False) for x in q5["annotations"]], [False, False, True])
+
+    def build_with(self, annotators: tuple[str, ...]) -> dict:
+        return questions.build_eval_set(self.drafts, self.sheets, self.dir / "eval" / "eval_set.jsonl",
+                                        self.dir / "iaa.json", self.sheets / "to_rewrite.csv", annotators)
 
     def test_split_is_stable_per_query(self) -> None:
         splits = [questions._split(f"Q{i:04d}", 42, 0.1) for i in range(1, 1001)]

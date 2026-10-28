@@ -53,7 +53,8 @@ from one paper, with that paper's title and abstract. Mark `fits`:
 - **y**: a researcher could plausibly type this request, and this paper is a clearly good answer to it.
 - **n**: anything else, e.g. the paper does not really answer it, it is too vague (thousands of papers
   fit equally), it asks for something the abstract does not support, it is not a real search request, or
-  it gives the paper away (copies the title, names the paper's own model/method/dataset).
+  it gives the paper away (nearly the whole title pasted in, or a name only this paper has: its own
+  model/method/dataset name or a term it coins). Ordinary topic words shared with the title are fine (D42).
 
 Mark alone and do not discuss rows until everyone is done (agreement is computed on these marks).
 Use `note` for anything worth discussing later. Only `y` / `n` are accepted. Keep the file as CSV and its
@@ -61,5 +62,5 @@ name unchanged (Excel: File > Save As > "CSV UTF-8"; Google Sheets: File > Downl
 give the download the original file name).
 Rows most annotators mark `n`, and a question identical to an earlier accepted one, go to `to_rewrite.csv`
 (`reason` says which), where one person writes a better question (`new_question`, same rules as the LLM's:
-no title copying, no names the paper introduces) and its kind (`new_type`: definitional, method-comparison,
+no pasted title, no names the paper introduces) and its kind (`new_type`: definitional, method-comparison,
 survey, paper-locating or technical-detail); everyone then marks the new version in the next round's sheet.

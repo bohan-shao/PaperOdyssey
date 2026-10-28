@@ -165,7 +165,7 @@ eval:
     sheets_dir: annotation      # marking sheets round<R>_part<P>_<annotator>.csv and to_rewrite.csv
     rewrite_file: to_rewrite.csv
     eval_set_file: eval_set.jsonl
-    annotators: [A, B, C]       # names in the sheet file names; the same names every time
+    annotators: [A, B, C, D, E] # names in the sheet file names; the same names every time (D39, D41)
   # (bertscore / ragas config sections return with the downstream task — see eval/README.md)
 
 # ---- ui/ ----

@@ -18,7 +18,8 @@ Both run on the same evaluation set.
 - **Procedure in use (D39)**: the LLM drafts one search request per randomly sampled paper; all 3 annotators
   mark independently whether that paper is a good answer (y/n); questions most of them accept enter the set with
   their paper as the only gold paper, rejected ones are rewritten by a person and marked again
-  (`scripts/eval_set.py`, `eval/annotation/questions.py`). Agreement is over these y/n marks. Passage-level gold
+  (`scripts/eval_set.py`, `eval/annotation/questions.py`). Agreement is over these y/n marks. From D41 on, the pilot's 50 questions have 3 annotators and the other
+  1,050 have 2 each (a third breaks a tie); agreement is reported for each group. Passage-level gold
   and gold answers are not collected; the bullets above describe the original plan.
 
 ## 2. Retrieval Metrics (Q3)
