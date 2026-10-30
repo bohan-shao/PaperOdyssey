@@ -4,10 +4,11 @@ Usage:
     python scripts/run_eval.py --config config.yaml --stage retrieval
         [--configs bm25 dense hybrid_rrf hybrid_rerank] [--limit N] [--tag TAG]
     python scripts/run_eval.py --config config.yaml --stage review
-        [--split all|dev|eval] [--limit N] [--tag TAG] [--resume]
+        [--split all|dev|eval] [--limit N] [--tag TAG] [--resume] [--workers N]
     python scripts/run_eval.py --config config.yaml --stage all
     python scripts/run_eval.py --config config.yaml --stage retrieval --ablation query_views diversity
         [--split all|dev|eval] [--limit N] [--tag TAG] [--resume] [--dry-run]
+    python scripts/run_eval.py --config config.yaml --stage review --ablation loop hyde --workers 8
 
 Stages:
 - retrieval: eval.retrieval_eval.run_retrieval_eval. Every eval-set question goes through
@@ -20,6 +21,8 @@ Stages:
   online caching disabled. The runner saves resumable results and its report under
   results/review_runs/<tag>/; --split and --resume apply only to this stage. A partial or failed
   report prints its summary to stderr and exits 1. Resume requires matching run fingerprints.
+  --workers N runs up to N questions at once in this process (D48; default 1). It applies to the
+  review stage and to the review cells of an ablation, and a run may resume with another value.
 - all (the default): retrieval, then review. --configs affects retrieval; --split and --resume
   affect review.
 - ablation: one or two named factors, with an explicit --stage. Runs baseline/A (one factor)
@@ -50,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import get_config, get_path  # noqa: E402
 from eval.ablation import FACTORS, format_summary as format_ablation_summary, run_ablation  # noqa: E402
 from eval.retrieval_eval import CONFIGS, format_summary, run_retrieval_eval  # noqa: E402
-from eval.review_eval import format_summary as format_review_summary, run_review_eval  # noqa: E402
+from eval.review_eval import MAX_WORKERS, format_summary as format_review_summary, run_review_eval  # noqa: E402
 
 
 def _write_report(path: Path, report: dict) -> None:
@@ -90,6 +93,9 @@ def main(argv: list[str] | None = None) -> None:
                         help="review or ablation: select a split before applying --limit (default: all)")
     parser.add_argument("--resume", action="store_true",
                         help="review or ablation: resume the same tag with matching run fingerprints")
+    parser.add_argument("--workers", type=int, default=1,
+                        help=f"review stage or review ablation cells: questions run at once (1-{MAX_WORKERS}, "
+                             "default 1; D48)")
     args = parser.parse_args(argv)
     if args.ablation is not None:
         if args.stage is None:
@@ -105,6 +111,10 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--split and --resume apply only to the review stage (or its part of --stage all)")
     if args.stage == "review" and args.configs is not None:
         parser.error("--configs applies only to the retrieval stage (or its part of --stage all)")
+    if not 1 <= args.workers <= MAX_WORKERS:
+        parser.error(f"--workers must be from 1 to {MAX_WORKERS}")
+    if args.stage == "retrieval" and args.workers != 1:
+        parser.error("--workers applies only to the review stage (retrieval makes no LLM calls)")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     cfg = get_config(args.config)
@@ -114,7 +124,8 @@ def main(argv: list[str] | None = None) -> None:
         try:
             report = run_ablation(eval_set, get_path("results") / "ablation_runs", tag,
                                   factors=args.ablation, stage=args.stage, split=args.split or "all",
-                                  limit=args.limit, resume=args.resume, dry_run=args.dry_run)
+                                  limit=args.limit, resume=args.resume, dry_run=args.dry_run,
+                                  workers=args.workers)
             out = get_path("results") / "metrics" / f"ablation_{'_'.join(args.ablation)}_{tag}.json"
             if not args.dry_run:
                 _write_report(out, report)
@@ -141,7 +152,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.stage in ("review", "all"):
         try:
             report = run_review_eval(eval_set, get_path("results") / "review_runs", tag,
-                                     limit=args.limit, split=args.split or "all", resume=args.resume)
+                                     limit=args.limit, split=args.split or "all", resume=args.resume,
+                                     workers=args.workers)
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"Review {tag}: failed before a report was returned: {exc}", file=sys.stderr)
             raise SystemExit(1) from None

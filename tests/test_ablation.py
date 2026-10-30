@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import call, patch
 
 from eval import ablation, ablation_retrieval, review_eval
+from llm import client as llm_client
 from orchestration.types import FinalResult, QueryPlan, ReviewRecord
 from retrieval.types import RetrieveResult, ScoredPassage
 
@@ -40,6 +41,7 @@ class UsageClient:
         self.usage["calls"] += 1
         self.usage["prompt_tokens"] += 11
         self.usage["completion_tokens"] += 7
+        llm_client._count_in_scope(11, 7)  # what LLMClient._record does (D48)
 
     def usage_summary(self) -> dict:
         return dict(self.usage)

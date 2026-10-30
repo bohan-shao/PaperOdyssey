@@ -1,8 +1,8 @@
 """Resumable Paper Search evaluation with positive-source gold and full review traces.
 
-Run sequentially in a dedicated process. Completed queries are immutable checkpoints;
-resume requires the same dataset, selection, effective config, code and index metadata.
-Only observed API usage is reported, not an invoice or a hard token budget.
+Run in a dedicated process, one question at a time or up to `workers` at once (D48). Completed
+queries are immutable checkpoints; resume requires the same dataset, selection, effective config,
+code and index metadata. Only observed API usage is reported, not an invoice or a hard token budget.
 """
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -32,6 +34,7 @@ from .runtime import clear_runtime, require_fresh_runtime
 
 log = logging.getLogger(__name__)
 _USAGE_KEYS = ("calls", "prompt_tokens", "completion_tokens")
+MAX_WORKERS = 32
 
 
 def _digest(value: object) -> str:
@@ -198,8 +201,13 @@ def _report(manifest: dict, attempts: list[dict], selected: list[dict], error: d
             "labels": "Positive source papers only; all other candidates are unjudged, not negatives.",
             "review_precision_accuracy_f1": "Unavailable without candidate positive/negative judgments.",
             "coverage": "LLM-reported requirement coverage, not human relevance or answer quality.",
-            "ranking": "Final passing papers sorted by descending review score, then paper_id (system order).",
-            "cache": False, "timing": "No hidden warm-up. First newly executed query of each process includes loading.",
+            "ranking": "Final passing papers sorted by descending review score, then best retrieval rank, "
+                       "then paper_id (passing_order_key, D47; system order).",
+            "cache": False, "timing": "No hidden warm-up. Queries started before the process finished its first "
+                                      "query include component loading (cold starts).",
+            "concurrency": "With workers > 1 (D48) several queries run at once in one process; their wall_ms and "
+                           "stage latencies include waiting for each other's model and LLM calls, so per-query "
+                           "latency comes from workers=1 runs. Usage is counted per query either way.",
             "failures": "Failed/incomplete queries are excluded from metrics and listed as incomplete, not misses.",
             "selection": "File order after split filtering, then limit; a prefix is a smoke test, not a representative sample.",
         },
@@ -208,20 +216,104 @@ def _report(manifest: dict, attempts: list[dict], selected: list[dict], error: d
                    for split in ("dev", "eval")},
         "incomplete_query_ids": [q["query_id"] for q in selected if q["query_id"] not in complete],
         "cold_start_query_ids": [a["question"]["query_id"] for a in attempts if a.get("cold_start")],
+        "workers_used": sorted({a.get("workers", 1) for a in attempts}),
     }
 
 
+def _run_pending(pending: list[dict], *, workers: int, run_dir: Path, manifest: dict,
+                 attempts: list[dict], selected: list[dict], completed: set[str]) -> dict | None:
+    """Run the pending questions, at most `workers` at once; return the first query error, if any.
+
+    Attempt numbers, checkpoints and report.json are written under one lock, numbered in the
+    order the questions start (file order). After a query error, or an interrupt, no new
+    question starts; questions already running finish and are recorded. A question started
+    before the process finished its first question is a cold start. Usage comes from
+    llm.client.usage_scope, so questions running at once do not mix their counts (D48).
+    """
+    lock = threading.Lock()
+    queue = iter(pending)
+    state: dict = {"error": None, "stop": False, "warm": False}
+
+    def start() -> tuple[dict, dict, Path] | None:
+        with lock:
+            if state["error"] is not None or state["stop"]:
+                return None
+            q = next(queue, None)
+            if q is None:
+                return None
+            path = run_dir / "attempts" / f"{len(attempts) + 1:06d}.json"
+            if path.exists():
+                raise ValueError("attempt sequence is not contiguous")
+            row = {"question": q, "status": "running", "cold_start": not state["warm"], "workers": workers,
+                   "started_at": datetime.now(timezone.utc).isoformat()}
+            _write(path, row)
+            attempts.append(row)
+            return q, row, path
+
+    def worker() -> None:
+        while (item := start()) is not None:
+            q, row, path = item
+            outcome = None
+            started = time.perf_counter()
+            with llm_client.usage_scope() as used:
+                try:
+                    result = asdict(run_query(q["input_text"], query_id=q["query_id"]))
+                    _validate_result(q, result)
+                    outcome = {"status": "complete", "result": result}
+                except Exception as exc:
+                    # Provider error strings can contain request details or credentials.
+                    # Persist the class and query, never an unredacted provider response.
+                    outcome = {"status": "failed", "error": {"query_id": q["query_id"], "type": type(exc).__name__}}
+                    log.error("review evaluation stopped at %s (%s)", q["query_id"], type(exc).__name__)
+                finally:
+                    # Also on an interrupt: the attempt stays "running" but keeps its observed usage.
+                    with lock:
+                        row.update(outcome or {}, usage={k: used[k] for k in _USAGE_KEYS},
+                                   wall_ms=round((time.perf_counter() - started) * 1000, 2))
+                        _write(path, row)
+                        if outcome is None:
+                            state["stop"] = True
+                        else:
+                            if outcome["status"] == "complete":
+                                completed.add(q["query_id"])
+                            elif state["error"] is None:
+                                state["error"] = outcome["error"]
+                            state["warm"] = True
+                            report = _report(manifest, attempts, selected, state["error"])
+                            _write(run_dir / "report.json", report)
+                            log.info("review: %d/%d complete; %d observed tokens", len(completed),
+                                     len(selected), report["usage"]["total_tokens"])
+
+    if workers == 1:
+        worker()
+        return state["error"]
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="review")
+    try:
+        for future in [pool.submit(worker) for _ in range(min(workers, len(pending)))]:
+            future.result()
+    finally:
+        with lock:
+            state["stop"] = True  # after an exception here, running questions finish but none start
+        pool.shutdown(wait=True)
+    return state["error"]
+
+
 def run_review_eval(eval_set_path: str | Path, results_dir: str | Path, tag: str, *,
-                    limit: int | None = None, split: str = "all", resume: bool = False) -> dict:
+                    limit: int | None = None, split: str = "all", resume: bool = False,
+                    workers: int = 1) -> dict:
     """Evaluate full Paper Search and atomically save report.json plus per-attempt traces.
 
     A query exception writes a failed checkpoint and returns status=failed; --resume retries
     only incomplete queries. Fingerprint/checkpoint errors raise before making API calls.
+    `workers` questions run at once in this process (D48); it is not part of the fingerprint,
+    so a run may resume with another value.
     """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", tag):
         raise ValueError("tag must be a safe filename component")
     if split not in ("all", "dev", "eval") or (limit is not None and (type(limit) is not int or limit <= 0)):
         raise ValueError("invalid split or nonpositive limit")
+    if type(workers) is not int or not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"workers must be an integer from 1 to {MAX_WORKERS}")
     dataset = Path(eval_set_path)
     questions = load_eval_set(dataset)
     for q in questions:
@@ -279,45 +371,17 @@ def run_review_eval(eval_set_path: str | Path, results_dir: str | Path, tag: str
             attempts.append(row)
         error = None
         try:
-            client = None
-            cold_start = True
-            for q in selected:
-                if q["query_id"] in completed:
-                    continue
-                path = run_dir / "attempts" / f"{len(attempts) + 1:06d}.json"
-                if path.exists():
-                    raise ValueError("attempt sequence is not contiguous")
-                row = {"question": q, "status": "running", "cold_start": cold_start,
-                       "started_at": datetime.now(timezone.utc).isoformat()}
-                _write(path, row)
-                attempts.append(row)
-                if client is None:
-                    client = get_client()
-                before = client.usage_summary()
-                started = time.perf_counter()
-                try:
-                    result = asdict(run_query(q["input_text"], query_id=q["query_id"]))
-                    _validate_result(q, result)
-                    row.update(status="complete", result=result)
-                    completed.add(q["query_id"])
-                except Exception as exc:
-                    # Provider error strings can contain request details or credentials.
-                    # Persist the class and query, never an unredacted provider response.
-                    error = {"query_id": q["query_id"], "type": type(exc).__name__}
-                    row.update(status="failed", error=error)
-                    log.error("review evaluation stopped at %s (%s)", q["query_id"], type(exc).__name__)
-                finally:
-                    after = client.usage_summary()
-                    row["usage"] = {k: after[k] - before[k] for k in _USAGE_KEYS}
-                    row["wall_ms"] = round((time.perf_counter() - started) * 1000, 2)
-                    _write(path, row)
-                report = _report(manifest, attempts, selected, error)
-                _write(run_dir / "report.json", report)
-                log.info("review: %d/%d complete; %d observed tokens", len(completed), len(selected),
-                         report["usage"]["total_tokens"])
-                cold_start = False
-                if error:
-                    break
+            pending = [q for q in selected if q["query_id"] not in completed]
+            if pending:
+                client = get_client()
+                before, first_new = client.usage_summary(), len(attempts)
+                error = _run_pending(pending, workers=workers, run_dir=run_dir, manifest=manifest,
+                                     attempts=attempts, selected=selected, completed=completed)
+                after = client.usage_summary()
+                attributed = {k: sum(a["usage"][k] for a in attempts[first_new:]) for k in _USAGE_KEYS}
+                if attributed != {k: after[k] - before[k] for k in _USAGE_KEYS}:
+                    log.warning("LLM usage outside the per-query scopes: process %s, attempts %s",
+                                {k: after[k] - before[k] for k in _USAGE_KEYS}, attributed)
             report = _report(manifest, attempts, selected, error)
             _write(run_dir / "report.json", report)
             return report

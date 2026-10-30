@@ -309,7 +309,7 @@ class RunEvalScriptTest(unittest.TestCase):
                                "--resume"])
             retrieval_run.assert_not_called()
             review_run.assert_called_once_with(paths["eval"] / "fixed.jsonl", paths["results"] / "review_runs",
-                                               "review-eval", limit=3, split="eval", resume=True)
+                                               "review-eval", limit=3, split="eval", resume=True, workers=1)
             summary.assert_called_once_with(report)
             self.assertIn("review complete 3/3", out.getvalue())
             self.assertIn(str(paths["results"] / "review_runs" / "review-eval" / "report.json"), out.getvalue())
@@ -342,7 +342,7 @@ class RunEvalScriptTest(unittest.TestCase):
                                                      list(run_eval.CONFIGS), None)
                 review_run.assert_called_once_with(paths["eval"] / "eval_set.jsonl",
                                                    paths["results"] / "review_runs", "2026-10-30",
-                                                   limit=None, split=split, resume=resume)
+                                                   limit=None, split=split, resume=resume, workers=1)
                 self.assertLess(out.getvalue().index("retrieval summary"), out.getvalue().index("review summary"))
 
     def test_incomplete_review_reports_summary_on_stderr_and_exits_one(self) -> None:
@@ -385,6 +385,24 @@ class RunEvalScriptTest(unittest.TestCase):
             self.assertNotIn("report ->", err.getvalue())
             summary.assert_not_called()
 
+    def test_workers_reach_review_runs_and_review_ablation_cells(self) -> None:
+        run_eval = load_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {"eval": Path(tmp) / "eval", "results": Path(tmp) / "results"}
+            with patch.object(run_eval, "get_path", side_effect=lambda key: paths[key]), \
+                    patch.object(run_eval, "get_config", return_value={
+                        "eval": {"annotation": {"eval_set_file": "eval_set.jsonl"}}}), \
+                    patch.object(run_eval, "run_review_eval", return_value={"status": "complete"}) as review_run, \
+                    patch.object(run_eval, "run_ablation", return_value={"status": "complete"}) as ablation_run, \
+                    patch.object(run_eval, "format_review_summary", return_value="review"), \
+                    patch.object(run_eval, "format_ablation_summary", return_value="ablation"), \
+                    patch.object(run_eval.logging, "basicConfig"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                run_eval.main(["--stage", "review", "--tag", "fast", "--workers", "8"])
+                run_eval.main(["--stage", "review", "--ablation", "loop", "hyde", "--tag", "matrix", "--workers", "4"])
+            self.assertEqual(review_run.call_args.kwargs["workers"], 8)
+            self.assertEqual(ablation_run.call_args.kwargs["workers"], 4)
+
     def test_bad_flags_stop_before_any_stage(self) -> None:
         run_eval = load_script()
         for argv in (["--stage", "retrieval", "--ablation", "rerank_off"], ["--ablation", "loop"],
@@ -392,7 +410,10 @@ class RunEvalScriptTest(unittest.TestCase):
                      ["--stage", "retrieval", "--dry-run"], ["--stage", "review", "--ablation", "chunking"],
                      ["--stage", "retrieval", "--limit", "0"], ["--stage", "retrieval", "--configs", "colbert"],
                      ["--stage", "retrieval", "--split", "all"], ["--stage", "retrieval", "--resume"],
-                     ["--stage", "review", "--configs", "bm25"], ["--stage", "review", "--split", "test"]):
+                     ["--stage", "review", "--configs", "bm25"], ["--stage", "review", "--split", "test"],
+                     ["--stage", "retrieval", "--workers", "2"], ["--stage", "review", "--workers", "0"],
+                     ["--stage", "review", "--workers", "33"],
+                     ["--stage", "retrieval", "--ablation", "rerank", "--workers", "4"]):
             with self.subTest(argv=argv), patch.object(run_eval, "run_retrieval_eval") as retrieval_run, \
                     patch.object(run_eval, "run_review_eval") as review_run, \
                     patch.object(run_eval, "run_ablation") as ablation_run, \
@@ -446,7 +467,7 @@ class AblationScriptTest(unittest.TestCase):
                 self.ablation.assert_called_once_with(
                     self.paths["eval"] / "eval_set.jsonl", self.paths["results"] / "ablation_runs", "comparison",
                     factors=["query_views", "diversity"], stage="retrieval", split="dev", limit=3,
-                    resume=True, dry_run=False)
+                    resume=True, dry_run=False, workers=1)
                 self.assertEqual(json.loads(out_path.read_text(encoding="utf-8")), report)
                 self.assertEqual(list(out_path.parent.iterdir()), [out_path])  # no temporary output left
                 output = out.getvalue() if status == "complete" else err.getvalue()
@@ -462,7 +483,7 @@ class AblationScriptTest(unittest.TestCase):
             self.run_eval.main(["--stage", "review", "--ablation", "loop", "hyde", "--tag", "plan", "--dry-run"])
         self.ablation.assert_called_once_with(
             self.paths["eval"] / "eval_set.jsonl", self.paths["results"] / "ablation_runs", "plan",
-            factors=["loop", "hyde"], stage="review", split="all", limit=None, resume=False, dry_run=True)
+            factors=["loop", "hyde"], stage="review", split="all", limit=None, resume=False, dry_run=True, workers=1)
         self.assertIn("ablation planned", out.getvalue())
         self.assertNotIn("report ->", out.getvalue())
         self.assertFalse(self.paths["results"].exists())

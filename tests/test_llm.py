@@ -5,9 +5,11 @@ Run: python -m unittest tests.test_llm
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -140,6 +142,45 @@ class ClientTest(unittest.TestCase):
     def test_get_client_is_a_singleton(self) -> None:
         with patch.object(llm_client, "_CLIENT", None):
             self.assertIs(llm_client.get_client(), llm_client.get_client())
+
+    def test_usage_scope_counts_each_thread_alone(self) -> None:
+        """Parallel callers (review workers, D48) see only their own calls; the totals see all."""
+        client = self.make(Server(*(ok("x") for _ in range(5))))
+        barrier = threading.Barrier(2, timeout=10)
+        counted = {}
+
+        def caller(name: str, calls: int) -> None:
+            with llm_client.usage_scope() as used:
+                barrier.wait()  # both scopes are open at the same time
+                for _ in range(calls):
+                    client.chat([{"role": "user", "content": name}])
+                barrier.wait()
+            counted[name] = used
+
+        threads = [threading.Thread(target=caller, args=("a", 2)), threading.Thread(target=caller, args=("b", 3))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(counted["a"], {"calls": 2, "prompt_tokens": 22, "completion_tokens": 14})
+        self.assertEqual(counted["b"], {"calls": 3, "prompt_tokens": 33, "completion_tokens": 21})
+        self.assertEqual(client.usage_summary(), {"calls": 5, "prompt_tokens": 55, "completion_tokens": 35})
+
+    def test_usage_scope_follows_asyncio_tasks_and_to_thread(self) -> None:
+        client = self.make(Server(*(ok("x") for _ in range(4))))
+
+        def ask() -> str:
+            return client.chat([{"role": "user", "content": "hi"}])
+
+        async def search() -> None:  # the shape of orchestration.loop: tasks calling to_thread
+            await asyncio.to_thread(ask)
+            await asyncio.gather(*(asyncio.to_thread(ask) for _ in range(2)))
+
+        with llm_client.usage_scope() as used:
+            asyncio.run(search())
+        ask()  # outside any scope: counted in the totals only
+        self.assertEqual(used, {"calls": 3, "prompt_tokens": 33, "completion_tokens": 21})
+        self.assertEqual(client.usage_summary()["calls"], 4)
 
 
 class ParseJsonTest(unittest.TestCase):

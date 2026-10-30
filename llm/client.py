@@ -19,7 +19,9 @@
   The SDK's own retry loop is disabled so there is exactly one retry policy.
 - Usage accounting: every call appends {time, model, kind, prompt_tokens, completion_tokens,
   latency_ms} to `data/results/metrics/llm_usage.jsonl` (cost reporting); running totals via
-  `usage_summary()`. Logging failures never fail a call.
+  `usage_summary()`. Logging failures never fail a call. `usage_scope()` also counts the calls
+  of one context alone (it follows asyncio tasks and `asyncio.to_thread`), so callers running
+  in parallel threads can attribute usage per task (eval.review_eval workers, D48).
 - Constraint: other modules must not import the openai client directly; evaluation scripts
   also go through this module.
 
@@ -30,11 +32,13 @@ Raises:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -192,6 +196,7 @@ class LLMClient:
     def _record(self, kind: str, usage: Any, latency_ms: int) -> None:
         prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        _count_in_scope(prompt, completion)
         with self._lock:
             self._totals["calls"] += 1
             self._totals["prompt_tokens"] += prompt
@@ -325,3 +330,36 @@ def get_client() -> LLMClient:
         if _CLIENT is None:
             _CLIENT = LLMClient()
         return _CLIENT
+
+
+# ------------------------------------------------------------ per-context usage (D48)
+
+_USAGE_SCOPE: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar("llm_usage_scope", default=None)
+_SCOPE_LOCK = threading.Lock()
+
+
+@contextmanager
+def usage_scope() -> Iterator[dict[str, int]]:
+    """Count the usage of the calls made in this context alone: {calls, prompt_tokens, completion_tokens}.
+
+    Asyncio tasks and `asyncio.to_thread` workers started inside the block copy the context and
+    share the counter, so threads running separate tasks in parallel each count only their own
+    calls. A thread started without copying the context is not counted. Scopes do not nest: an
+    inner scope's calls are not added to the outer one. Process totals are unaffected.
+    """
+    totals = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    token = _USAGE_SCOPE.set(totals)
+    try:
+        yield totals
+    finally:
+        _USAGE_SCOPE.reset(token)
+
+
+def _count_in_scope(prompt_tokens: int, completion_tokens: int) -> None:
+    """Add one returned response to the active usage_scope, if any (test fakes call it too)."""
+    scope = _USAGE_SCOPE.get()
+    if scope is not None:
+        with _SCOPE_LOCK:
+            scope["calls"] += 1
+            scope["prompt_tokens"] += prompt_tokens
+            scope["completion_tokens"] += completion_tokens

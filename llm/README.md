@@ -44,6 +44,7 @@ text = client.chat(messages)                           # temperature / max_token
 data = client.chat_json(messages, "array of {paper_id, verdict}")   # dict | list
 for piece in client.stream_chat(messages): ...         # UI streaming
 client.usage_summary()                                 # {calls, prompt_tokens, completion_tokens}
+with usage_scope() as used: ...                        # this context's calls only (llm.client.usage_scope, D48)
 ```
 
 - **Key**: `DEEPSEEK_API_KEY` (DeepSeek base URL), `OPENAI_API_KEY` (api.openai.com), or `LLM_API_KEY`
@@ -59,7 +60,9 @@ client.usage_summary()                                 # {calls, prompt_tokens, 
   `max_tokens=` argument sets the first attempt's limit (default `llm.max_tokens`). No
   provider JSON mode is forced because the review prompt expects a top-level array.
 - **Cost reporting**: one line per call in `data/results/metrics/llm_usage.jsonl`
-  (`time, model, kind, prompt_tokens, completion_tokens, latency_ms`).
+  (`time, model, kind, prompt_tokens, completion_tokens, latency_ms`). `usage_scope()` counts the
+  calls of one context alone; it follows asyncio tasks and `asyncio.to_thread`, so parallel callers
+  (the review evaluator's workers, D48) each see their own usage. Scopes do not nest.
 - **Tests**: `python -m unittest tests.test_llm` runs the real OpenAI SDK against a mocked HTTP
   transport (retries, JSON repair, truncation, auth errors, streaming, usage). Verified end to end
   with the orchestration loop (PR #1) and the KB store (PR #4) against a fake OpenAI server.
