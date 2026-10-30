@@ -13,7 +13,8 @@ one question: "is this paper a good answer to this question?".
   kappa = (P-bar - P_e) / (1 - P_e). It corrects for chance agreement, so when nearly every label
   is the same (e.g. almost every question accepted) kappa can be low even at a high percentage
   agreement; it is undefined (NaN, null in the report) when every label is the same.
-- `compute_iaa_report`: both, written to `data/results/metrics/iaa_<date>.json`.
+- `summarize`: both, with the counts; `compute_iaa_report`: the same, written to
+  `data/results/metrics/iaa_<date>.json`.
 
 Input: [{"query_id": str, "votes": [list[str], ...], "paper_ids": list[str] (optional)}], one
 vote per annotator (that annotator's relevant paper ids), every item with the same number of
@@ -25,6 +26,10 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+
+CONVENTION = ("unit = (item, paper); percentage_agreement = all annotators agree; "
+              "pairwise_agreement = mean share of agreeing annotator pairs; "
+              "Fleiss' kappa over relevant / not relevant")
 
 
 def _units(annotations: list[dict]) -> list[tuple[int, int]]:
@@ -73,7 +78,7 @@ def percentage_agreement(annotations: list[dict]) -> float:
 
 
 def fleiss_kappa(annotations: list[dict]) -> float:
-    """Fleiss' kappa over 3 annotators.
+    """Fleiss' kappa over the annotators (2 or more, the same number on every item).
 
     Args:
         annotations: same shape as percentage_agreement.
@@ -84,14 +89,11 @@ def fleiss_kappa(annotations: list[dict]) -> float:
     return _fleiss([[k, n - k] for k, n in _units(annotations)])[1]
 
 
-def compute_iaa_report(annotations: list[dict], out_path: str, extra: dict | None = None) -> dict:
-    """Compute both metrics and write the report JSON. Returns the report dict.
-
-    `extra` (e.g. the eval-set version) is added to the report.
-    """
+def summarize(annotations: list[dict]) -> dict:
+    """Both metrics and the counts behind them, as one dict (the report without writing it)."""
     units = _units(annotations)
     pairwise, kappa = _fleiss([[k, n - k] for k, n in units])
-    report = {
+    return {
         "percentage_agreement": sum(k in (0, n) for k, n in units) / len(units),
         "pairwise_agreement": pairwise,
         "fleiss_kappa": None if math.isnan(kappa) else kappa,
@@ -99,11 +101,16 @@ def compute_iaa_report(annotations: list[dict], out_path: str, extra: dict | Non
         "n_units": len(units),
         "n_annotators": units[0][1],
         "relevant_share": sum(k for k, _ in units) / sum(n for _, n in units),
-        "convention": "unit = (item, paper); percentage_agreement = all annotators agree; "
-                      "pairwise_agreement = mean share of agreeing annotator pairs; "
-                      "Fleiss' kappa over relevant / not relevant",
-        **(extra or {}),
+        "convention": CONVENTION,
     }
+
+
+def compute_iaa_report(annotations: list[dict], out_path: str, extra: dict | None = None) -> dict:
+    """Compute both metrics and write the report JSON. Returns the report dict.
+
+    `extra` (e.g. the eval-set version) is added to the report.
+    """
+    report = {**summarize(annotations), **(extra or {})}
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

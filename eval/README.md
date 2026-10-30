@@ -45,14 +45,19 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
 - Coverage: aggregated in coverage_report (covered_aspects/total_aspects)
 - Round distribution: share meeting the threshold in rounds 1/2/3, unmet rate
 
-### annotation/ — Evaluation set (Q4 hard requirement)
-- Goal: 1000 items, 3 annotators, majority vote, IAA>=80% (percentage agreement + Fleiss' kappa)
-- **Implemented (D39)**: `questions.py` + `scripts/eval_set.py`: the LLM drafts one search request per
-  sampled paper, the 3 annotators mark it y/n in CSV sheets (`data/eval/annotation/`), majority vote ->
-  `data/eval/eval_set.jsonl` (SCHEMA.md §7), rejected questions are rewritten and marked again.
+### annotation/ — Evaluation set (Q4)
+- Original documented target (D15): 1000 items, 3 independent annotators, majority vote,
+  IAA>=80% (percentage agreement + Fleiss' kappa). The current D42 main set has 2 annotators per
+  question; whether this is acceptable under the coursework instructions remains to be checked.
+- **Implemented (D39/D42)**: `questions.py` + `scripts/eval_set.py`: the LLM drafts one search request per
+  sampled paper; 3 annotators mark each pilot question and 2 mark each main-set question y/n in CSV
+  sheets (`data/eval/annotation/`), majority vote -> `data/eval/eval_set.jsonl` (SCHEMA.md §7).
+  The tooling supports third-person tie-breaks and rewrites, but neither was run for round 1:
+  1,027 accepted questions remain (912 eval, 115 dev); 66 ties and 7 rejected questions are excluded.
   Steps and commands: `annotation/README.md`; marking rules: `guidelines.md` §6
 - IAA computation: `eval/annotation/iaa.py` (Fleiss' kappa + percentage agreement), **implemented**;
-  unit = one (question, paper) pair, report in `data/results/metrics/iaa_<date>.json`
+  unit = one (question, paper) pair, grouped by original annotator count with tie-breakers excluded;
+  report in `data/results/metrics/iaa_<date>.json`
 
 ### latency.py — Retrieval-core latency benchmark (Q2, EVALUATION.md §7)
 - Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100]` (needs the built

@@ -1,24 +1,29 @@
 # How to mark the test questions
 
-For: Athul, yh and zk. The first batch (50 rows) takes about 20-30 minutes.
+For: Athul, yh, zk, Ernest and Rong. Your file has about 420 rows; the test batch had 50.
 
 ## Why we do this
 
 To test our paper search, we need questions where we know the right paper. An AI wrote one
 question for each of 1,100 random papers in our knowledge base. **Your job is to check whether
-each question really fits its paper.** The three of us check every question separately; the
-project needs us to agree on at least 80% of them.
+each question really fits its paper.** Two of us check every question separately (the 50-question
+test batch had three), and we need to agree on at least 80% of them.
 
 ## Your files
 
-Athul sends you your file. Do the test batch first; the rest comes after we have checked how
-well we agree.
+Athul sends you your file. The test batch is done (we agreed on 88%). In the main part each of the
+1,050 questions goes to two of us, so everyone has 420 rows, and each pair of us shares 105 questions.
 
-| Who | Test batch (50 rows, do this first) | The rest (1,050 rows, later) |
+| Who | Test batch (50 rows, done) | Main part (420 rows) |
 |---|---|---|
 | Athul | `round1_part1_A.csv` | `round1_part2_A.csv` |
 | yh | `round1_part1_B.csv` | `round1_part2_B.csv` |
 | zk | `round1_part1_C.csv` | `round1_part2_C.csv` |
+| Ernest | | `round1_part2_D.csv` |
+| Rong | | `round1_part2_E.csv` |
+
+When the two people on a question disagree (one `y`, one `n`), a third person gets that question
+in a short extra file (`round1_part3_<letter>.csv`, a few rows each) and decides.
 
 ## What to do
 
@@ -34,7 +39,9 @@ well we agree.
 - The paper does not really answer the question (it is about something else, or only mentions it on the side).
 - The question is too vague: thousands of papers would fit just as well.
 - The question asks about something the abstract does not talk about.
-- The question gives the paper away: it copies the title, or uses the name the paper gives its own model or dataset.
+- The question gives the paper away: it is basically the whole title pasted in, or it uses a rare name
+  only this paper has (the name it gives its own model or dataset, or a term it made up). Normal topic
+  words that also appear in the title are fine: people search with those words too.
 
 Otherwise type `y`. Don't be too strict: a question does not have to mention everything in the paper.
 
@@ -56,7 +63,7 @@ faster and translates English to German and French better than earlier models.
 
 ## Rules
 
-- **Mark alone.** Don't discuss rows or show your file to the others until all three of us are done.
+- **Mark alone.** Don't discuss rows or show your file to the others until everyone is done.
 - Only `y` or `n` in **fits**. If you are unsure, pick the closer one and write why in **note**.
 - Don't change the other columns, don't delete or move rows, and don't rename the file.
 
@@ -69,8 +76,8 @@ faster and translates English to German and French better than earlier models.
 
 ## What happens next
 
-Athul runs a script that counts the votes. A question that at least 2 of us mark `y` goes into the
-test set. If we agree on 80% or more, we mark the other 1,050 the same way. Questions most of us
-mark `n` are rewritten by one of us later, and then all three mark the new version.
+Athul runs a script that counts the votes. A question both of its markers mark `y` goes into the
+test set; when they disagree, the third person's mark decides. Questions marked `n` are rewritten
+by one of us later and marked again.
 
 The detailed rules are in [guidelines.md](guidelines.md) §6; the commands Athul runs are in [README.md](README.md).

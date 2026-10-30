@@ -8,18 +8,27 @@
 Paper Search internally and returns cited answers and exact evidence for later task-level evaluation.
 Both run on the same evaluation set.
 
-## 1. Evaluation Set (Q4 hard requirement)
+## 1. Evaluation Set (Q4: original target and current protocol)
 
-- Size: **≥1,000 items**; 3 independent annotators; **IAA ≥ 80%** (report percentage agreement + Fleiss' κ; κ target ≥0.6 preferred)
+- Original documented target (D15): **≥1,000 items**; 3 independent annotators; **IAA ≥ 80%** (report percentage agreement + Fleiss' κ; κ target ≥0.6 preferred)
 - Format: `data/eval/eval_set.jsonl` (see SCHEMA.md §7); QA tasks use JSONL (the assignment only requires eval.xls for classification tasks)
 - Constraints: deduplication, type balance (definitional / method-comparison / survey / paper-locating / technical-detail)
-- Annotation content: per item = paper-level relevance annotation (mandatory, 1,000 items) + passage-level relevance annotation (subset of 100–200 items, to validate evidence granularity) + gold answer (for generation evaluation; fine-grained annotation can be limited to the subset)
+- Original annotation plan: per item = paper-level relevance annotation (1,000 items) + passage-level relevance annotation (subset of 100–200 items, to validate evidence granularity) + gold answer (for generation evaluation; fine-grained annotation can be limited to the subset)
 - dev/eval split: ~10% dev for tuning, 90% eval for the final reported metrics
-- **Procedure in use (D39)**: the LLM drafts one search request per randomly sampled paper; all 3 annotators
-  mark independently whether that paper is a good answer (y/n); questions most of them accept enter the set with
-  their paper as the only gold paper, rejected ones are rewritten by a person and marked again
-  (`scripts/eval_set.py`, `eval/annotation/questions.py`). Agreement is over these y/n marks. Passage-level gold
-  and gold answers are not collected; the bullets above describe the original plan.
+- **Procedure in use (D39/D42)**: the LLM drafts one search request per randomly sampled paper;
+  assigned annotators independently mark whether that paper is a good answer (y/n). The pilot's 50 questions
+  have 3 annotators and the other 1,050 have 2 each. A majority accepts the question with its source paper as
+  the only gold paper. The tooling supports an independent third annotator for ties and a rewrite round for
+  rejected questions (`scripts/eval_set.py`, `eval/annotation/questions.py`). Agreement uses the original y/n
+  marks, excludes tie-breakers, and is reported separately for the 2- and 3-annotator groups. Round 1 (2026-10-29):
+  agreement 88% in the pilot (all 3 agree; Fleiss' κ 0.10) and 93.7% on the other 1,050 (κ 0.12; κ is low because
+  about 96% of all marks are y); the tie-break and rewrite rounds were not run, so the 66 split and the
+  7 rejected questions are left out and eval_set.jsonl has 1,027 questions (912 eval, 115 dev). Passage-level gold
+  and gold answers are not collected.
+
+The current main set does not meet the original three-annotator target. D42 records the team's choice;
+its acceptability under the coursework instructions still needs checking. The 1,027 count includes dev
+questions and must not be reported as 1,027 held-out eval questions.
 
 ## 2. Retrieval Metrics (Q3)
 
@@ -138,7 +147,7 @@ fill ten paper positions. Diversity is not precision. Older reports retain their
 passage-cutoff definitions; do not mix report versions without recomputing from saved hits.
 The source formulas have hand-computed parity tests. The D39 annotation workflow remains
 separate from this diagnostic, which does not satisfy the
-1,000-item/three-annotator requirement.
+original 1,000-item/three-annotator target in section 1.
 
 Rows compare legacy 50/50/50 budgets, query processing alone, diversity alone, depth with
 diversity, the combination, SQLite instead of rank-bm25, and SQLite field weighting. Hybrid

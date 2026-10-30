@@ -1,6 +1,6 @@
 # Annotation guidelines (evaluation set)
 
-> Align the criteria of the 3 annotators. Read this document before annotating; record any criterion disagreements in `data/eval/annotation/notes.md`.
+> Align the criteria of the assigned annotators. Read this document before annotating; record any criterion disagreements in `data/eval/annotation/notes.md`.
 
 ## 1. Relevance definition (paper-level)
 
@@ -18,22 +18,27 @@ Given a user input (a research need), decide whether a paper **is relevant**:
 - Survey papers: if they systematically cover the input's aspect -> relevant
 - Constraints such as time/category are extracted from the input (e.g. "after 2023") -> apply them the same way during annotation; a paper whose year does not match -> not relevant
 
-## 2. Passage-level annotation (subset of 100-200 items)
+## 2. Passage-level annotation (original plan; not collected in round 1)
 
 - Within relevant papers, mark the most relevant passages that **directly support** the input need (up to 5 passages/item)
 - Graded relevance (SCHEMA.md §7 graded): 2=directly answers the aspect; 1=partially relevant; 0=not relevant
 
-## 3. Writing gold answers (subset or full set)
+## 3. Writing gold answers (original plan; not collected in round 1)
 
 - Answer the input's core question in 2-4 sentences; may cite papers (writing the paper identifier is enough)
 - Style: objective, information-dense; length 50-150 words
 
-## 4. Agreement requirements and workflow
+## 4. Agreement and current workflow (D42)
 
-- 3 annotators annotate independently, **no discussion during annotation** (discussion only in the disagreement arbitration stage)
-- After every 100-item batch: compute percentage agreement + Fleiss' kappa; batches below 80% enter arbitration
-- Arbitration: the three annotators review the evidence for disputed items together (full text/paragraphs) -> reach agreement -> update the guidelines
-- Final: majority vote finalizes
+- The pilot's 50 questions have 3 annotators each; the other 1,050 have 2 each, assigned from 5 people.
+  Mark independently, **no discussion during annotation**.
+- Compute percentage agreement and Fleiss' kappa separately for the original 2- and 3-annotator groups,
+  including rejected and tied questions. The agreement target is 80%; exclude any tie-break marks.
+- A majority accepts a question. The tooling can send an even split to an independent third annotator
+  who has not seen that question; that person's mark decides. Rejected questions can be rewritten and
+  marked again. Round 1 ran neither step, so the 66 ties and 7 rejected questions were excluded.
+- This main-set protocol differs from the original three-annotator target; see EVALUATION.md §1 for
+  the remaining check against the coursework instructions.
 
 ## 5. Common disagreements and rulings
 
@@ -43,7 +48,7 @@ Given a user input (a research need), decide whether a paper **is relevant**:
 | Whether a survey is relevant | Relevant if it covers the input's aspect, even without new methods |
 | Differing interpretation of time constraints | Take the input text literally ("last two years" = publication year >= current year - 2) |
 
-## 6. Marking the drafted questions (D39, the procedure in use)
+## 6. Marking the drafted questions (D39/D42, the procedure in use)
 
 A short step-by-step version with an example is in [HOW_TO_MARK.md](HOW_TO_MARK.md).
 
@@ -53,7 +58,8 @@ from one paper, with that paper's title and abstract. Mark `fits`:
 - **y**: a researcher could plausibly type this request, and this paper is a clearly good answer to it.
 - **n**: anything else, e.g. the paper does not really answer it, it is too vague (thousands of papers
   fit equally), it asks for something the abstract does not support, it is not a real search request, or
-  it gives the paper away (copies the title, names the paper's own model/method/dataset).
+  it gives the paper away (nearly the whole title pasted in, or a name only this paper has: its own
+  model/method/dataset name or a term it coins). Ordinary topic words shared with the title are fine (D43).
 
 Mark alone and do not discuss rows until everyone is done (agreement is computed on these marks).
 Use `note` for anything worth discussing later. Only `y` / `n` are accepted. Keep the file as CSV and its
@@ -61,5 +67,5 @@ name unchanged (Excel: File > Save As > "CSV UTF-8"; Google Sheets: File > Downl
 give the download the original file name).
 Rows most annotators mark `n`, and a question identical to an earlier accepted one, go to `to_rewrite.csv`
 (`reason` says which), where one person writes a better question (`new_question`, same rules as the LLM's:
-no title copying, no names the paper introduces) and its kind (`new_type`: definitional, method-comparison,
+no pasted title, no names the paper introduces) and its kind (`new_type`: definitional, method-comparison,
 survey, paper-locating or technical-detail); everyone then marks the new version in the next round's sheet.
