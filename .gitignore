@@ -16,6 +16,8 @@ data/raw/*
 data/processed/*
 data/indices/*
 data/eval/*
+# Version the fixed evaluation set so every run uses the same reviewed questions.
+!data/eval/eval_set.jsonl
 data/results/*
 !data/**/.gitkeep
 !data/README.md
