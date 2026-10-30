@@ -54,7 +54,7 @@ from one paper, with that paper's title and abstract. Mark `fits`:
 - **n**: anything else, e.g. the paper does not really answer it, it is too vague (thousands of papers
   fit equally), it asks for something the abstract does not support, it is not a real search request, or
   it gives the paper away (nearly the whole title pasted in, or a name only this paper has: its own
-  model/method/dataset name or a term it coins). Ordinary topic words shared with the title are fine (D42).
+  model/method/dataset name or a term it coins). Ordinary topic words shared with the title are fine (D43).
 
 Mark alone and do not discuss rows until everyone is done (agreement is computed on these marks).
 Use `note` for anything worth discussing later. Only `y` / `n` are accepted. Keep the file as CSV and its

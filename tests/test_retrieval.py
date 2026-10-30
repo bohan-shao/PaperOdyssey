@@ -253,6 +253,7 @@ class HashEncoder:
 
     def __init__(self, name: str = "hash-bow", dim: int = 256) -> None:
         self.name, self.dim, self.batch_size = name, dim, 64
+        self.query_instruction = dense.QUERY_INSTRUCTION
         self.seen: list[str] = []
 
     def encode(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
@@ -363,7 +364,7 @@ class RealEncoderTest(unittest.TestCase):
         np.testing.assert_allclose(np.linalg.norm(vecs, axis=1), 1.0, atol=1e-3)
         self.assertGreater(vecs[0] @ vecs[1], vecs[0] @ vecs[2])
         np.testing.assert_allclose(enc.encode_query("cat on a mat"),
-                                   enc.encode([dense.QUERY_INSTRUCTION + "cat on a mat"]), atol=1e-3)
+                                   enc.encode(["cat on a mat"]), atol=1e-3)
 
 
 def ranked(stage: str, *pids: str, scores: list[float] | None = None) -> list[ScoredPassage]:

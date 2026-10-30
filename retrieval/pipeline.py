@@ -2,12 +2,12 @@
 
 One query flows through (every step is a config switch, so the ablation matrix is config-only):
 
-    sparse: BM25 top 50 ──┐  both on: RRF fusion   rerank.enabled:          parent_doc.enabled:
-                          ├─ (rrf_k, weights) ───► cross-encoder to top_k ─► parent section text
-    dense: BGE top 50 ────┘  -> top 50 candidates  (else: cut to top_k)
+    sparse: BM25 top 150 ──┐  RRF union -> paper/section selection (50) -> cross-encoder
+                           ├─ diverse top_k -> optional bounded parent excerpt
+    dense: BGE top 150 ────┘  (all budgets and innovations are configurable)
 
 - `retrieval.sparse.enabled` / `retrieval.dense.enabled`: with only one on, its list goes straight
-  to the rerank / top_k step (no fusion); at least one must be on.
+  to the selection / rerank / top_k step (no fusion); at least one must be on.
 - `retrieval.parallel`: sparse runs on a worker thread while dense runs on the calling thread.
 - `retrieval.filters.enabled`: off = the filters argument is ignored (the Q3 ablation).
 - `retrieval.rerank.enabled`: off = the fused (or single) list is cut to top_k.
@@ -15,9 +15,9 @@ One query flows through (every step is a config switch, so the ablation matrix i
   the child's); applied after reranking, so the cross-encoder always scores the child text.
 
 Hit stages tell the configuration level: "bm25" | "dense" (one retriever, no rerank), "hybrid"
-(fused, no rerank), "rerank". `latency_ms` has one entry per stage that ran (sparse_ms, dense_ms,
-fusion_ms, rerank_ms, parent_ms) plus total_ms; sparse_ms / dense_ms are the retrievers' own
-timings (query encoding and hydration included).
+(fused, no rerank), "rerank". `latency_ms` has one entry per stage that ran (query_ms, sparse_ms,
+dense_ms, fusion_ms, selection_ms, rerank_ms, parent_ms) plus total_ms; channel timings include
+query encoding and hydration.
 
 Thread-safe: orchestration calls retrieve() from several threads at once; each component
 serializes its own model / JVM access. The enabled components (BM25 index, dense index + encoder,
@@ -42,6 +42,8 @@ from config import get_config
 from . import rerank, sparse
 from .fusion import reciprocal_rank_fusion
 from .lookup import get_lookup_store
+from .query import query_views
+from .selection import select_hits
 from .types import RetrieveResult, RetrievalFilters, ScoredPassage
 
 _POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="retrieval")  # sparse beside dense
@@ -102,12 +104,12 @@ def _ensure_loaded(cfg: dict) -> None:
 
 
 def _candidates(query: str, filters: RetrievalFilters | None, cfg: dict,
-                latency: dict[str, int]) -> list[ScoredPassage]:
+                latency: dict[str, int], sparse_query: str | None = None) -> list[ScoredPassage]:
     """Sparse and/or dense top lists, fused when both are on."""
     use_sparse, use_dense = cfg["sparse"].get("enabled", True), cfg["dense"].get("enabled", True)
     if not (use_sparse or use_dense):
         raise RuntimeError("retrieval.sparse and retrieval.dense are both disabled")
-    sparse_args = (query, filters, cfg["sparse"].get("top_k", 50))
+    sparse_args = (query if sparse_query is None else sparse_query, filters, cfg["sparse"].get("top_k", 50))
     dense_args = (query, filters, cfg["dense"].get("top_k", 50))
 
     sparse_hits: list[ScoredPassage] = []
@@ -117,8 +119,19 @@ def _candidates(query: str, filters: RetrievalFilters | None, cfg: dict,
         pending = _POOL.submit(_run, "sparse retrieval", _sparse_search, *sparse_args)
     elif use_sparse:
         sparse_hits, latency["sparse_ms"] = _run("sparse retrieval", _sparse_search, *sparse_args)
-    if use_dense:
-        dense_hits, latency["dense_ms"] = _run("dense retrieval", _dense_search, *dense_args)
+    try:
+        if use_dense:
+            dense_hits, latency["dense_ms"] = _run("dense retrieval", _dense_search, *dense_args)
+    except BaseException:
+        # Offline experiments may close readers/restore config as soon as retrieve returns.
+        # Drain the sibling worker before propagating the original dense failure.
+        if pending is not None:
+            pending.cancel()
+            try:
+                pending.result()
+            except BaseException:
+                pass
+        raise
     if pending is not None:
         sparse_hits, latency["sparse_ms"] = pending.result()
 
@@ -128,7 +141,8 @@ def _candidates(query: str, filters: RetrievalFilters | None, cfg: dict,
     start = time.perf_counter()
     fused = reciprocal_rank_fusion(sparse_hits, dense_hits, k=fusion.get("rrf_k", 60),
                                    weights=fusion.get("weights", (1.0, 1.0)),
-                                   top_k=fusion.get("top_k", 50))
+                                   top_k=None if cfg.get("diversity", {}).get("enabled", False)
+                                   else fusion.get("top_k", 50))
     latency["fusion_ms"] = _ms(start)
     return fused
 
@@ -161,14 +175,34 @@ def retrieve(
         filters = None
     latency: dict[str, int] = {}
 
+    if top_k <= 0 or not query.strip():
+        return RetrieveResult(hits=[], total_candidates=0, latency_ms={"total_ms": _ms(start)})
+    stage_start = time.perf_counter()
+    query, sparse_query = query_views(query, cfg.get("query_processing", {}))
+    if cfg.get("query_processing", {}).get("enabled", False):
+        latency["query_ms"] = _ms(stage_start)
+
     _ensure_loaded(cfg)
-    candidates = _candidates(query, filters, cfg, latency)
+    candidates = _candidates(query, filters, cfg, latency, sparse_query)
+    diversity = cfg.get("diversity", {})
+    if diversity.get("enabled", False):
+        stage_start = time.perf_counter()
+        candidates = select_hits(candidates, cfg.get("fusion", {}).get("top_k", 50), diversity)
+        latency["selection_ms"] = _ms(stage_start)
+    else:
+        # Recall depth is independent of the scoring budget, including single-channel runs.
+        candidates = candidates[:max(0, cfg.get("fusion", {}).get("top_k", 50))]
     if cfg["rerank"].get("enabled", True):
         stage_start = time.perf_counter()
-        hits = _run("rerank", _rerank, query, candidates, top_k)
+        hits = _run("rerank", _rerank, query, candidates,
+                    len(candidates) if diversity.get("enabled", False) else top_k)
         latency["rerank_ms"] = _ms(stage_start)
     else:
-        hits = candidates[:top_k]
+        hits = candidates if diversity.get("enabled", False) else candidates[:top_k]
+    if diversity.get("enabled", False):
+        stage_start = time.perf_counter()
+        hits = select_hits(hits, top_k, diversity, final=True)
+        latency["selection_ms"] += _ms(stage_start)
     if cfg.get("parent_doc", {}).get("enabled", False):
         stage_start = time.perf_counter()
         hits = _run("parent-document lookup", get_lookup_store().with_parent_text, hits)

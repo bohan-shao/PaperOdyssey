@@ -1,4 +1,4 @@
-"""Evaluation-set questions: LLM-drafted search requests, checked by people (Q4, D39, D41).
+"""Evaluation-set questions: LLM-drafted search requests, checked by people (Q4, D39, D42).
 
 The team's procedure (agreed on 2026-10-24):
 
@@ -12,7 +12,7 @@ The team's procedure (agreed on 2026-10-24):
 3. `write_sheets`: one CSV per annotator (round<R>_part<P>_<annotator>.csv) for the questions not
    handed out yet; round<R>_part<P>.json records which questions went to whom, so a pilot can come
    first and the rest later. Every question goes to all annotators, or to `per_question` of them
-   balanced over the groups (D41: the pilot to 3, the rest to 2 of 5). Each annotator marks
+   balanced over the groups (D42: the pilot to 3, the rest to 2 of 5). Each annotator marks
    alone, without discussing, whether the paper is a good answer to the question (`fits` y/n;
    guidelines.md §6). An evenly split question goes to one more annotator (`write_tiebreak_sheets`).
 4. `build_eval_set`: a question that most annotators accept enters eval_set.jsonl (SCHEMA.md §7)

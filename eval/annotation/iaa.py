@@ -78,7 +78,7 @@ def percentage_agreement(annotations: list[dict]) -> float:
 
 
 def fleiss_kappa(annotations: list[dict]) -> float:
-    """Fleiss' kappa over 3 annotators.
+    """Fleiss' kappa over the annotators (2 or more, the same number on every item).
 
     Args:
         annotations: same shape as percentage_agreement.

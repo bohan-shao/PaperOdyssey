@@ -42,6 +42,7 @@ class DownstreamTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.stores = []
         self.cfg = copy.deepcopy(get_config())
         self.search = search_result()
         self.client = MagicMock()
@@ -55,10 +56,15 @@ class DownstreamTests(unittest.TestCase):
         self.write([passage()])
 
     def write(self, passages):
+        # Windows cannot replace a database while a previous subtest still has it open.
+        for store in self.stores:
+            store.close()
+        self.stores.clear()
         self.db = build_store(self.root, passages)
 
     def open_store(self):
         store = LookupStore(self.db)
+        self.stores.append(store)
         self.addCleanup(store.close)
         return store
 

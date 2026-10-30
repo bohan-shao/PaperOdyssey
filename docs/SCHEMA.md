@@ -129,9 +129,9 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 
 Constraints:
 - **Deduplication** (keep only one of similar inputs), **balance** (query types: definitional / method-comparison / survey / paper-locating / technical-detail, as balanced as possible).
-- Annotation guidelines: `eval/annotation/guidelines.md`; IAA computation: Fleiss' κ over 3 annotators + percentage agreement (usable only at ≥80%).
+- Annotation guidelines: `eval/annotation/guidelines.md`; IAA computation: Fleiss' κ + percentage agreement, per number of annotators (D42) (usable only at ≥80%).
 - Built by `eval/annotation/questions.py` (D39): one gold paper per item, the paper the question was drafted
-  from; `annotations` lists the annotators the question went to (D41: 3 in the pilot, 2 after it, plus
+  from; `annotations` lists the annotators the question went to (D42: 3 in the pilot, 2 after it, plus
   `"tiebreak": true` on a third who broke a tie), and `papers` is `[that paper]` when that annotator accepted the question, else `[]`.
   `gold_passage_ids` is `[]` and `gold_answer` is `""` (not collected). Extra fields: `question_type` (one of the
   five types, or `"other"`; for a rewritten question the type its writer gave), `question_source` (`"llm:<model>"` for a drafted question, `"human"` for a rewritten
@@ -152,6 +152,29 @@ Constraints:
 ```
 
 ## 9. Type Definition Locations
+
+Evaluation rankings sort all supplied hits by `rank`, deduplicate the selected identifier
+(paper or passage), and only then apply a positive integer K. At paper level, a paper takes
+its best passage's position in the deduplicated ranking. The D41 probe uses these same
+Recall/MRR/NDCG functions; its separate `distinct_papers_in_top_10_passages` statistic applies
+a passage cutoff. Probe report `format_version: 2` / `metric_version: paper_ranking_v2`
+identifies this convention; historical reports retain their original definitions. Retrieval
+still returns a passage list, so ten returned passages need not contain ten distinct papers.
+
+Retrieval's existing public signature remains
+`retrieve(query: str, filters: RetrievalFilters | None = None, top_k: int | None = None) -> RetrieveResult`.
+No fields change in D38/D40/D41. `total_candidates` counts the selected pool before reranking/final
+truncation, capped by `fusion.top_k` for both hybrid and single-channel runs, including when
+reranking is disabled; it is not the raw recall union size.
+`latency_ms` may additionally contain `query_ms` and `selection_ms`; timings remain integer
+milliseconds. Selection preserves passage IDs and scores, and assigns contiguous ranks.
+With parent-document mode enabled, `ScoredPassage.text` is a child-anchored parent excerpt
+bounded by `retrieval.parent_doc.max_chars` (0 = legacy unbounded section). An unlocatable
+or oversized child is returned unchanged; ambiguous anchors also preserve the child. Whitespace
+differences alone can be matched. Fallbacks emit a warning with `parent_excerpt_outcome` and
+`passage_id`; no counters or log metadata are added to `RetrieveResult.latency_ms`.
+Downstream QA still reads the original child
+record by `passage_id`, as specified in section 10.
 
 - Passages/papers: read/write defined in `kb/store.py`; type definitions in `retrieval/types.py` (`ScoredPassage`)
 - Orchestration layer: `orchestration/types.py` (`QueryPlan`, `ReviewRecord`, `FinalResult`)

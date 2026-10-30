@@ -75,22 +75,42 @@ kb:
 
 # ---- retrieval/ retrieval core (ablation matrix changes go here) ----
 retrieval:
+  query_processing:
+    enabled: true              # Q3 ablation: normalized semantic query + deduplicated lexical view
+    max_terms: 64
+    stopwords: [a, an, the, and, or, of, to, in, "on", for, with, by, from, is, are,
+                was, were, be, been, being, do, does, did, how, what, which, that,
+                this, these, those, can, could, would, should, please, find, papers]
+  diversity:
+    enabled: true              # Q3 ablation: select across papers/sections before expensive reranking
+    candidate_per_paper: 4
+    candidate_per_parent: 2
+    final_per_paper: 2
+    final_per_parent: 1
   lookup:
     db_file: lookup.sqlite      # passage/section records by id (under paths.indices), hydrates BM25/FAISS hits
   sparse:
     enabled: true
-    backend: pyserini           # pyserini | rankbm25 (fallback if Java is unavailable)
-    top_k: 50                   # candidate count per retrieval channel before fusion
-    index_dir: indices/bm25
-    bm25: {k1: 0.9, b: 0.4}     # Anserini defaults; used by both backends
+    backend: pyserini           # pyserini | sqlite (disk-backed, no Java) | rankbm25 (small samples)
+    top_k: 150                  # broaden cheap recall; reranking still has a separate fixed budget
+    index_dir: bm25             # relative to paths.indices
+    bm25: {k1: 0.9, b: 0.4}     # Pyserini and rank-bm25; SQLite uses its own fixed constants
+    field_weighting:
+      enabled: false           # Q3 ablation, sqlite only; evaluate before enabling
+      weights: [2.0, 0.5, 1.0] # title, section, body; SQLite has fixed k1=1.2 and b=0.75
   dense:
     enabled: true
     model_name: BAAI/bge-large-en-v1.5
+    query_format: auto         # auto | bge | qwen3 | plain; never prepend BGE instructions to Qwen/MiniLM
+    query_instruction: null    # explicit override for local model paths; null selects query_format
+    task_instruction: "Given a scientific question, retrieve relevant passages from research papers"
+    max_length: 512            # document token limit in manifest; Qwen3 trial: 1024, batch_size: 8
+    device: null               # automatic CUDA/CPU, or an explicit torch device
     batch_size: 64
     fp16: true
-    faiss_dir: indices/faiss
+    faiss_dir: faiss            # relative to paths.indices
     hnsw: {M: 32, efConstruction: 200, efSearch: 128}
-    top_k: 50
+    top_k: 150
     filter_exact_max: 50000     # filtered searches keeping <= this many passages are exact (HNSW misses hits on small selections)
   fusion:
     rrf_k: 60
@@ -99,12 +119,14 @@ retrieval:
   rerank:
     enabled: true
     model_name: BAAI/bge-reranker-v2-m3
+    device: null               # automatic CUDA/CPU; diagnostic runs explicitly choose CPU
     top_k: 10
     max_length: 512             # (query, passage) tokens per pair; longer pairs are truncated
-    batch_size: 64
+    batch_size: 64              # retain the reference baseline; tune per hardware with latency benchmark
     fp16: true
   parent_doc:
     enabled: false              # Q3 ablation: parent-document retrieval
+    max_chars: 6000              # child-anchored excerpt; 0 restores unbounded legacy sections
   filters:
     enabled: true               # Q3 innovation: metadata filtering
   parallel: true                # run sparse/dense in parallel
@@ -160,12 +182,19 @@ llm:
 # ---- eval/ evaluation ----
 eval:
   dev_ratio: 0.1                # dev/eval split
+  retrieval_probe:              # CPU proxy models for a small, reproducible smoke benchmark
+    dense_model: sentence-transformers/all-MiniLM-L6-v2
+    dense_max_length: 256
+    rerank_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+    rerank_max_length: 512
+    batch_size: 16
+    cpu_threads: 4
   annotation:                   # eval set (D39, scripts/eval_set.py); files under paths.eval
     drafts_file: drafts.jsonl   # LLM-drafted questions, all rounds
     sheets_dir: annotation      # marking sheets round<R>_part<P>_<annotator>.csv and to_rewrite.csv
     rewrite_file: to_rewrite.csv
     eval_set_file: eval_set.jsonl
-    annotators: [A, B, C, D, E] # names in the sheet file names; the same names every time (D39, D41)
+    annotators: [A, B, C, D, E] # names in the sheet file names; the same names every time (D39, D42)
   # (bertscore / ragas config sections return with the downstream task — see eval/README.md)
 
 # ---- ui/ ----
