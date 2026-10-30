@@ -109,7 +109,12 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 }
 ```
 
-## 7. Evaluation Set (`data/eval/eval_set.jsonl`; assignment Q4 requires ≥1,000 items, 3 annotators, IAA ≥ 80%)
+## 7. Evaluation Set (`data/eval/eval_set.jsonl`)
+
+The original documented Q4 target was ≥1,000 items, 3 independent annotators and IAA ≥80%.
+The current D42 protocol uses 3 annotators for the pilot and 2 for the main set, with an optional
+third for ties; it does not meet the original three-annotator target. See EVALUATION.md §1 for
+the actual counts and the remaining check against the coursework instructions.
 
 ```json
 {
@@ -129,9 +134,10 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 
 Constraints:
 - **Deduplication** (keep only one of similar inputs), **balance** (query types: definitional / method-comparison / survey / paper-locating / technical-detail, as balanced as possible).
-- Annotation guidelines: `eval/annotation/guidelines.md`; IAA computation: Fleiss' κ over 3 annotators + percentage agreement (usable only at ≥80%).
+- Annotation guidelines: `eval/annotation/guidelines.md`; IAA computation: Fleiss' κ + percentage agreement, per number of annotators (D42) (usable only at ≥80%).
 - Built by `eval/annotation/questions.py` (D39): one gold paper per item, the paper the question was drafted
-  from; `annotations[].papers` is `[that paper]` when the annotator accepted the question, else `[]`.
+  from; `annotations` lists the annotators the question went to (D42: 3 in the pilot, 2 after it, plus
+  `"tiebreak": true` on a third who broke a tie), and `papers` is `[that paper]` when that annotator accepted the question, else `[]`.
   `gold_passage_ids` is `[]` and `gold_answer` is `""` (not collected). Extra fields: `question_type` (one of the
   five types, or `"other"`; for a rewritten question the type its writer gave), `question_source` (`"llm:<model>"` for a drafted question, `"human"` for a rewritten
   one) `round` (1 = the LLM draft, 2+ = rewritten by a team member and marked again) and `question_form`

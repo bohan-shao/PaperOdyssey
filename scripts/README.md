@@ -11,7 +11,7 @@
 | `build_indexes.py` | build the lookup store + BM25 + FAISS indexes from passages.jsonl (`--only lookup\|sparse\|dense\|all`) |
 | `benchmark_retrieval.py` | retrieval-core latency benchmark (per-stage latency per config, throughput, efSearch and rerank-depth sweeps) → `metrics/latency_retrieval_<date>.json` |
 | `probe_retrieval.py` | paired raw/template source diagnostic; four sparse/hybrid/rerank modes, unique run artifacts and one-switch comparisons (not human relevance evaluation) |
-| `eval_set.py` | evaluation set (D39): `draft` (LLM questions) -> `sheets` (one CSV per annotator) -> `build` (majority vote, eval_set.jsonl, agreement report, to_rewrite.csv) -> `rewrites` (next round) |
+| `eval_set.py` | evaluation set (D39): `draft` (LLM questions) -> `sheets` (one CSV per annotator) -> `build` (majority vote, eval_set.jsonl, agreement report, to_rewrite.csv) -> `rewrites` (next round); `sheets --per-question 2` and `tiebreak` for two annotators per question (D42) |
 | `run_eval.py` | unified evaluation entry point: `--stage retrieval` runs the eval set through the four EVALUATION §2 configurations → `retrieval_results/<configuration>_<date>.jsonl` + `metrics/retrieval_<date>.json` (`--configs`, `--limit`, `--tag`); `review`/`all`/`--ablation` are not implemented yet |
 | `sanity_check.py` | dependency-free sanity checks: config loads, packages import, schema round-trips (see README: Sanity checks) |
 | `run_ui.sh` | start Streamlit |

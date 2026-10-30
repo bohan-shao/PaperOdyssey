@@ -32,18 +32,22 @@ _ENV_DEFAULTS = {
 
 
 def _load_dotenv() -> None:
-    """Minimal .env loader (KEY=VALUE lines; never overrides existing env vars)."""
-    for key, value in _ENV_DEFAULTS.items():
-        os.environ.setdefault(key, value)
+    """Minimal .env loader (KEY=VALUE lines; never overrides existing env vars).
+
+    Precedence: process environment > `.env` > `_ENV_DEFAULTS`. The defaults go in last, and only
+    for unset or blank values, so a `.env` LLM_MODEL / LLM_BASE_URL takes effect.
+    """
     dotenv_path = PROJECT_ROOT / ".env"
-    if not dotenv_path.exists():
-        return
-    for line in dotenv_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    if dotenv_path.exists():
+        for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    for key, value in _ENV_DEFAULTS.items():
+        if not os.environ.get(key, "").strip():
+            os.environ[key] = value
 
 
 def _expand_env(value: object) -> object:
