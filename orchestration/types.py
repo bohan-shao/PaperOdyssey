@@ -5,6 +5,7 @@ Changing this file requires syncing docs/SCHEMA.md + all callers + contract test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -76,6 +77,9 @@ class FinalResult:
 
     This is the search result only — it contains no generated answer. The downstream
     task (downstream/) consumes this and produces its own task output (D24).
+    `papers` holds passing records in `passing_order_key` order; `reviews` retains all pass/reject
+    records across rounds; `retrieval_ranks` maps every reviewed paper to its best retrieval rank
+    in this run (D47). Legacy cached results have an unavailable trace (`reviews=[]`) and no ranks.
     """
 
     query_id: str
@@ -84,3 +88,17 @@ class FinalResult:
     papers: list[ReviewRecord]
     coverage_report: dict[str, object]
     latency_by_stage: dict[str, int] = field(default_factory=dict)
+    reviews: list[ReviewRecord] = field(default_factory=list)
+    retrieval_ranks: dict[str, int] = field(default_factory=dict)
+
+
+def passing_order_key(paper_id: str, score: int, retrieval_ranks: Mapping[str, int]) -> tuple[int, float, str]:
+    """Sort key of `FinalResult.papers` (SCHEMA.md §6, D47).
+
+    Descending review score, then the paper's best retrieval rank (1 = the top passage of some
+    sub-query's retrieve() result; a paper without a rank, as in legacy results, sorts last), then
+    paper ID. Review scores are 1-5 integers, so ties are common: the rank keeps the retriever's
+    order among them instead of arXiv-ID order.
+    """
+    rank = retrieval_ranks.get(paper_id)
+    return -score, float(rank) if rank is not None else float("inf"), paper_id

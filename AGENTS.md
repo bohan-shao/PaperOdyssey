@@ -86,7 +86,7 @@ These are interface contracts between teammates' modules. Do not work around the
 7. **Design changes** append the next numbered entry to the decision log in `docs/DESIGN.md` and keep
    `SCHEMA.md` / `EVALUATION.md` in sync.
 8. **Scripts are thin**: parse args → call a package function → write output. Logic lives in packages.
-9. **Stubs** (`raise NotImplementedError  # TODO`, currently in `eval/` and `scripts/run_eval.py`) are
+9. **Stubs**, when present (`raise NotImplementedError  # TODO`), are
    implemented to the contract in their docstring and package README; don't change their signatures silently.
 
 ## Code style

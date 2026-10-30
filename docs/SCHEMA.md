@@ -104,10 +104,29 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
   "input_text": "...",
   "query_plan": { ... see §4 ... },
   "papers": [ {"paper_id": "...", "verdict": "pass", "score": 4, "reasons": "...", "covered": ["..."], "missing": [], "round": 1, "evidence": {"title": "...", "top_passages": ["P1234_0007"]}} ],
+  "reviews": [ { ... see §5: every pass and reject record from every completed round ... } ],
+  "retrieval_ranks": {"P1234": 1, "P5678": 3},
   "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0", "review_backend": "llm"},
   "latency_by_stage": {"understanding_ms": 1500, "hyde_ms": 0, "retrieval_ms": 420, "review_ms": 3800, "rewrite_ms": 600, "total_ms": 6500}
 }
 ```
+
+`papers` contains only passing records, ordered by `orchestration.types.passing_order_key` (D47):
+descending score, then ascending `retrieval_ranks`, then paper ID. `retrieval_ranks` maps every
+reviewed paper to its best position (1 = first) among the passages of any sub-query's `retrieve()`
+result in the run, including sub-queries that returned it after its review; review scores are
+1–5 integers, so this keeps the retriever's order among equal scores. Results written before D47
+have no ranks (`{}`) and fall back to score then paper ID. `reviews`
+contains all `ReviewRecord` values produced by the run, including rejects, in round order;
+the order within a round is not a relevance ranking. Each record retains its round, verdict,
+reasons, covered/missing aspects and evidence for review evaluation. On a fresh run,
+`len(reviews)` equals `coverage_report.papers_reviewed`.
+
+`reviews` defaults to `[]` for existing callers and cached results written before this field
+was introduced. An empty trace from an old cache means the review records are unavailable;
+it must not be reconstructed from `papers`, which omits rejects. New cache entries preserve
+the complete trace. Consumers needing review records must run with `orchestration.loop.cache=false`
+or use a result known to contain the complete trace.
 
 ## 7. Evaluation Set (`data/eval/eval_set.jsonl`)
 
@@ -226,3 +245,75 @@ Passage records are read with `retrieval.lookup.get_lookup_store().get_passages(
 (D28): primary-key lookups in `lookup.sqlite`, the store that also hydrates retrieval hits.
 Missing IDs are omitted; an empty selection does not open the store. Results serialize with
 `asdict()` and JSON; the UI supports downloading this full payload for later evaluation.
+
+## 11. Review evaluation artifacts (D45)
+
+`paths.results/review_runs/<tag>/` contains evaluation-only artifacts, not online API types:
+
+- `manifest.json`: format identity, dataset SHA-256, selected query IDs/split/limit, effective
+  search config with credentials omitted, index metadata, source-code hash, environment and
+  creation time. `fingerprint` must match before resuming.
+- `attempts/NNNNNN.json`: one sequential attempt with the original eval question, `status`
+  (`running`, `complete`, `failed`), `started_at`, `cold_start`, and, when available, `wall_ms`
+  and `usage` (`calls`, `prompt_tokens`, `completion_tokens`). Completed attempts contain a
+  complete §6 `result`, including `reviews`. Failed attempts record query ID/error type.
+  A crash can leave `running`; resume retries it while retaining the original attempt.
+- `report.json`: `stage=review`, `format_version=1`, run `status`, selected/completed counts,
+  failed/interrupted attempt counts, incomplete IDs, protocol, manifest provenance, observed
+  usage and per-split metrics. Metrics include completed queries only. Known-source ranking
+  and source passed/rejected/not-reviewed counts do not imply candidate negative labels.
+  Coverage is model-reported; undefined ratios are JSON null.
+- `metrics/llm_usage.jsonl`: the shared client's best-effort raw usage log, useful for examining
+  interrupted attempts. It is not guaranteed to include all billed work.
+
+Completed checkpoints are reused without running or timing the query again. The first newly
+executed query of each process is flagged as a cold start; it may still reuse OS/model caches.
+A prefix selected with `--limit` is a development smoke test, not an unbiased quality sample.
+
+## 12. Automatic ablation artifacts (D46)
+
+`eval.ablation.run_ablation(eval_set_path, results_dir, tag, *, factors, stage, split="all",
+limit=None, resume=False, dry_run=False) -> dict` plans or executes one or two factors. The
+CLI passes `paths.results/ablation_runs` as `results_dir`. These are evaluation dictionaries;
+online `RetrieveResult`, `FinalResult` and downstream dataclasses are unchanged.
+
+- `manifest.json`: `fingerprint`, `plan`, `code_sha256`, `indexes`, `input_files`, `runtime`,
+  `environment` and `created_at`. The fingerprint binds the dataset hash, selected query IDs,
+  split/limit, factor order, row overrides/effective redacted configuration, seed, code and
+  index/corpus metadata, Python and dependency versions. Large index contents are identified
+  by their manifests and file size/mtime metadata, not a new full-content hash.
+- `selected_eval.jsonl`: exact selected question records in execution order (split before
+  limit), reused by every cell. Resume verifies it against the source selection.
+- `rows/<baseline|a|b|ab>/<retrieval|review>/`: cell `manifest.json`, atomic sequential
+  `attempts/NNNNNN.json` and `report.json`. Review cells use §11. Retrieval attempts contain
+  the exact `question`, matrix-derived `fingerprint`, `status`, `started_at`, `cold_start`,
+  and elapsed `wall_ms` when available. Complete attempts add a §8 retrieval `record`,
+  `total_candidates` and `latency_ms`; failures add `error` with query ID and exception type.
+  Failed/running attempts can be retried; attempts after a completed query are invalid.
+  Sequence, question identity, result structure and finite nonnegative timings/usage are
+  checked for every saved cell before starting new queries.
+- Matrix `report.json`: `stage="ablation"`, `format_version=1`, `status` (`complete`,
+  `partial`, `failed`), plan fields, manifest `provenance`, selected/completed cell counts,
+  `error`, observed `usage`, `comparisons`, `interaction`, and `updated_at`. Dry-run returns
+  only a `planned` report and writes nothing. Rows record `enabled_factors`, `overrides`,
+  `effective_config`, and stage-keyed `results` with status, completed count, report path,
+  usage and normalized `per_query` observations. The CLI also atomically publishes the matrix
+  report at `metrics/ablation_<factor_names_joined_underscore>_<tag>.json`.
+
+Normalized observations contain `first_gold_rank` (positive integer or null), `source_success`
+(Hit@10 for retrieval; any accepted source for review), `wall_ms`, `cold_start`, and optional
+`source_recall`, `coverage_met`, `rounds`. Review usage sums `calls`, `prompt_tokens` and
+`completion_tokens` across all attempts, with derived `total_tokens`; retrieval uses zero.
+This is returned API usage, not an invoice, and may omit usage lost during transport/crashes.
+
+`comparisons[stage]` contains single-switch edges with `before`, `after` and `splits.dev/eval`.
+Each split has `n_selected`, `n_paired`, paired/unpaired IDs, and per-metric `{n, before,
+after, delta}`. Undefined means/deltas are null. It also stores fixed/broken/moved-up/down
+counts and IDs, up to five fixed/broken examples, and paired cold-start counts. Review adds
+separate `top10_fixed`/`top10_broken` counts, IDs and examples. Example fields are query ID,
+input text, gold paper IDs and before/after ranks.
+
+For two factors, `interaction[stage]` uses the same four-way completed subset per split.
+Each selected metric records `{n, baseline, A, B, AB, interaction}`, where interaction is
+AB−A−B+baseline. This is a descriptive contrast, not a statistical significance test.
+Incomplete queries never contribute a zero or an inferred negative label.

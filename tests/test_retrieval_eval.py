@@ -277,6 +277,7 @@ class RunEvalScriptTest(unittest.TestCase):
             fake_run = Mock(return_value={"stage": "retrieval"})
             with patch.object(run_eval, "get_path", side_effect=lambda key: paths[key]), \
                     patch.object(run_eval, "run_retrieval_eval", fake_run), \
+                    patch.object(run_eval, "run_review_eval") as review_run, \
                     patch.object(run_eval, "format_summary", return_value="summary"), \
                     patch.object(run_eval, "date") as fake_date, \
                     patch.object(run_eval.logging, "basicConfig"), \
@@ -289,17 +290,212 @@ class RunEvalScriptTest(unittest.TestCase):
                 report = paths["results"] / "metrics" / "retrieval_2026-10-30_first3.json"
                 self.assertEqual(json.loads(report.read_text(encoding="utf-8")), {"stage": "retrieval"})
                 self.assertIn(f"summary\n\nreport -> {report}", out.getvalue())
+                review_run.assert_not_called()
 
-    def test_unimplemented_stages_and_bad_flags_stop_before_any_work(self) -> None:
+    def test_review_stage_passes_selection_and_resume_without_running_retrieval(self) -> None:
         run_eval = load_script()
-        for argv in ([], ["--stage", "review"], ["--stage", "all"], ["--stage", "retrieval", "--ablation", "rerank_off"],
-                     ["--stage", "retrieval", "--limit", "0"], ["--stage", "retrieval", "--configs", "colbert"]):
-            with self.subTest(argv=argv), patch.object(run_eval, "run_retrieval_eval") as fake_run, \
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {"eval": Path(tmp) / "eval", "results": Path(tmp) / "results"}
+            report = {"status": "complete", "completed_queries": 3, "selected_queries": 3}
+            with patch.object(run_eval, "get_path", side_effect=lambda key: paths[key]), \
+                    patch.object(run_eval, "get_config", return_value={
+                        "eval": {"annotation": {"eval_set_file": "fixed.jsonl"}}}), \
+                    patch.object(run_eval, "run_retrieval_eval") as retrieval_run, \
+                    patch.object(run_eval, "run_review_eval", return_value=report) as review_run, \
+                    patch.object(run_eval, "format_review_summary", return_value="review complete 3/3") as summary, \
+                    patch.object(run_eval.logging, "basicConfig"), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                run_eval.main(["--stage", "review", "--split", "eval", "--limit", "3", "--tag", "review-eval",
+                               "--resume"])
+            retrieval_run.assert_not_called()
+            review_run.assert_called_once_with(paths["eval"] / "fixed.jsonl", paths["results"] / "review_runs",
+                                               "review-eval", limit=3, split="eval", resume=True)
+            summary.assert_called_once_with(report)
+            self.assertIn("review complete 3/3", out.getvalue())
+            self.assertIn(str(paths["results"] / "review_runs" / "review-eval" / "report.json"), out.getvalue())
+            self.assertFalse((paths["results"] / "metrics").exists())  # the runner owns its review artifacts
+
+    def test_all_defaults_and_explicit_stage_run_retrieval_before_review(self) -> None:
+        run_eval = load_script()
+        for argv, split, resume in (([], "all", False),
+                                    (["--stage", "all", "--split", "dev", "--resume"], "dev", True)):
+            with self.subTest(argv=argv), tempfile.TemporaryDirectory() as tmp:
+                paths = {"eval": Path(tmp) / "eval", "results": Path(tmp) / "results"}
+                stages = []
+                with patch.object(run_eval, "get_path", side_effect=lambda key: paths[key]), \
+                        patch.object(run_eval, "get_config", return_value={
+                            "eval": {"annotation": {"eval_set_file": "eval_set.jsonl"}}}), \
+                        patch.object(run_eval, "date") as fake_date, \
+                        patch.object(run_eval, "run_retrieval_eval",
+                                     side_effect=lambda *args: stages.append("retrieval") or {}) as retrieval_run, \
+                        patch.object(run_eval, "run_review_eval", side_effect=lambda *args, **kwargs:
+                                     stages.append("review") or {"status": "complete"}) as review_run, \
+                        patch.object(run_eval, "format_summary", return_value="retrieval summary"), \
+                        patch.object(run_eval, "format_review_summary", return_value="review summary"), \
+                        patch.object(run_eval.logging, "basicConfig"), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    fake_date.today.return_value = datetime.date(2026, 10, 30)
+                    run_eval.main(argv)
+                self.assertEqual(stages, ["retrieval", "review"])
+                retrieval_run.assert_called_once_with(paths["eval"] / "eval_set.jsonl",
+                                                     paths["results"] / "retrieval_results", "2026-10-30",
+                                                     list(run_eval.CONFIGS), None)
+                review_run.assert_called_once_with(paths["eval"] / "eval_set.jsonl",
+                                                   paths["results"] / "review_runs", "2026-10-30",
+                                                   limit=None, split=split, resume=resume)
+                self.assertLess(out.getvalue().index("retrieval summary"), out.getvalue().index("review summary"))
+
+    def test_incomplete_review_reports_summary_on_stderr_and_exits_one(self) -> None:
+        run_eval = load_script()
+        for status, completed in (("partial", 1), ("failed", 0)):
+            report = {"status": status, "completed_queries": completed, "selected_queries": 3,
+                      "error": "review service unavailable"}
+            with self.subTest(status=status), \
+                    patch.object(run_eval, "get_config", return_value={
+                        "eval": {"annotation": {"eval_set_file": "eval_set.jsonl"}}}), \
+                    patch.object(run_eval, "get_path", side_effect=lambda key: Path("/unused") / key), \
+                    patch.object(run_eval, "run_retrieval_eval") as retrieval_run, \
+                    patch.object(run_eval, "run_review_eval", return_value=report), \
+                    patch.object(run_eval, "format_review_summary", return_value=f"{status}: {completed}/3"), \
+                    patch.object(run_eval.logging, "basicConfig"), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as caught:
+                    run_eval.main(["--stage", "review", "--tag", "failed-run"])
+                self.assertEqual(caught.exception.code, 1)
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn(f"{status}: {completed}/3", err.getvalue())
+                self.assertIn("review service unavailable", err.getvalue())
+                self.assertIn("review_runs/failed-run/report.json", err.getvalue())
+                retrieval_run.assert_not_called()
+
+    def test_refused_resume_prints_error_without_claiming_a_report_exists(self) -> None:
+        run_eval = load_script()
+        with patch.object(run_eval, "get_config", return_value={
+                "eval": {"annotation": {"eval_set_file": "eval_set.jsonl"}}}), \
+                patch.object(run_eval, "get_path", side_effect=lambda key: Path("/unused") / key), \
+                patch.object(run_eval, "run_review_eval", side_effect=ValueError("resume fingerprint differs")), \
+                patch.object(run_eval, "format_review_summary") as summary, \
+                patch.object(run_eval.logging, "basicConfig"), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                run_eval.main(["--stage", "review", "--tag", "resume-run", "--resume"])
+            self.assertEqual(caught.exception.code, 1)
+            self.assertIn("resume fingerprint differs", err.getvalue())
+            self.assertNotIn("report ->", err.getvalue())
+            summary.assert_not_called()
+
+    def test_bad_flags_stop_before_any_stage(self) -> None:
+        run_eval = load_script()
+        for argv in (["--stage", "retrieval", "--ablation", "rerank_off"], ["--ablation", "loop"],
+                     ["--stage", "retrieval", "--ablation", "rerank", "--configs", "hybrid_rerank"],
+                     ["--stage", "retrieval", "--dry-run"], ["--stage", "review", "--ablation", "chunking"],
+                     ["--stage", "retrieval", "--limit", "0"], ["--stage", "retrieval", "--configs", "colbert"],
+                     ["--stage", "retrieval", "--split", "all"], ["--stage", "retrieval", "--resume"],
+                     ["--stage", "review", "--configs", "bm25"], ["--stage", "review", "--split", "test"]):
+            with self.subTest(argv=argv), patch.object(run_eval, "run_retrieval_eval") as retrieval_run, \
+                    patch.object(run_eval, "run_review_eval") as review_run, \
+                    patch.object(run_eval, "run_ablation") as ablation_run, \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as caught:
                     run_eval.main(argv)
                 self.assertEqual(caught.exception.code, 2)
-                fake_run.assert_not_called()
+                retrieval_run.assert_not_called()
+                review_run.assert_not_called()
+                ablation_run.assert_not_called()
+
+
+class AblationScriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.run_eval = load_script()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.paths = {"eval": Path(temporary.name) / "eval", "results": Path(temporary.name) / "results"}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(self.run_eval, "get_config", return_value={
+            "eval": {"annotation": {"eval_set_file": "eval_set.jsonl"}}}))
+        stack.enter_context(patch.object(self.run_eval, "get_path", side_effect=lambda key: self.paths[key]))
+        stack.enter_context(patch.object(self.run_eval.logging, "basicConfig"))
+        self.ablation = stack.enter_context(patch.object(self.run_eval, "run_ablation"))
+        self.retrieval = stack.enter_context(patch.object(self.run_eval, "run_retrieval_eval"))
+        self.review = stack.enter_context(patch.object(self.run_eval, "run_review_eval"))
+        self.summary = stack.enter_context(patch.object(self.run_eval, "format_ablation_summary",
+                                                        side_effect=lambda r: f"ablation {r['status']}"))
+
+    def test_retrieval_ablation_forwards_selection_resume_and_publishes_each_status(self) -> None:
+        out_path = self.paths["results"] / "metrics" / "ablation_query_views_diversity_comparison.json"
+        for status in ("complete", "partial", "failed"):
+            with self.subTest(status=status):
+                report = {"stage": "ablation", "status": status, "factors": ["query_views", "diversity"],
+                          "rows": {"baseline": {"status": "complete"}}}
+                self.ablation.reset_mock(return_value=True)
+                self.ablation.return_value = report
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text('{"previous": true}\n', encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()) as out, \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    argv = ["--stage", "retrieval", "--ablation", "query_views", "diversity", "--split", "dev",
+                            "--limit", "3", "--tag", "comparison", "--resume"]
+                    if status == "complete":
+                        self.run_eval.main(argv)
+                    else:
+                        with self.assertRaises(SystemExit) as caught:
+                            self.run_eval.main(argv)
+                        self.assertEqual(caught.exception.code, 1)
+                self.ablation.assert_called_once_with(
+                    self.paths["eval"] / "eval_set.jsonl", self.paths["results"] / "ablation_runs", "comparison",
+                    factors=["query_views", "diversity"], stage="retrieval", split="dev", limit=3,
+                    resume=True, dry_run=False)
+                self.assertEqual(json.loads(out_path.read_text(encoding="utf-8")), report)
+                self.assertEqual(list(out_path.parent.iterdir()), [out_path])  # no temporary output left
+                output = out.getvalue() if status == "complete" else err.getvalue()
+                self.assertIn(f"ablation {status}", output)
+                self.assertIn(str(out_path), output)
+        self.retrieval.assert_not_called()
+        self.review.assert_not_called()
+
+    def test_dry_run_only_prints_the_plan(self) -> None:
+        self.ablation.return_value = {"stage": "ablation", "status": "planned",
+                                      "factors": ["loop", "hyde"], "rows": {}}
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.run_eval.main(["--stage", "review", "--ablation", "loop", "hyde", "--tag", "plan", "--dry-run"])
+        self.ablation.assert_called_once_with(
+            self.paths["eval"] / "eval_set.jsonl", self.paths["results"] / "ablation_runs", "plan",
+            factors=["loop", "hyde"], stage="review", split="all", limit=None, resume=False, dry_run=True)
+        self.assertIn("ablation planned", out.getvalue())
+        self.assertNotIn("report ->", out.getvalue())
+        self.assertFalse(self.paths["results"].exists())
+        self.retrieval.assert_not_called()
+        self.review.assert_not_called()
+
+    def test_factor_stage_preflight_failure_is_reported_without_an_output_claim(self) -> None:
+        self.ablation.side_effect = ValueError("loop supports review only; cannot use stage=all")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                self.run_eval.main(["--stage", "all", "--ablation", "loop", "--tag", "bad-plan"])
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("loop supports review only", err.getvalue())
+        self.assertNotIn("report ->", err.getvalue())
+        self.assertFalse(self.paths["results"].exists())
+        self.summary.assert_not_called()
+        self.retrieval.assert_not_called()
+        self.review.assert_not_called()
+
+    def test_failed_atomic_publish_retains_the_previous_report(self) -> None:
+        self.ablation.return_value = {"stage": "ablation", "status": "complete", "factors": ["rerank"], "rows": {}}
+        out_path = self.paths["results"] / "metrics" / "ablation_rerank_saved.json"
+        out_path.parent.mkdir(parents=True)
+        previous = '{"previous": true}\n'
+        out_path.write_text(previous, encoding="utf-8")
+        with patch.object(self.run_eval.os, "replace", side_effect=OSError("cannot publish report")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                self.run_eval.main(["--stage", "retrieval", "--ablation", "rerank", "--tag", "saved"])
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("cannot publish report", err.getvalue())
+        self.assertEqual(out_path.read_text(encoding="utf-8"), previous)
+        self.assertEqual(list(out_path.parent.iterdir()), [out_path])
 
 
 if __name__ == "__main__":

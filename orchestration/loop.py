@@ -24,7 +24,7 @@ from .errors import OrchestrationError
 from .query_understanding import understand
 from .review import batch_review
 from .rewrite import rewrite
-from .types import Criterion, FinalResult, QueryPlan, ReviewRecord, SubQuery
+from .types import Criterion, FinalResult, QueryPlan, ReviewRecord, SubQuery, passing_order_key
 
 
 def _normalise_input(input_text: str) -> str:
@@ -87,6 +87,8 @@ def _result_from_dict(raw: object) -> FinalResult:
         latency_by_stage={
             str(key): int(value) for key, value in raw.get("latency_by_stage", {}).items()
         },
+        reviews=[ReviewRecord(**item) for item in raw.get("reviews", [])],
+        retrieval_ranks={str(key): int(value) for key, value in raw.get("retrieval_ranks", {}).items()},
     )
 
 
@@ -198,6 +200,7 @@ async def _run_round(
     input_text: str,
     round_no: int,
     seen_papers: set[str],
+    best_ranks: dict[str, int],
     cfg: dict[str, Any],
 ) -> tuple[list[ReviewRecord], int, int]:
     review_cfg = cfg["orchestration"].get("review", {})
@@ -222,6 +225,11 @@ async def _run_round(
                 f"retrieval failed for query {sub_query.query!r}: {exc}"
             ) from exc
         retrieval_intervals.append((started, time.perf_counter()))
+        # Best position over every sub-query of the run, also for papers already seen (D47);
+        # no await in between, so concurrent producers cannot interleave this update.
+        for hit in result.hits:
+            if hit.rank < best_ranks.get(hit.paper_id, hit.rank + 1):
+                best_ranks[hit.paper_id] = hit.rank
         candidates = await asyncio.to_thread(_candidates_from_result, result, database_path)
         for candidate in candidates:
             async with seen_lock:
@@ -335,6 +343,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
     current_queries = list(plan.sub_queries)
     existing_queries = [query.query for query in current_queries]
     seen_papers: set[str] = set()
+    best_ranks: dict[str, int] = {}
     all_reviews: list[ReviewRecord] = []
     covered: set[str] = set()
     retrieval_ms = 0
@@ -351,6 +360,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             input_text,
             round_no,
             seen_papers,
+            best_ranks,
             cfg,
         )
         retrieval_ms += round_retrieval_ms
@@ -383,9 +393,14 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             break
         existing_queries.extend(query.query for query in current_queries)
 
+    retrieval_ranks = {
+        paper_id: best_ranks[paper_id]
+        for paper_id in sorted({record.paper_id for record in all_reviews})
+        if paper_id in best_ranks
+    }
     passed_papers = sorted(
         (record for record in all_reviews if record.verdict == "pass"),
-        key=lambda record: (-record.score, record.paper_id),
+        key=lambda record: passing_order_key(record.paper_id, record.score, retrieval_ranks),
     )
     uncovered = [criterion for criterion in coverage_criteria if criterion not in covered]
     coverage_report: dict[str, object] = {
@@ -407,6 +422,8 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
         query_plan=plan,
         papers=passed_papers,
         coverage_report=coverage_report,
+        reviews=all_reviews,
+        retrieval_ranks=retrieval_ranks,
         latency_by_stage={
             "understanding_ms": understanding_ms,
             "hyde_ms": hyde_ms,

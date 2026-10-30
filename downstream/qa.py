@@ -10,7 +10,7 @@ from typing import Any
 from config import get_config
 from llm.client import get_client
 from orchestration import run_query
-from orchestration.types import FinalResult
+from orchestration.types import FinalResult, passing_order_key
 from retrieval.lookup import get_lookup_store
 
 from .prompts import ANSWER_SCHEMA, PROMPT_VERSION, build_answer_prompt
@@ -42,7 +42,8 @@ def _sources(search: FinalResult, cfg: dict[str, Any]) -> list[EvidenceSource]:
     char_limit = _limit(settings, "max_chars_per_passage", 2400)
     selected: list[tuple[str, str]] = []
     seen_papers: set[str] = set()
-    for paper in sorted(search.papers, key=lambda p: (-p.score, p.paper_id)):
+    ranks = search.retrieval_ranks
+    for paper in sorted(search.papers, key=lambda p: passing_order_key(p.paper_id, p.score, ranks)):
         if paper.verdict != "pass" or paper.paper_id in seen_papers:
             continue
         seen_papers.add(paper.paper_id)
