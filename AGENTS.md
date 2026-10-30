@@ -35,7 +35,7 @@ Read before changing code:
 | `scripts/` | Thin CLI wrappers around package functions |
 | `config.py` / `config.yaml` | The only config entry point / all tunables and ablation switches |
 | `tests/` | Offline `unittest` tests |
-| `data/` | Data and indices — gitignored, shared via Dropbox |
+| `data/` | Data and indices — shared via Dropbox; only the fixed `eval/eval_set.jsonl` dataset is versioned |
 
 Offline: `scripts/download_papers.py` → `scripts/build_kb.py` (`passages.jsonl`, `sections.jsonl`, `papers.sqlite`)
 → `scripts/build_indexes.py` (`lookup.sqlite`, BM25, FAISS).
@@ -48,7 +48,10 @@ Online: `retrieval.pipeline.retrieve()` → `orchestration.run_query()` → `dow
   `./run_docker.sh build` once, then `./run_docker.sh python <script>`.
 - Local venv: `pip install -r requirements.txt`. Pyserini needs JDK 21 and Python ≥ 3.12; without it set
   `retrieval.sparse.backend: rankbm25` in `config.yaml`.
-- Secrets live in `.env` (copy from `.env.example`). Never commit `.env`, `data/`, `.cache/`, or model weights.
+- Secrets live in `.env` (copy from `.env.example`). Never commit `.env`, `.cache/`, or model weights.
+  Data and indices stay out of git, except the reviewed `data/eval/eval_set.jsonl` dataset and directory
+  documentation/placeholders. Annotation intermediates, raw data, indices and experiment results remain
+  gitignored and are shared via Dropbox. See `data/README.md` for the fixed dataset's provenance and hash.
 
 ## Commands
 

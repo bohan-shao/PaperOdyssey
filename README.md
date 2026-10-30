@@ -69,7 +69,7 @@ after changing model/index configuration so loaded components are replaced consi
 | `ui/` | Streamlit interface (Q2) |
 | `scripts/` | One-click scripts: download/build index/run evaluation/sanity checks |
 | `docs/` | Architecture, schema, conventions, evaluation plan, decision records |
-| `data/` | Data and indices (gitignored, distributed via Dropbox) |
+| `data/` | Data and indices (Dropbox); the fixed `eval/eval_set.jsonl` dataset is versioned |
 
 ## Quick Start
 
@@ -141,7 +141,9 @@ Coding agents (Codex, Claude Code) read [AGENTS.md](AGENTS.md); `CLAUDE.md` impo
 - [ ] PR passed review
 - [ ] Q3/Q5 innovation: ablation switch exists with an explicit default
 
-**Weekly meetings**: sync on progress and blockers. **Data distribution**: `data/` is not committed; shared via Dropbox.
+**Weekly meetings**: sync on progress and blockers. **Data distribution**: data, indices and results are
+shared via Dropbox. The reviewed `data/eval/eval_set.jsonl` is versioned so evaluations use the same
+questions; its provenance and hash are in `data/README.md`.
 
 ## Key Design Decisions Summary
 
