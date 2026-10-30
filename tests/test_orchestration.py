@@ -236,6 +236,28 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(result.coverage_report["papers_reviewed"], len(result.reviews))
         self.assertEqual(result.coverage_report["papers_passed"], len(result.papers))
 
+    def test_equal_scores_follow_the_best_retrieval_rank_over_all_sub_queries(self) -> None:
+        plan = QueryPlan("request", [SubQuery("q1"), SubQuery("q2")], [Criterion("aspect")])
+
+        def fake_retrieve(query: str, filters=None) -> RetrieveResult:
+            # P9 is a weak q1 hit but q2's top hit; by paper ID alone P1 would come first.
+            hits = [hit("P2"), hit("P1", rank=2), hit("P9", rank=3)] if query == "q1" else [hit("P9", suffix="2")]
+            return RetrieveResult(hits, len(hits))
+
+        scores = {"P1": 5, "P2": 4, "P9": 5}
+        result = self._run_with_patches(
+            make_config(),
+            understand=lambda text: plan,
+            retrieve=fake_retrieve,
+            batch_review=lambda candidates, criteria, text, round_no: [
+                ReviewRecord(candidate["paper_id"], "pass", scores[candidate["paper_id"]],
+                             covered=["aspect"], round=round_no)
+                for candidate in candidates
+            ],
+        )
+        self.assertEqual(result.retrieval_ranks, {"P1": 2, "P2": 1, "P9": 1})
+        self.assertEqual([record.paper_id for record in result.papers], ["P9", "P1", "P2"])
+
     def test_review_trace_preserves_rounds_and_cache_roundtrip(self) -> None:
         from orchestration import loop
 
@@ -270,6 +292,7 @@ class LoopTests(unittest.TestCase):
             self.assertIsNotNone(restored)
             self.assertEqual(restored.reviews, result.reviews)
             self.assertEqual(restored.papers, result.papers)
+            self.assertEqual(restored.retrieval_ranks, {"P1": 1, "P2": 1})
             self.assertEqual(restored.query_id, "restored-id")
             self.assertTrue(restored.coverage_report["cache_hit"])
             self.assertEqual(restored.latency_by_stage, result.latency_by_stage)

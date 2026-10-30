@@ -23,6 +23,7 @@ from config import PROJECT_ROOT, get_config, get_path
 from llm import client as llm_client
 from llm.client import get_client
 from orchestration import run_query
+from orchestration.types import passing_order_key
 from .latency import config_overrides, environment, summarize
 from .retrieval_eval import index_manifests, load_eval_set
 from .retrieval_metrics import compute_retrieval_metrics
@@ -113,8 +114,12 @@ def _validate_result(question: dict, result: dict) -> None:
     ids = [r["paper_id"] for r in reviews]
     if len(ids) != len(set(ids)) or any(r["verdict"] not in ("pass", "reject") for r in reviews):
         raise ValueError("duplicate paper or invalid review verdict")
+    ranks = result.get("retrieval_ranks")
+    if (not isinstance(ranks, dict) or set(ranks) != set(ids)
+            or any(type(rank) is not int or rank < 1 for rank in ranks.values())):
+        raise ValueError("missing or invalid retrieval ranks for the reviewed papers")
     expected = sorted((r for r in reviews if r["verdict"] == "pass"),
-                      key=lambda r: (-r["score"], r["paper_id"]))
+                      key=lambda r: passing_order_key(r["paper_id"], r["score"], ranks))
     if papers != expected or coverage["papers_reviewed"] != len(reviews) or coverage["papers_passed"] != len(papers):
         raise ValueError("incomplete review trace or inconsistent passing-paper ranking")
     if coverage.get("cache_hit"):

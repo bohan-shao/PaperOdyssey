@@ -84,7 +84,7 @@ def check_schema_roundtrips() -> None:
     search_result = ot.FinalResult(
         query_id="Q1", input_text="q", query_plan=ot.QueryPlan(input_text="q"),
         papers=[passed], coverage_report={"total_aspects": 1, "papers_reviewed": 2},
-        reviews=[rejected, passed],
+        reviews=[rejected, passed], retrieval_ranks={"P1": 3, "P2": 1},
     )
     _roundtrip("FinalResult", ot, lambda c: search_result)
     # Check the actual cache decoder, including typed rejected records and their rounds.

@@ -25,6 +25,7 @@ def attempt(qid: str = "Q1", status: str = "complete") -> dict:
     if status == "complete":
         row["result"] = {
             "query_id": qid, "input_text": q["input_text"], "reviews": [record], "papers": [record],
+            "retrieval_ranks": {"P1": 1},
             "coverage_report": {"total_aspects": 1, "covered_aspects": 1, "rounds": 1,
                                 "papers_reviewed": 1, "papers_passed": 1,
                                 "termination_reason": "coverage_met", "cache_hit": False},

@@ -24,8 +24,9 @@ input_text
 ### types.py
 - `QueryPlan` (SCHEMA.md §4): input_text / sub_queries[{query, keywords, filters}] / criteria[{criterion, source}]
 - `ReviewRecord` (§5): paper_id / verdict / score 1–5 / reasons / covered[] / missing[] / round / evidence
-- `FinalResult` (§6): query_id / input_text / query_plan / papers[] / coverage_report / latency_by_stage / reviews[]
-  `papers` is the passing subset ranked by descending score then paper ID. `reviews` retains all
+- `FinalResult` (§6): query_id / input_text / query_plan / papers[] / coverage_report / latency_by_stage / reviews[] / retrieval_ranks
+  `papers` is the passing subset ranked by descending score, then the paper's best retrieval rank
+  over all sub-queries of the run (`retrieval_ranks`), then paper ID (`passing_order_key`, D47). `reviews` retains all
   pass/reject records across rounds, including their evidence and round number; within-round
   order is not a relevance ranking. Fresh results have one record per reviewed paper.
 

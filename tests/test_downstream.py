@@ -7,7 +7,7 @@ import json
 import tempfile
 import unittest
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -100,6 +100,18 @@ class DownstreamTests(unittest.TestCase):
         self.assertEqual(result.cited_source_numbers, [1, 2, 3])
         self.assertTrue(all(len(s.text) == 12 for s in result.sources))
         self.assertEqual(self.client.chat_json.call_args.kwargs["max_tokens"], 300)
+
+    def test_equal_scores_use_the_search_retrieval_ranks(self):
+        """With max_papers=1, the better-ranked paper wins a tie even though its ID sorts later."""
+        self.cfg["downstream"].update(max_papers=1)
+        docs = [passage("2401.00001"), passage("2409.00002")]
+        self.write(docs)
+        records = [ReviewRecord(d["paper_id"], "pass", 5, evidence={"top_passages": [d["passage_id"]]}) for d in docs]
+        search = replace(search_result(records), retrieval_ranks={"2401.00001": 3, "2409.00002": 1})
+        self.search_call.return_value = search
+        self.client.chat_json.return_value = {"status": "answered", "answer": "It uses low-rank updates [1]."}
+        result = run("Explain these papers")
+        self.assertEqual([s.paper_id for s in result.sources], ["2409.00002"])
 
     def test_empty_search_skips_model_and_lookup_store(self):
         self.search_call.return_value = search_result([])

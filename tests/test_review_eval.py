@@ -8,13 +8,13 @@ import math
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from eval import review_eval
-from orchestration.types import FinalResult, QueryPlan, ReviewRecord
+from orchestration.types import FinalResult, QueryPlan, ReviewRecord, passing_order_key
 
 
 QUESTIONS = [
@@ -52,10 +52,13 @@ def result_for(question: dict) -> FinalResult:
         "Q3": (3, 0, "max_rounds"), "Q4": (1, 2, "coverage_met"),
     }[question["query_id"]]
     reviews = traces[question["query_id"]]
-    papers = sorted((r for r in reviews if r.verdict == "pass"), key=lambda r: (-r.score, r.paper_id))
+    ranks = {r.paper_id: rank for rank, r in enumerate(reviews, 1)}
+    papers = sorted((r for r in reviews if r.verdict == "pass"),
+                    key=lambda r: passing_order_key(r.paper_id, r.score, ranks))
     return FinalResult(
         query_id=question["query_id"], input_text=question["input_text"],
         query_plan=QueryPlan(question["input_text"]), papers=papers, reviews=reviews,
+        retrieval_ranks=ranks,
         coverage_report={"total_aspects": 2, "covered_aspects": covered, "rounds": rounds,
                          "papers_reviewed": len(reviews), "papers_passed": len(papers),
                          "termination_reason": reason, "cache_hit": False},
@@ -242,6 +245,7 @@ class ReviewEvalTest(unittest.TestCase):
             "cached": lambda r: replace(r, coverage_report={**r.coverage_report, "cache_hit": True}),
             "duplicate": lambda r: replace(r, reviews=[*r.reviews, r.reviews[0]]),
             "ranking": lambda r: replace(r, papers=list(reversed(r.papers))),
+            "no_ranks": lambda r: replace(r, retrieval_ranks={}),
             "round": lambda r: replace(r, reviews=[replace(r.reviews[0], round=9), *r.reviews[1:]]),
         }
         for name, mutate in mutations.items():
@@ -318,6 +322,36 @@ class ReviewEvalTest(unittest.TestCase):
         self.assertEqual(report["splits"]["eval"]["n_queries"], 0)
         self.assertEqual(report["splits"]["dev"]["n_queries"], 1)
         self.assertEqual(report["selected_queries"], 1)
+
+
+class PassingOrderValidationTest(unittest.TestCase):
+    """Equal review scores keep the retrieval order (D47), not the paper-ID order."""
+
+    question = {"query_id": "Q1", "input_text": "Find a source."}
+
+    def result(self, order: list[str]) -> dict:
+        reviews = [ReviewRecord("1904.01172", "pass", 5), ReviewRecord("1910.11473", "pass", 5),
+                   ReviewRecord("1803.05457", "reject", 2)]
+        by_id = {r.paper_id: r for r in reviews}
+        return asdict(FinalResult(
+            "Q1", "Find a source.", QueryPlan("Find a source."), [by_id[p] for p in order],
+            {"total_aspects": 1, "covered_aspects": 1, "rounds": 1, "papers_reviewed": 3,
+             "papers_passed": 2, "termination_reason": "coverage_met", "cache_hit": False},
+            reviews=reviews, retrieval_ranks={"1904.01172": 4, "1910.11473": 1, "1803.05457": 2},
+        ))
+
+    def test_tie_follows_the_best_retrieval_rank(self) -> None:
+        review_eval._validate_result(self.question, self.result(["1910.11473", "1904.01172"]))
+
+    def test_paper_id_tie_order_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "inconsistent passing-paper ranking"):
+            review_eval._validate_result(self.question, self.result(["1904.01172", "1910.11473"]))
+
+    def test_ranks_must_cover_every_reviewed_paper(self) -> None:
+        result = self.result(["1910.11473", "1904.01172"])
+        del result["retrieval_ranks"]["1803.05457"]
+        with self.assertRaisesRegex(ValueError, "retrieval ranks"):
+            review_eval._validate_result(self.question, result)
 
 
 if __name__ == "__main__":

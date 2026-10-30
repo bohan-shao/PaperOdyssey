@@ -17,7 +17,8 @@ print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
 
 ## Evidence and answers
 
-- Select passing papers by descending review score, ties by paper ID. Defaults in
+- Select passing papers in Paper Search order (`passing_order_key`, D47): descending review score,
+  ties by the paper's best retrieval rank, then paper ID. Defaults in
   `config.yaml`: 5 papers, 2 distinct passage IDs per paper, 2,400 characters per excerpt,
   1,024 output tokens. The stored child passages are used even with parent retrieval enabled;
   this first version does not pass complete parent sections to the answer model.

@@ -142,7 +142,8 @@ for every returned candidate. Its report therefore separates source papers passe
 and never reviewed; source acceptance uses all selected gold papers as the denominator,
 while the conditional pass rate uses only reviewed gold papers. Other candidates remain
 unjudged. Known-source Hit/R/MRR/NDCG use the actual final passing-paper order (score descending,
-then paper ID), and dev/eval are always separate. These are source-finding metrics, not overall
+then best retrieval rank, then paper ID; D47), and dev/eval are always separate. A result whose
+`retrieval_ranks` do not cover every reviewed paper, or whose `papers` order differs, is rejected. These are source-finding metrics, not overall
 reviewer accuracy, precision or F1. `review_accuracy(records, human_labels)` supports those
 classification metrics only against explicit per-query human labels; missing labels are never
 inferred as negatives. Candidate-level positive and negative annotations are still needed.

@@ -112,6 +112,7 @@ class AblationIntegrationTest(unittest.TestCase):
                  "papers_reviewed": len(reviews), "papers_passed": len(papers),
                  "termination_reason": "coverage_met" if looping else "loop_disabled", "cache_hit": False},
                 {"review_ms": 4, "total_ms": 9}, reviews=reviews,
+                retrieval_ranks={r.paper_id: rank for rank, r in enumerate(reviews, 1)},
             )
 
         with ExitStack() as stack:
