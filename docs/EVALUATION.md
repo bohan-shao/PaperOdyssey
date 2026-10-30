@@ -79,8 +79,8 @@ questions and must not be reported as 1,027 held-out eval questions.
 
 | Innovation | Compared against | Switch | Reporting Points |
 |---|---|---|---|
-| Semantic chunking | Fixed-chunking baseline | `kb.chunking.mode=section_fixed\|semantic` | Rebuild the index per configuration, then rerun the same batch of queries |
-| Parent-document retrieval | Small chunks returned directly | `retrieval.parent_doc.enabled` | Retrieval metrics + downstream generation effect |
+| Semantic chunking | Fixed-chunking baseline | `kb.chunk.mode=section_fixed\|semantic` | Rebuild the index per configuration, then rerun the same batch of queries |
+| Parent-document retrieval | Small chunks returned directly | `retrieval.parent_doc.enabled` | Review outcomes; text expansion occurs after ranking, so direct ranking metrics do not measure its effect |
 | HyDE | No expansion | `orchestration.hyde.enabled` | Report the latency/cost increase as well |
 | Metadata filtering | No filtering | `retrieval.filters.enabled` | Time-window/category scenarios |
 | Cross-encoder rerank | No reranking | `retrieval.rerank.enabled` | See §2 matrix |
@@ -89,6 +89,44 @@ questions and must not be reported as 1,027 held-out eval questions.
 | Sparse field weighting | Equal FTS5 field weights | `retrieval.sparse.field_weighting.enabled` | SQLite only; hold analyzer/backend/corpus fixed |
 
 Each ablation must include: query instances that **failed before the improvement → succeeded after** (explicitly required by the assignment).
+
+### Automatic matrix runner (D46)
+
+`scripts/run_eval.py --stage retrieval --ablation query_views diversity --split eval --tag views-diversity`
+runs four rows: `baseline` (both selected factors off), `a` (first on), `b` (second on), and
+`ab` (both on). One factor produces only `baseline` and `a`. All other configured settings,
+the selected questions, indexes and seed stay fixed. Split filtering precedes `--limit`.
+Comparisons are baseline→A, baseline→B, A→AB and B→AB, so each edge changes one switch.
+The descriptive interaction is AB−A−B+baseline, using the same four-way completed subset.
+
+Supported factors are `rerank`, `query_views`, `diversity`, and `field_weighting` for retrieval,
+review or both; `parent_doc`, `hyde` and `loop` require `--stage review`. Field weighting needs
+the enabled SQLite backend with three positive, nonuniform weights. Loop experiments need
+at least two allowed rounds and one rewrite query. Semantic chunking requires paired rebuilt
+corpus/lookup/sparse/dense indexes, and filtering requires constrained query scenarios; neither
+is automated by this runner. Jev evaluation is also excluded. Unsupported combinations fail
+before model loading or API calls.
+
+Add `--dry-run` to inspect the plan without loading models, inspecting index files, writing
+artifacts or calling APIs. Use a distinct `--tag` per experiment; repeat the same command with
+`--resume` after interruption. Every cell has isolated checkpoints. Resume checks the complete
+matrix's saved manifests and attempts before any new query; changed data, selection, effective
+settings, code, dependency versions or index/corpus metadata refuse reuse. Completed queries
+are never called again. Failed attempts' observed usage remains in the cost total.
+
+Reports separate dev/eval and compare only queries completed in both cells. Missing or failed
+queries are unpaired, never scored as misses. Hit@1/3/5/10, MRR@10 and descriptive wall times
+use identical paired denominators; review additionally reports source acceptance/recall,
+model-reported coverage and rounds. Every metric records its denominator. Fixed/broken cases
+mean Hit@10 changes for retrieval and source acceptance changes for review; review reports
+top-10 changes separately. Full changed-query IDs and up to five examples are retained.
+
+The local seed is reset per cell; remote LLM sampling is not seeded. Enabled features are not
+necessarily exercised: HyDE can fall back, parent text can remain unchanged, and the loop can
+stop after one round. Actual round counts are recorded, but this runner does not certify HyDE
+or parent expansion per query. Timings include flagged component cold starts and may reuse OS
+caches. These are observed source-finding differences, not proof of deterministic gains,
+human relevance, or improved QA generation.
 
 ## 4. Review Module Metrics (framework level)
 
@@ -168,13 +206,21 @@ Run on every evaluation query (or a representative subset):
 Ablation matrix: baseline / +A / +B / +A+B (the assignment requires: add only A, add only B, add both, and report each gain).
 Metrics: the ROUGE/BERTScore/RAGAS trio + coverage.
 
+The D46 runner supplies this matrix for Paper Search outcomes (for example `--stage review
+--ablation loop hyde`). It does not yet measure the downstream QA metrics above, so its
+coverage/source scores alone do not complete the Q5 generation evaluation.
+
 ## 9. Running and Reproduction
 
 - Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`:
   retrieval (§2), review (§4), or both in sequence. `all` includes paid LLM calls; use an explicit
-  stage for a bounded run. `--ablation` and generation/RAGAS runners remain unimplemented.
+  stage for a bounded run. `--ablation FACTOR [FACTOR]` requires an explicit stage and follows
+  the controlled protocol in §3. Generation/RAGAS runners remain unimplemented.
 - Retrieval writes `paths.results/metrics/retrieval_<tag>.json`; review writes
   `paths.results/review_runs/<tag>/report.json` with its manifest and per-attempt traces.
+- Ablations write `paths.results/ablation_runs/<tag>/report.json`, a selected-query snapshot,
+  manifest and isolated row/stage checkpoints (SCHEMA §12). The CLI atomically publishes a
+  copy at `paths.results/metrics/ablation_<factor_names_joined_underscore>_<tag>.json`.
 - Cite the exact report artifact and its dataset/config provenance in the course report.
   Results stay gitignored and are included in the shared deliverables.
 

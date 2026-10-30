@@ -5,7 +5,8 @@
 The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, the eval-set
 retrieval run (`retrieval_eval.py`, `scripts/run_eval.py --stage retrieval`), Paper Search review
 metrics and its resumable runner (`review_eval.py`, `--stage review`), IAA and annotation tooling
-are also implemented. These are evaluation tools; new empirical results require a real run.
+are also implemented. `ablation.py` runs controlled one- or two-factor comparisons on the same
+questions. These are evaluation tools; new empirical results require a real run.
 Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
 for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
 `eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
@@ -58,7 +59,8 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   §7 benchmark), the eval set's SHA-256, the index manifests, a config snapshot and dependency versions
 - A retrieval error stops the run instead of being scored as misses. `--limit N` runs only the first N questions and
   tags its files `<date>_first<N>` by default, so a quick check has a different tag from a full run.
-  `--stage all` runs this stage before Paper Search review; `--ablation` remains unsupported.
+  `--stage all` runs this stage before Paper Search review. Named factors use the separate
+  `--ablation` protocol below, rather than the four-channel retrieval matrix.
 - Tests: `tests/test_retrieval_eval.py` (fake `retrieve()`, hand-computed metrics, the CLI)
 - First run (2026-10-30, TC2 A40, 13 min for 1,027 questions × 4 rows): eval-split Hit@1 0.818 (bm25), 0.828
   (dense), 0.873 (hybrid_rrf), 0.919 (hybrid_rerank); Hit@10 0.958 / 0.974 / 0.984 / 0.991. Table, dev split and
@@ -111,8 +113,60 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   additional tokens unreported. No monetary cost estimate is produced.
 - `--stage all` (also the CLI default) runs the four retrieval configurations and then review.
   `--configs` affects retrieval only; `--split`/`--resume` affect review only. To resume review
-  without repeating retrieval, use `--stage review`. Named `--ablation` and generation/RAGAS
-  stages remain unimplemented; this runner does not claim those experiments are complete.
+  without repeating retrieval, use `--stage review`. Generation/RAGAS stages remain unimplemented;
+  this runner does not claim those experiments are complete.
+
+### ablation.py — Controlled one- or two-factor experiments
+- `run_ablation(eval_set_path, results_dir, tag, *, factors, stage, split="all", limit=None,
+  resume=False, dry_run=False)` evaluates one or two selected factors with all other settings fixed.
+  One factor produces `baseline` and `A`; two produce `baseline`, `A`, `B`, `AB`, where A and B
+  follow the argument order. **The baseline disables all selected factors**, even if the supplied
+  config enables them. A/B enable just that factor; AB enables both. This baseline is therefore
+  defined by the chosen experiment, not necessarily the normal production configuration.
+- Paired comparisons change exactly one factor: baseline→A, baseline→B, A→AB and B→AB (the
+  Hamming-distance-one edges). They use the same selected questions and fixed settings; a
+  baseline→AB change is not attributed to a single factor. Per-row metrics retain dev/eval
+  separation and comparisons include questions fixed or broken by the change.
+
+| Factor | Config setting | Supported stages |
+|---|---|---|
+| `rerank` | `retrieval.rerank.enabled` | retrieval, review, all |
+| `query_views` | `retrieval.query_processing.enabled` | retrieval, review, all |
+| `diversity` | `retrieval.diversity.enabled` | retrieval, review, all |
+| `field_weighting` | `retrieval.sparse.field_weighting.enabled` (SQLite backend required) | retrieval, review, all |
+| `parent_doc` | `retrieval.parent_doc.enabled` | review |
+| `hyde` | `orchestration.hyde.enabled` | review |
+| `loop` | `orchestration.loop.enabled` | review |
+
+- Supply an explicit `--stage` with `--ablation`; `all` is accepted only when every selected
+  factor supports both stages. Unsupported combinations fail before execution instead of silently
+  ignoring a switch. `--configs` cannot be combined with ablations. Canonical factor names are
+  used (for example `rerank`, not `rerank_off`).
+  ```bash
+  python scripts/run_eval.py --config config.yaml --stage retrieval --ablation rerank --split eval --tag rerank-eval
+  python scripts/run_eval.py --config config.yaml --stage retrieval --ablation query_views diversity --split eval --tag views-diversity
+  python scripts/run_eval.py --config config.yaml --stage review --ablation loop hyde --split dev --limit 3 --tag loop-hyde-smoke
+  ```
+  Add `--dry-run` to validate and print a plan without running queries or writing artifacts.
+  `--dry-run` is only available with `--ablation`. For a real run, retrieval needs built indexes
+  and models, and review also makes configured LLM calls. `--split` is applied before `--limit`
+  for either stage; a prefix limit is a smoke check, not a representative quality estimate.
+- Artifacts live under `data/results/ablation_runs/<tag>/`, including `report.json`. The CLI
+  also atomically writes `data/results/metrics/ablation_<factor_names_joined_underscore>_<tag>.json`
+  for complete, partial and failed runs. `planned` and `complete` exit successfully; incomplete
+  runs exit 1 and print their summary to stderr. Dry runs print only. Resume with the same
+  arguments and `--resume`; provenance checks reject changed data, selection, config or code.
+- Known-source retrieval metrics and review coverage have the same limitations as above:
+  positive source-paper labels do not make other candidates negatives, and self-reported
+  coverage is not answer quality. Comparing `loop` and `hyde` at review level does not produce
+  the downstream ROUGE/BERTScore/RAGAS measurements required for a QA experiment.
+- Enabled factors need not activate on every question: HyDE may fall back, parent text may
+  remain unchanged, and the loop can stop in one round. Actual rounds are reported; per-query
+  HyDE/parent expansion is not certified by this runner.
+- Semantic chunking is excluded because it needs a protocol selecting separately prebuilt
+  indexes for each chunking variant. Metadata filters are excluded because this dataset has
+  no structured filter scenarios. Jev evaluation is excluded; this runner supports the shared
+  `llm` review backend. Generation/RAG evaluation is separate work.
 
 ### annotation/ — Evaluation set (Q4)
 - Original documented target (D15): 1000 items, 3 independent annotators, majority vote,

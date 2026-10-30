@@ -263,3 +263,51 @@ Missing IDs are omitted; an empty selection does not open the store. Results ser
 Completed checkpoints are reused without running or timing the query again. The first newly
 executed query of each process is flagged as a cold start; it may still reuse OS/model caches.
 A prefix selected with `--limit` is a development smoke test, not an unbiased quality sample.
+
+## 12. Automatic ablation artifacts (D46)
+
+`eval.ablation.run_ablation(eval_set_path, results_dir, tag, *, factors, stage, split="all",
+limit=None, resume=False, dry_run=False) -> dict` plans or executes one or two factors. The
+CLI passes `paths.results/ablation_runs` as `results_dir`. These are evaluation dictionaries;
+online `RetrieveResult`, `FinalResult` and downstream dataclasses are unchanged.
+
+- `manifest.json`: `fingerprint`, `plan`, `code_sha256`, `indexes`, `input_files`, `runtime`,
+  `environment` and `created_at`. The fingerprint binds the dataset hash, selected query IDs,
+  split/limit, factor order, row overrides/effective redacted configuration, seed, code and
+  index/corpus metadata, Python and dependency versions. Large index contents are identified
+  by their manifests and file size/mtime metadata, not a new full-content hash.
+- `selected_eval.jsonl`: exact selected question records in execution order (split before
+  limit), reused by every cell. Resume verifies it against the source selection.
+- `rows/<baseline|a|b|ab>/<retrieval|review>/`: cell `manifest.json`, atomic sequential
+  `attempts/NNNNNN.json` and `report.json`. Review cells use §11. Retrieval attempts contain
+  the exact `question`, matrix-derived `fingerprint`, `status`, `started_at`, `cold_start`,
+  and elapsed `wall_ms` when available. Complete attempts add a §8 retrieval `record`,
+  `total_candidates` and `latency_ms`; failures add `error` with query ID and exception type.
+  Failed/running attempts can be retried; attempts after a completed query are invalid.
+  Sequence, question identity, result structure and finite nonnegative timings/usage are
+  checked for every saved cell before starting new queries.
+- Matrix `report.json`: `stage="ablation"`, `format_version=1`, `status` (`complete`,
+  `partial`, `failed`), plan fields, manifest `provenance`, selected/completed cell counts,
+  `error`, observed `usage`, `comparisons`, `interaction`, and `updated_at`. Dry-run returns
+  only a `planned` report and writes nothing. Rows record `enabled_factors`, `overrides`,
+  `effective_config`, and stage-keyed `results` with status, completed count, report path,
+  usage and normalized `per_query` observations. The CLI also atomically publishes the matrix
+  report at `metrics/ablation_<factor_names_joined_underscore>_<tag>.json`.
+
+Normalized observations contain `first_gold_rank` (positive integer or null), `source_success`
+(Hit@10 for retrieval; any accepted source for review), `wall_ms`, `cold_start`, and optional
+`source_recall`, `coverage_met`, `rounds`. Review usage sums `calls`, `prompt_tokens` and
+`completion_tokens` across all attempts, with derived `total_tokens`; retrieval uses zero.
+This is returned API usage, not an invoice, and may omit usage lost during transport/crashes.
+
+`comparisons[stage]` contains single-switch edges with `before`, `after` and `splits.dev/eval`.
+Each split has `n_selected`, `n_paired`, paired/unpaired IDs, and per-metric `{n, before,
+after, delta}`. Undefined means/deltas are null. It also stores fixed/broken/moved-up/down
+counts and IDs, up to five fixed/broken examples, and paired cold-start counts. Review adds
+separate `top10_fixed`/`top10_broken` counts, IDs and examples. Example fields are query ID,
+input text, gold paper IDs and before/after ranks.
+
+For two factors, `interaction[stage]` uses the same four-way completed subset per split.
+Each selected metric records `{n, baseline, A, B, AB, interaction}`, where interaction is
+AB−A−B+baseline. This is a descriptive contrast, not a statistical significance test.
+Incomplete queries never contribute a zero or an inferred negative label.

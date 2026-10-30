@@ -6,6 +6,7 @@ Submodules (active — the framework is decided):
                      (`scripts/run_eval.py --stage retrieval`)
 - review_metrics:    review verdict vs. human annotation (framework level)
 - review_eval:       resumable Paper Search runs with complete review traces (`--stage review`)
+- ablation:          one/two-factor baseline/A/B/AB runs and paired single-factor comparisons
 - latency:           retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7)
 - annotation/:       evaluation-set construction, mixed 2/3-annotator protocol and grouped IAA
 

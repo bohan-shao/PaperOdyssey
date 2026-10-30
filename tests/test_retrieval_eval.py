@@ -387,18 +387,115 @@ class RunEvalScriptTest(unittest.TestCase):
 
     def test_bad_flags_stop_before_any_stage(self) -> None:
         run_eval = load_script()
-        for argv in (["--stage", "retrieval", "--ablation", "rerank_off"], ["--stage", "all", "--ablation", "loop"],
+        for argv in (["--stage", "retrieval", "--ablation", "rerank_off"], ["--ablation", "loop"],
+                     ["--stage", "retrieval", "--ablation", "rerank", "--configs", "hybrid_rerank"],
+                     ["--stage", "retrieval", "--dry-run"], ["--stage", "review", "--ablation", "chunking"],
                      ["--stage", "retrieval", "--limit", "0"], ["--stage", "retrieval", "--configs", "colbert"],
                      ["--stage", "retrieval", "--split", "all"], ["--stage", "retrieval", "--resume"],
                      ["--stage", "review", "--configs", "bm25"], ["--stage", "review", "--split", "test"]):
             with self.subTest(argv=argv), patch.object(run_eval, "run_retrieval_eval") as retrieval_run, \
                     patch.object(run_eval, "run_review_eval") as review_run, \
+                    patch.object(run_eval, "run_ablation") as ablation_run, \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as caught:
                     run_eval.main(argv)
                 self.assertEqual(caught.exception.code, 2)
                 retrieval_run.assert_not_called()
                 review_run.assert_not_called()
+                ablation_run.assert_not_called()
+
+
+class AblationScriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.run_eval = load_script()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.paths = {"eval": Path(temporary.name) / "eval", "results": Path(temporary.name) / "results"}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(self.run_eval, "get_config", return_value={
+            "eval": {"annotation": {"eval_set_file": "eval_set.jsonl"}}}))
+        stack.enter_context(patch.object(self.run_eval, "get_path", side_effect=lambda key: self.paths[key]))
+        stack.enter_context(patch.object(self.run_eval.logging, "basicConfig"))
+        self.ablation = stack.enter_context(patch.object(self.run_eval, "run_ablation"))
+        self.retrieval = stack.enter_context(patch.object(self.run_eval, "run_retrieval_eval"))
+        self.review = stack.enter_context(patch.object(self.run_eval, "run_review_eval"))
+        self.summary = stack.enter_context(patch.object(self.run_eval, "format_ablation_summary",
+                                                        side_effect=lambda r: f"ablation {r['status']}"))
+
+    def test_retrieval_ablation_forwards_selection_resume_and_publishes_each_status(self) -> None:
+        out_path = self.paths["results"] / "metrics" / "ablation_query_views_diversity_comparison.json"
+        for status in ("complete", "partial", "failed"):
+            with self.subTest(status=status):
+                report = {"stage": "ablation", "status": status, "factors": ["query_views", "diversity"],
+                          "rows": {"baseline": {"status": "complete"}}}
+                self.ablation.reset_mock(return_value=True)
+                self.ablation.return_value = report
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text('{"previous": true}\n', encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()) as out, \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    argv = ["--stage", "retrieval", "--ablation", "query_views", "diversity", "--split", "dev",
+                            "--limit", "3", "--tag", "comparison", "--resume"]
+                    if status == "complete":
+                        self.run_eval.main(argv)
+                    else:
+                        with self.assertRaises(SystemExit) as caught:
+                            self.run_eval.main(argv)
+                        self.assertEqual(caught.exception.code, 1)
+                self.ablation.assert_called_once_with(
+                    self.paths["eval"] / "eval_set.jsonl", self.paths["results"] / "ablation_runs", "comparison",
+                    factors=["query_views", "diversity"], stage="retrieval", split="dev", limit=3,
+                    resume=True, dry_run=False)
+                self.assertEqual(json.loads(out_path.read_text(encoding="utf-8")), report)
+                self.assertEqual(list(out_path.parent.iterdir()), [out_path])  # no temporary output left
+                output = out.getvalue() if status == "complete" else err.getvalue()
+                self.assertIn(f"ablation {status}", output)
+                self.assertIn(str(out_path), output)
+        self.retrieval.assert_not_called()
+        self.review.assert_not_called()
+
+    def test_dry_run_only_prints_the_plan(self) -> None:
+        self.ablation.return_value = {"stage": "ablation", "status": "planned",
+                                      "factors": ["loop", "hyde"], "rows": {}}
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.run_eval.main(["--stage", "review", "--ablation", "loop", "hyde", "--tag", "plan", "--dry-run"])
+        self.ablation.assert_called_once_with(
+            self.paths["eval"] / "eval_set.jsonl", self.paths["results"] / "ablation_runs", "plan",
+            factors=["loop", "hyde"], stage="review", split="all", limit=None, resume=False, dry_run=True)
+        self.assertIn("ablation planned", out.getvalue())
+        self.assertNotIn("report ->", out.getvalue())
+        self.assertFalse(self.paths["results"].exists())
+        self.retrieval.assert_not_called()
+        self.review.assert_not_called()
+
+    def test_factor_stage_preflight_failure_is_reported_without_an_output_claim(self) -> None:
+        self.ablation.side_effect = ValueError("loop supports review only; cannot use stage=all")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                self.run_eval.main(["--stage", "all", "--ablation", "loop", "--tag", "bad-plan"])
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("loop supports review only", err.getvalue())
+        self.assertNotIn("report ->", err.getvalue())
+        self.assertFalse(self.paths["results"].exists())
+        self.summary.assert_not_called()
+        self.retrieval.assert_not_called()
+        self.review.assert_not_called()
+
+    def test_failed_atomic_publish_retains_the_previous_report(self) -> None:
+        self.ablation.return_value = {"stage": "ablation", "status": "complete", "factors": ["rerank"], "rows": {}}
+        out_path = self.paths["results"] / "metrics" / "ablation_rerank_saved.json"
+        out_path.parent.mkdir(parents=True)
+        previous = '{"previous": true}\n'
+        out_path.write_text(previous, encoding="utf-8")
+        with patch.object(self.run_eval.os, "replace", side_effect=OSError("cannot publish report")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                self.run_eval.main(["--stage", "retrieval", "--ablation", "rerank", "--tag", "saved"])
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("cannot publish report", err.getvalue())
+        self.assertEqual(out_path.read_text(encoding="utf-8"), previous)
+        self.assertEqual(list(out_path.parent.iterdir()), [out_path])
 
 
 if __name__ == "__main__":
