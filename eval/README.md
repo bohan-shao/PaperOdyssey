@@ -2,7 +2,8 @@
 
 ## Goal
 
-The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, IAA and
+The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, the eval-set
+retrieval run (`retrieval_eval.py`, `scripts/run_eval.py --stage retrieval`), IAA and
 annotation tooling are also implemented, while review metrics remain pending.
 Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
 for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
@@ -37,8 +38,31 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
     every id counts once, at its best-ranked position (at paper level, a paper's best passage). The conventions are in the
     module docstring; checked against hand-computed values in `tests/test_eval.py`
   - hits come from `data/results/retrieval_results/` (run once for each of the four config variants)
-- Output JSON: `data/results/metrics/retrieval_<stage>_<date>.json`
+- Output JSON: `data/results/metrics/retrieval_<date>.json`, written by `retrieval_eval.py` (below)
   (including a config snapshot + dependency versions, EVALUATION.md §9)
+
+### retrieval_eval.py — The eval set through the §2 matrix (Q3, D44)
+- `run_retrieval_eval(eval_set_path, results_dir, tag, configs, limit)`: **implemented**; run it with
+  `python scripts/run_eval.py --config config.yaml --stage retrieval [--configs ...] [--limit N] [--tag T]`
+  in a fresh process with the built indexes and models (a GPU job on TC2)
+- Every question's `input_text` goes to `retrieve()` as it is (no filters, the configured top 10 passages) under
+  `bm25`, `dense`, `hybrid_rrf` and `hybrid_rerank`. Each row sets exactly `sparse/dense/rerank.enabled` in memory
+  (`latency.config_overrides`, restored afterwards); everything else stays as configured (query views, diversity),
+  so `hybrid_rerank` is what Paper Search runs. One unrecorded warm-up request per row loads its components.
+- Hits: `results/retrieval_results/<row>_<tag>.jsonl` (SCHEMA §8), each written as soon as its row finishes.
+  Report: `results/metrics/retrieval_<tag>.json` with, per row and split (dev / eval), the `compute_retrieval_metrics`
+  output, the same per `question_type` and `question_form`, every question's first gold position, the questions whose
+  gold paper enters (failed → succeeded) or leaves the top 10 papers for bm25 → hybrid_rrf, dense → hybrid_rrf and
+  hybrid_rrf → hybrid_rerank (with examples), each row's effective config and observed latency (incidental, not the
+  §7 benchmark), the eval set's SHA-256, the index manifests, a config snapshot and dependency versions
+- A retrieval error stops the run instead of being scored as misses. `--limit N` runs only the first N questions and
+  tags its files `<date>_first<N>`, so a quick check never overwrites a full run. `review`, `all` and `--ablation`
+  stop with an error until review metrics exist.
+- Tests: `tests/test_retrieval_eval.py` (fake `retrieve()`, hand-computed metrics, the CLI)
+- First run (2026-10-30, TC2 A40, 13 min for 1,027 questions × 4 rows): eval-split Hit@1 0.818 (bm25), 0.828
+  (dense), 0.873 (hybrid_rrf), 0.919 (hybrid_rerank); Hit@10 0.958 / 0.974 / 0.984 / 0.991. Table, dev split and
+  caveats: EVALUATION.md §2. On TC2, read `lookup.sqlite` once before the run (`cat ... > /dev/null`, 16 s): hit
+  hydration then comes from the page cache (the bm25 row took ~0.1 s per question instead of ~1.2 s over NFS)
 
 ### review_metrics.py — Review metrics (framework level)
 - LLM verdicts vs. human annotation: Accuracy / Precision / Recall (positive class = pass)

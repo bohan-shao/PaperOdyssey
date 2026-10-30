@@ -2,6 +2,8 @@
 
 Submodules (active — the framework is decided):
 - retrieval_metrics: Hit@K / P@K / R@K / MRR / NDCG (Paper Search, Q3)
+- retrieval_eval:    the eval set through the EVALUATION.md section 2 matrix, scored per split
+                     (`scripts/run_eval.py --stage retrieval`)
 - review_metrics:    review verdict vs. human annotation (framework level)
 - latency:           retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7)
 - annotation/:       evaluation-set construction and annotation tooling (3 annotators, IAA>=80%)
