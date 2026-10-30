@@ -132,8 +132,8 @@ or use a result known to contain the complete trace.
 
 The original documented Q4 target was ≥1,000 items, 3 independent annotators and IAA ≥80%.
 The current D42 protocol uses 3 annotators for the pilot and 2 for the main set, with an optional
-third for ties; it does not meet the original three-annotator target. See EVALUATION.md §1 for
-the actual counts and the remaining check against the coursework instructions.
+third for ties. The coursework brief allows this ("it is recommended to have 3 annotators, but 2 is
+also OK"); EVALUATION.md §1 has the actual counts.
 
 ```json
 {
@@ -321,3 +321,46 @@ For two factors, `interaction[stage]` uses the same four-way completed subset pe
 Each selected metric records `{n, baseline, A, B, AB, interaction}`, where interaction is
 AB−A−B+baseline. This is a descriptive contrast, not a statistical significance test.
 Incomplete queries never contribute a zero or an inferred negative label.
+
+## 13. Answer evaluation artifacts (D49)
+
+`eval.answer_eval.run_answer_eval(source_dir, results_dir, tag, *, split="all", limit=None,
+resume=False, workers=1) -> dict` answers the questions a finished §11 review run (or each review
+row of a §12 ablation) completed, from the stored `result`, with `downstream.answer_from_search`.
+The CLI passes `paths.results/answer_runs` as `results_dir`. Online types are unchanged.
+
+- `manifest.json`: `fingerprint`, `source` (kind `review_run` or `ablation`, path, each row's
+  search-run fingerprint and dataset SHA-256), `selection` (split, limit, query IDs in source
+  order), `searched` (selected IDs each row's search completed), `settings` (`downstream`,
+  `eval.answer`, redacted `llm`, dense model), `prompt_versions` (answer, judge), `code_sha256`,
+  `environment`, `created_at`. Index manifests and corpus file metadata must equal every source
+  row's, because answers read passage text from the lookup store.
+- `rows/<row>/answers/<query_id>.json` (row `run` for a review run, `baseline|a|b|ab` for an
+  ablation): the eval `question`, `status` (`complete` or `failed`), `workers`, `wall_ms`,
+  `usage.generation` / `usage.judge` (`calls`, `prompt_tokens`, `completion_tokens`), and
+  `earlier_usage` (same shape) when it retries failed attempts. Complete checkpoints add `answer`
+  (§10 `DownstreamResult` without `search_result`), `task` (`gold_in_sources`, `gold_cited`),
+  `scores` (`claims`, `claim_verdicts` [{claim, supported, reason}], `faithfulness`,
+  `generated_questions`, `noncommittal`, `answer_relevance`, `source_verdicts`
+  [{source, relevant, reason}], `context_relevance`, `context_precision`) and `judge_ms`.
+  Failed ones add `error` with query ID and exception type.
+- `rows/<row>/answers.jsonl`: one line per complete question in source order: `query_id`,
+  `split`, `input_text`, `gold_paper_ids`, `status`, `answer`, `cited_source_numbers`, `sources`
+  (`number`, `paper_id`, `passage_id`, `title`, `year`, `section`, `url`; excerpt text stays in
+  the checkpoint) and the six metric values.
+- `report.json`: `stage="answer"`, `format_version=1`, `status` (`complete`, `partial`: some
+  question failed, `failed`: stopped after `MAX_FAILURES` failures), `source_kind`,
+  `selected_queries`, `usage` (generation/judge), protocol notes, manifest `provenance`,
+  `workers_used`, and `rows.<row>` with `source_dir`, searched/completed counts,
+  `failed_query_ids`, `not_searched_query_ids`, `usage` and `splits.dev/eval`. A split has
+  `n_queries`, `answered`, `insufficient_evidence`, `no_sources`, `{n, mean}` for
+  `gold_in_sources`, `gold_cited`, `context_relevance`, `context_precision`,
+  `sources_per_answer`, faithfulness (plus `claims`, `supported_claims`, `pooled`), answer
+  relevance (plus `noncommittal`), `generation_ms` (`n`, `mean`, `p50`, `p95`, `max` over answers
+  with excerpts), `tokens_per_query` (`{n, mean}` per part),
+  and `per_query`. Undefined values are JSON null and are not counted in `n`.
+- Ablation reports add `rows.<row>.enabled_factors` and `comparisons`: [{`before`, `after`,
+  `splits.dev/eval`: {`n_paired`, `metrics.<metric>`: {`n`, `before`, `after`, `delta`}}}] for
+  baseline→A, baseline→B, baseline→AB and A→AB, B→AB, over questions both rows completed.
+
+The CLI also publishes the report at `metrics/answer_<tag>.json`.

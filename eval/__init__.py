@@ -7,15 +7,16 @@ Submodules (active — the framework is decided):
 - review_metrics:    review verdict vs. human annotation (framework level)
 - review_eval:       resumable Paper Search runs with complete review traces (`--stage review`)
 - ablation:          one/two-factor baseline/A/B/AB runs and paired single-factor comparisons
+- answer_eval:       answers and scores the questions of a finished review run or ablation (D49)
+- answer_metrics:    RAGAS-style faithfulness / answer relevance / context relevance+precision
 - latency:           retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7)
 - annotation/:       evaluation-set construction, mixed 2/3-annotator protocol and grouped IAA
 
 Review scoring uses explicitly labeled query-paper pairs only. The current fixed set labels
 positive source papers; unjudged papers are never inferred to be negatives.
 
-Generation metrics (ROUGE/BERTScore) and RAGAS remain pending. Paper QA now returns
-DownstreamResult (docs/SCHEMA.md section 10), including the answer, context, and citations
-needed by those future metric runners (Q4).
+Answer metrics (Q4) score Paper QA's DownstreamResult (docs/SCHEMA.md section 10) with an LLM judge;
+the eval set has no reference answers, so ROUGE/BERTScore are not computed.
 
 Authoritative evaluation plan: docs/EVALUATION.md; results go to data/results/.
 """

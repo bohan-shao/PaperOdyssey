@@ -37,8 +37,8 @@ Given a user input (a research need), decide whether a paper **is relevant**:
 - A majority accepts a question. The tooling can send an even split to an independent third annotator
   who has not seen that question; that person's mark decides. Rejected questions can be rewritten and
   marked again. Round 1 ran neither step, so the 66 ties and 7 rejected questions were excluded.
-- This main-set protocol differs from the original three-annotator target; see EVALUATION.md §1 for
-  the remaining check against the coursework instructions.
+- This main-set protocol differs from the original three-annotator target; the coursework brief
+  allows 2 annotators (EVALUATION.md §1).
 
 ## 5. Common disagreements and rulings
 

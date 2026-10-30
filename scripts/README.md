@@ -12,7 +12,7 @@
 | `benchmark_retrieval.py` | retrieval-core latency benchmark (per-stage latency per config, throughput, efSearch and rerank-depth sweeps) → `metrics/latency_retrieval_<date>.json` |
 | `probe_retrieval.py` | paired raw/template source diagnostic; four sparse/hybrid/rerank modes, unique run artifacts and one-switch comparisons (not human relevance evaluation) |
 | `eval_set.py` | evaluation set (D39): `draft` (LLM questions) -> `sheets` (one CSV per annotator) -> `build` (majority vote, eval_set.jsonl, agreement report, to_rewrite.csv) -> `rewrites` (next round); `sheets --per-question 2` and `tiebreak` for two annotators per question (D42) |
-| `run_eval.py` | `--stage retrieval`: four retrieval configurations → `retrieval_results/<configuration>_<tag>.jsonl` + `metrics/retrieval_<tag>.json`; `--stage review`: resumable Paper Search/review → `review_runs/<tag>/report.json`; `--stage all` (default): retrieval then review. `--ablation FACTOR [FACTOR]` with an explicit stage runs controlled baseline/A/B/AB experiments → `ablation_runs/<tag>/report.json` and `metrics/ablation_<factors>_<tag>.json`; `--workers N` runs N review questions at once (D48) |
+| `run_eval.py` | `--stage retrieval`: four retrieval configurations → `retrieval_results/<configuration>_<tag>.jsonl` + `metrics/retrieval_<tag>.json`; `--stage review`: resumable Paper Search/review → `review_runs/<tag>/report.json`; `--stage all` (default): retrieval then review. `--ablation FACTOR [FACTOR]` with an explicit stage runs controlled baseline/A/B/AB experiments → `ablation_runs/<tag>/report.json` and `metrics/ablation_<factors>_<tag>.json`; `--workers N` runs N review questions at once (D48); `--stage answer --source DIR`: answers and scores a finished review run or review ablation → `answer_runs/<tag>/` + `metrics/answer_<tag>.json` (D49) |
 | `sanity_check.py` | dependency-free sanity checks: config loads, packages import, schema round-trips (see README: Sanity checks) |
 | `run_ui.sh` | start Streamlit |
 
@@ -39,6 +39,14 @@ Named ablations require an explicit stage and one or two canonical factor names:
 python scripts/run_eval.py --stage retrieval --ablation rerank --split eval --tag rerank-eval
 python scripts/run_eval.py --stage retrieval --ablation query_views diversity --split eval --tag views-diversity
 python scripts/run_eval.py --stage review --ablation loop hyde --split dev --limit 3 --tag loop-hyde-smoke
+```
+
+After a review run or a review ablation finishes, answer and score its questions (D49; LLM calls, no
+new search; needs the same lookup store and the dense encoder):
+
+```bash
+python scripts/run_eval.py --stage answer --source data/results/review_runs/review-eval --tag answers-eval --workers 8
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/loop-hyde --tag answers-loop-hyde --workers 8
 ```
 
 Append `--dry-run` to print the plan without querying or writing files. The baseline disables

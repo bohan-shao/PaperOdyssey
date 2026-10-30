@@ -6,7 +6,9 @@ The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, th
 retrieval run (`retrieval_eval.py`, `scripts/run_eval.py --stage retrieval`), Paper Search review
 metrics and its resumable runner (`review_eval.py`, `--stage review`), IAA and annotation tooling
 are also implemented. `ablation.py` runs controlled one- or two-factor comparisons on the same
-questions. These are evaluation tools; new empirical results require a real run.
+questions. `answer_eval.py` (`--stage answer`, D49) answers the questions of a finished review run
+or review ablation and scores the answers (`answer_metrics.py`). These are evaluation tools; new
+empirical results require a real run.
 Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
 for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
 `eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
@@ -28,7 +30,7 @@ The shared internal `runtime.py` rejects previously loaded components and releas
 readers/models on exit. The probe also restores temporary Torch/FAISS thread settings.
 
 Produce every number the report needs for the decided parts: retrieval metrics, review metrics,
-performance/cost, and ablation tables. (Generation metrics and RAGAS are pending — see below.)
+performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
 
 ## Implementation requirements
 
@@ -121,8 +123,8 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   additional tokens unreported. No monetary cost estimate is produced.
 - `--stage all` (also the CLI default) runs the four retrieval configurations and then review.
   `--configs` affects retrieval only; `--split`/`--resume` affect review only. To resume review
-  without repeating retrieval, use `--stage review`. Generation/RAGAS stages remain unimplemented;
-  this runner does not claim those experiments are complete.
+  without repeating retrieval, use `--stage review`. Answers are scored separately from a finished
+  run (`--stage answer`, below).
 
 ### ablation.py — Controlled one- or two-factor experiments
 - `run_ablation(eval_set_path, results_dir, tag, *, factors, stage, split="all", limit=None,
@@ -167,20 +169,20 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   `--workers N` runs N questions at once inside each review cell (D48); it may differ on resume.
 - Known-source retrieval metrics and review coverage have the same limitations as above:
   positive source-paper labels do not make other candidates negatives, and self-reported
-  coverage is not answer quality. Comparing `loop` and `hyde` at review level does not produce
-  the downstream ROUGE/BERTScore/RAGAS measurements required for a QA experiment.
+  coverage is not answer quality. For answer-level comparisons of the same matrix, run
+  `--stage answer --source` on the ablation directory (`answer_eval.py`, below).
 - Enabled factors need not activate on every question: HyDE may fall back, parent text may
   remain unchanged, and the loop can stop in one round. Actual rounds are reported; per-query
   HyDE/parent expansion is not certified by this runner.
 - Semantic chunking is excluded because it needs a protocol selecting separately prebuilt
   indexes for each chunking variant. Metadata filters are excluded because this dataset has
   no structured filter scenarios. Jev evaluation is excluded; this runner supports the shared
-  `llm` review backend. Generation/RAG evaluation is separate work.
+  `llm` review backend. Answer evaluation is the separate `answer_eval.py` stage.
 
 ### annotation/ — Evaluation set (Q4)
 - Original documented target (D15): 1000 items, 3 independent annotators, majority vote,
   IAA>=80% (percentage agreement + Fleiss' kappa). The current D42 main set has 2 annotators per
-  question; whether this is acceptable under the coursework instructions remains to be checked.
+  question, which the coursework brief allows ("it is recommended to have 3 annotators, but 2 is also OK").
 - **Implemented (D39/D42)**: `questions.py` + `scripts/eval_set.py`: the LLM drafts one search request per
   sampled paper; 3 annotators mark each pilot question and 2 mark each main-set question y/n in CSV
   sheets (`data/eval/annotation/`), majority vote -> `data/eval/eval_set.jsonl` (SCHEMA.md §7).
@@ -220,14 +222,28 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   costs ~7.8 ms per pair (depth 30: 232 ms, top-10 agreement 0.77). Rerun after the full KB build
   before citing numbers: BM25 and HNSW times grow with the corpus
 
-## Pending QA evaluation (Q4)
+## answer_eval.py / answer_metrics.py — Answer-level evaluation (Q4/Q5, D49)
 
-- **Generation metrics** (ROUGE/BERTScore) and **RAGAS** (faithfulness / answer relevance /
-  context relevance) are not implemented in the minimal QA feature. The output contract is
-  now `DownstreamResult` in SCHEMA §10: answer text, all source excerpts, citations used,
-  nested search result, and timings. Implement metric runners and their dependencies as
-  separate evaluation work, using the manually labeled held-out dataset.
-- The evaluation plan for these is already written in docs/EVALUATION.md §5–§6.
+- `run_answer_eval(source_dir, results_dir, tag, *, split="all", limit=None, resume=False, workers=1)`:
+  **implemented**. `source_dir` is a finished review run (`review_runs/<tag>`) or a review ablation
+  (`ablation_runs/<tag>`, every row). For each question the search completed, the stored
+  `FinalResult` goes through `downstream.answer_from_search` (the UI's evidence and generation code,
+  one LLM call, no new search), so answers pair with the scored search results.
+- Metrics: `gold_in_sources` / `gold_cited` against the eval set's source paper; RAGAS-style
+  faithfulness, answer relevance, context relevance and context precision by an LLM judge
+  (`answer_metrics.judge_answer`, definitions in its docstring and EVALUATION.md §6). The eval set
+  has no reference answers, so ROUGE/BERTScore/EM are not computed. Judge scores are model
+  judgments; by default the judge is the generator's model at temperature 0 (`eval.answer`).
+- Resumable like the review runner: per-question checkpoints, a run lock, a fingerprint over
+  sources, selection, settings, prompt versions and code. Index and corpus metadata must equal
+  the source runs' manifests. Failed questions are listed and retried on `--resume` (their usage
+  is kept); after `MAX_FAILURES` (5) failures no new question starts. `--workers N` as in D48;
+  usage is counted per question and split into generation and judge.
+- Outputs (SCHEMA §13): `answer_runs/<tag>/report.json`, `rows/<row>/answers.jsonl` (the
+  generated answers for the data zip), checkpoints, and `metrics/answer_<tag>.json`. An ablation
+  source adds paired comparisons: baseline→A, baseline→B, baseline→AB and the one-switch edges.
+- Checked offline in `tests/test_answer_eval.py` (hand-computed scores, resume, failures,
+  workers, ablation pairing). Needs the lookup store, the dense encoder and an LLM key to run.
 
 ## Ablation run conventions (Q3/Q5)
 - Change only one switch (README: Ablation discipline); same evaluation set, same seed, same query batch

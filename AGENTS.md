@@ -30,7 +30,7 @@ Read before changing code:
 | `orchestration/` | Paper Search agentic loop (Q3/Q5) |
 | `downstream/` | Cited paper QA (Q4/Q5); answer prompts in `downstream/prompts.py` |
 | `llm/` | Shared OpenAI-compatible client (`llm/client.py`), Jev client, orchestration prompts (`llm/prompt.py`) |
-| `eval/` | Retrieval/review metrics, latency, annotation and IAA |
+| `eval/` | Retrieval/review/answer metrics, latency, annotation and IAA |
 | `ui/` | Streamlit app |
 | `scripts/` | Thin CLI wrappers around package functions |
 | `config.py` / `config.yaml` | The only config entry point / all tunables and ablation switches |

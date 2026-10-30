@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .qa import DownstreamError, run
+from .qa import DownstreamError, answer_from_search, run
 from .types import DownstreamResult, EvidenceSource
 
-__all__ = ["run", "DownstreamError", "DownstreamResult", "EvidenceSource"]
+__all__ = ["run", "answer_from_search", "DownstreamError", "DownstreamResult", "EvidenceSource"]

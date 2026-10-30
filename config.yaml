@@ -195,7 +195,11 @@ eval:
     rewrite_file: to_rewrite.csv
     eval_set_file: eval_set.jsonl
     annotators: [A, B, C, D, E] # names in the sheet file names; the same names every time (D39, D42)
-  # (bertscore / ragas config sections return with the downstream task — see eval/README.md)
+  answer:                       # answer-level metrics (D49, scripts/run_eval.py --stage answer)
+    judge_model: null           # null: the generator's llm.model (it may favor its own answers; say so in the report)
+    judge_temperature: 0.0
+    judge_max_tokens: 2048      # first-attempt output limit per judge call (doubled on a cut-off reply)
+    relevance_questions: 3      # RAGAS answer relevance: questions written back from each answer
 
 # ---- ui/ ----
 ui:
