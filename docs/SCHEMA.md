@@ -109,7 +109,12 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 }
 ```
 
-## 7. Evaluation Set (`data/eval/eval_set.jsonl`; assignment Q4 requires ≥1,000 items, 3 annotators, IAA ≥ 80%)
+## 7. Evaluation Set (`data/eval/eval_set.jsonl`)
+
+The original documented Q4 target was ≥1,000 items, 3 independent annotators and IAA ≥80%.
+The current D42 protocol uses 3 annotators for the pilot and 2 for the main set, with an optional
+third for ties; it does not meet the original three-annotator target. See EVALUATION.md §1 for
+the actual counts and the remaining check against the coursework instructions.
 
 ```json
 {
