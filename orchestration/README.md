@@ -24,7 +24,10 @@ input_text
 ### types.py
 - `QueryPlan` (SCHEMA.md §4): input_text / sub_queries[{query, keywords, filters}] / criteria[{criterion, source}]
 - `ReviewRecord` (§5): paper_id / verdict / score 1–5 / reasons / covered[] / missing[] / round / evidence
-- `FinalResult` (§6): query_id / input_text / query_plan / papers[] / coverage_report / latency_by_stage
+- `FinalResult` (§6): query_id / input_text / query_plan / papers[] / coverage_report / latency_by_stage / reviews[]
+  `papers` is the passing subset ranked by descending score then paper ID. `reviews` retains all
+  pass/reject records across rounds, including their evidence and round number; within-round
+  order is not a relevance ranking. Fresh results have one record per reviewed paper.
 
 ### query_understanding.py
 - Calls llm.client; prompt requirements (concrete templates provided by llm/prompt.py):
@@ -81,6 +84,10 @@ input_text
   Auto-generated query IDs depend on the input only, so they stay stable across settings; an
   explicitly supplied query ID overrides the returned ID while reusing cached content. Writes are
   atomic and failed queries are never cached.
+- New cache entries retain the complete `reviews` trace. Older entries without that field remain
+  readable with `reviews=[]`, meaning the trace is unavailable, not that no papers were reviewed.
+  The trace is never inferred from the passing `papers` subset. Evaluation requiring all review
+  decisions should disable `loop.cache` so an old cache cannot omit rejected records.
 
 ## Interface
 ```python

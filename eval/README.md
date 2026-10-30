@@ -3,8 +3,9 @@
 ## Goal
 
 The D38 diagnostic is implemented in `retrieval_probe.py`; retrieval metrics, the eval-set
-retrieval run (`retrieval_eval.py`, `scripts/run_eval.py --stage retrieval`), IAA and
-annotation tooling are also implemented, while review metrics remain pending.
+retrieval run (`retrieval_eval.py`, `scripts/run_eval.py --stage retrieval`), Paper Search review
+metrics and its resumable runner (`review_eval.py`, `--stage review`), IAA and annotation tooling
+are also implemented. These are evaluation tools; new empirical results require a real run.
 Run `python scripts/probe_retrieval.py --papers 300 --queries 60`
 for a sparse comparison, or add `--hybrid --rerank` for real CPU MiniLM models selected by
 `eval.retrieval_probe`. All retrieval goes through `retrieval.pipeline.retrieve()`. It writes
@@ -56,8 +57,8 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   hybrid_rrf → hybrid_rerank (with examples), each row's effective config and observed latency (incidental, not the
   §7 benchmark), the eval set's SHA-256, the index manifests, a config snapshot and dependency versions
 - A retrieval error stops the run instead of being scored as misses. `--limit N` runs only the first N questions and
-  tags its files `<date>_first<N>`, so a quick check never overwrites a full run. `review`, `all` and `--ablation`
-  stop with an error until review metrics exist.
+  tags its files `<date>_first<N>` by default, so a quick check has a different tag from a full run.
+  `--stage all` runs this stage before Paper Search review; `--ablation` remains unsupported.
 - Tests: `tests/test_retrieval_eval.py` (fake `retrieve()`, hand-computed metrics, the CLI)
 - First run (2026-10-30, TC2 A40, 13 min for 1,027 questions × 4 rows): eval-split Hit@1 0.818 (bm25), 0.828
   (dense), 0.873 (hybrid_rrf), 0.919 (hybrid_rerank); Hit@10 0.958 / 0.974 / 0.984 / 0.991. Table, dev split and
@@ -65,9 +66,53 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   hydration then comes from the page cache (the bm25 row took ~0.1 s per question instead of ~1.2 s over NFS)
 
 ### review_metrics.py — Review metrics (framework level)
-- LLM verdicts vs. human annotation: Accuracy / Precision / Recall (positive class = pass)
-- Coverage: aggregated in coverage_report (covered_aspects/total_aspects)
-- Round distribution: share meeting the threshold in rounds 1/2/3, unmet rate
+- `review_accuracy(records, human_labels)`: **implemented**, per query, only for reviewed papers
+  with an explicit human label for that query. Reports confusion counts, support, label classes,
+  Accuracy / Precision / Recall / F1; undefined denominators produce `null`.
+- **Current labels are positive source papers only.** Other retrieved or reviewed papers are
+  unjudged, not negative examples. This dataset cannot establish reviewer false-positive
+  performance or general classification quality. Labeled papers never reviewed are retrieval
+  misses, reported separately from classification false negatives. Preserve these limitations
+  and the labeled support when using the metrics in the report.
+- `coverage_stats(coverage_reports)`: **implemented**, macro and pooled aspect coverage, final-round
+  distributions and termination reasons. Coverage is the system's own aspect judgment, not human
+  relevance or answer faithfulness; reaching `min_papers` alone does not establish full coverage.
+
+### review_eval.py — Resumable Paper Search and review evaluation
+- `run_review_eval(eval_set_path, results_dir, tag, *, limit=None, split="all", resume=False)`:
+  runs `orchestration.run_query()` for each selected question and saves results under
+  `data/results/review_runs/<tag>/`: `manifest.json`, numbered `attempts/*.json`, `report.json`,
+  and best-effort raw `metrics/llm_usage.jsonl`. Completed attempts include the question, full
+  `FinalResult`, token usage and wall time; failed/interrupted attempts remain identifiable.
+  Unlike the retrieval stage, this
+  includes query understanding, review and any configured rewrite rounds, and makes real LLM calls.
+- Run in a fresh dedicated process with `orchestration.review.backend=llm`. Jev is not supported
+  by this runner because its usage is not tracked. There is no hidden warm-up: the first newly
+  executed query of each process includes component loading and is marked `cold_start`.
+- Commands (built indexes, cached retrieval models and configured API credentials are required):
+  ```bash
+  python scripts/run_eval.py --config config.yaml --stage review --split dev --limit 3 --tag review-dev-smoke
+  python scripts/run_eval.py --config config.yaml --stage review --split eval --tag review-eval
+  python scripts/run_eval.py --config config.yaml --stage review --split eval --tag review-eval --resume
+  ```
+  `--split` is applied before `--limit`. Keep the same tag, selection and configuration when
+  resuming. `--resume` requires matching configuration, dataset, code and index metadata fingerprints, and reuses
+  only completed query results. A different experiment needs a new tag.
+- The runner disables the online search cache to collect fresh `FinalResult.reviews`, including
+  all pass/reject records and round numbers. Existing online caches without a trace remain usable
+  by the application but are not evidence for this evaluation.
+- Reports distinguish `complete`, `partial` and `failed` and record completed/selected query
+  counts. The CLI exits 1 and prints the summary to stderr for an incomplete run; its completed
+  query artifacts remain available for resume. Partial metrics describe completed queries only
+  and must not be presented as a full selected-set result.
+- Token usage covers observed API responses with returned usage, including JSON retries and
+  responses within query attempts that later fail. It does not establish total billed usage:
+  interrupted attempts, transport failures and responses with missing provider usage can leave
+  additional tokens unreported. No monetary cost estimate is produced.
+- `--stage all` (also the CLI default) runs the four retrieval configurations and then review.
+  `--configs` affects retrieval only; `--split`/`--resume` affect review only. To resume review
+  without repeating retrieval, use `--stage review`. Named `--ablation` and generation/RAGAS
+  stages remain unimplemented; this runner does not claim those experiments are complete.
 
 ### annotation/ — Evaluation set (Q4)
 - Original documented target (D15): 1000 items, 3 independent annotators, majority vote,

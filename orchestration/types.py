@@ -76,6 +76,8 @@ class FinalResult:
 
     This is the search result only — it contains no generated answer. The downstream
     task (downstream/) consumes this and produces its own task output (D24).
+    `papers` holds passing records ranked by score; `reviews` retains all pass/reject
+    records across rounds. Legacy cached results have an unavailable trace (`reviews=[]`).
     """
 
     query_id: str
@@ -84,3 +86,4 @@ class FinalResult:
     papers: list[ReviewRecord]
     coverage_report: dict[str, object]
     latency_by_stage: dict[str, int] = field(default_factory=dict)
+    reviews: list[ReviewRecord] = field(default_factory=list)

@@ -87,6 +87,7 @@ def _result_from_dict(raw: object) -> FinalResult:
         latency_by_stage={
             str(key): int(value) for key, value in raw.get("latency_by_stage", {}).items()
         },
+        reviews=[ReviewRecord(**item) for item in raw.get("reviews", [])],
     )
 
 
@@ -407,6 +408,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
         query_plan=plan,
         papers=passed_papers,
         coverage_report=coverage_report,
+        reviews=all_reviews,
         latency_by_stage={
             "understanding_ms": understanding_ms,
             "hyde_ms": hyde_ms,

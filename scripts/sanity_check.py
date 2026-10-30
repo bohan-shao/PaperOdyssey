@@ -79,13 +79,19 @@ def check_schema_roundtrips() -> None:
     _roundtrip("RetrieveResult", rt, lambda c: c(hits=[], total_candidates=0))
     _roundtrip("QueryPlan", ot, lambda c: c(input_text="q"))
     _roundtrip("ReviewRecord", ot, lambda c: c(paper_id="P1", verdict="pass", score=4))
-    _roundtrip(
-        "FinalResult", ot,
-        lambda c: c(
-            query_id="Q1", input_text="q", query_plan=ot.QueryPlan(input_text="q"),
-            papers=[], coverage_report={"total_aspects": 0},
-        ),
+    rejected = ot.ReviewRecord("P1", "reject", 2, round=1, evidence={"top_passages": ["P1_0001"]})
+    passed = ot.ReviewRecord("P2", "pass", 4, round=2, covered=["aspect"])
+    search_result = ot.FinalResult(
+        query_id="Q1", input_text="q", query_plan=ot.QueryPlan(input_text="q"),
+        papers=[passed], coverage_report={"total_aspects": 1, "papers_reviewed": 2},
+        reviews=[rejected, passed],
     )
+    _roundtrip("FinalResult", ot, lambda c: search_result)
+    # Check the actual cache decoder, including typed rejected records and their rounds.
+    decoder = importlib.import_module("orchestration.loop")._result_from_dict
+    if decoder(json.loads(json.dumps(asdict(search_result)))) != search_result:
+        raise SystemExit("[FAIL] FinalResult cache round-trip lost review records")
+    print("[ok] FinalResult cache restores pass/reject review records")
     source = dt.EvidenceSource(1, "P1", "P1_0001", "Title", 2024, "Method", None, "Evidence")
     _roundtrip("EvidenceSource", dt, lambda c: source)
     _roundtrip(
@@ -93,7 +99,7 @@ def check_schema_roundtrips() -> None:
         lambda c: c(
             query_id="Q1", input_text="q", answer="Supported [1].", status="answered",
             sources=[source], cited_source_numbers=[1],
-            search_result=ot.FinalResult("Q1", "q", ot.QueryPlan("q"), [], {}),
+            search_result=search_result,
         ),
     )
 

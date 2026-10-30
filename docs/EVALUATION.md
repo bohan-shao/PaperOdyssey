@@ -92,9 +92,39 @@ Each ablation must include: query instances that **failed before the improvement
 
 ## 4. Review Module Metrics (framework level)
 
-- LLM decisions vs. human annotations: Accuracy / Precision / Recall (positive class = pass)
-- Coverage: proportion of input aspects covered (`coverage_report`)
-- Round distribution: how many queries met the bar in 1 / 2 / 3 rounds, and the failure rate
+`scripts/run_eval.py --stage review --split dev --limit 5 --tag review_dev5` runs the
+complete Paper Search workflow, including understanding and feedback, with the online cache
+disabled. It preserves every pass/reject record in `FinalResult.reviews`; `papers` remains the
+system's ranked list of passing papers. Existing caches without a review trace remain readable
+but are not reused by this evaluator. `--resume` skips completed queries only when dataset,
+selection, effective settings, code and index metadata match the original manifest.
+
+The fixed eval set contains **positive source-paper labels only**, not relevance judgments
+for every returned candidate. Its report therefore separates source papers passed, rejected,
+and never reviewed; source acceptance uses all selected gold papers as the denominator,
+while the conditional pass rate uses only reviewed gold papers. Other candidates remain
+unjudged. Known-source Hit/R/MRR/NDCG use the actual final passing-paper order (score descending,
+then paper ID), and dev/eval are always separate. These are source-finding metrics, not overall
+reviewer accuracy, precision or F1. `review_accuracy(records, human_labels)` supports those
+classification metrics only against explicit per-query human labels; missing labels are never
+inferred as negatives. Candidate-level positive and negative annotations are still needed.
+
+Coverage is the LLM's self-reported covered/input aspect ratio, with macro and pooled values;
+it does not measure human relevance, answer correctness or faithfulness. Report coverage-met
+round counts separately from all termination reasons: stopping at `min_papers` does not prove
+full coverage. Zero-aspect coverage and all zero-denominator metrics are undefined (`null`).
+
+Runs write `paths.results/review_runs/<tag>/manifest.json`, `report.json`, and atomic
+`attempts/NNNNNN.json` checkpoints with the question, full result, usage delta and elapsed time.
+A single-process lock prevents concurrent writers. A query error stops the run and is reported
+as incomplete, never as a retrieval miss; completed-query metrics in an incomplete run are
+not full-set results. Resume retains failed attempts' observed usage. Interrupted attempts
+can have additional usage in the best-effort `metrics/llm_usage.jsonl`, and transport failures
+may be billable without returned usage; totals are not an invoice. Only the shared `llm`
+review backend currently has supported usage accounting. No warm-up LLM calls are hidden:
+the first newly executed query of each process includes component loading. Prefix limits
+are smoke checks rather than representative quality samples. Generation evaluation remains
+separate (§5).
 
 ## 5. Generation Metrics (Q4)
 
@@ -140,11 +170,13 @@ Metrics: the ROUGE/BERTScore/RAGAS trio + coverage.
 
 ## 9. Running and Reproduction
 
-- Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`: the retrieval stage is
-  implemented (§2); `review`, `all` and `--ablation` stop with an error until review metrics exist, and generation/ragas
-  stages are not implemented.
-- Each evaluation run outputs: `data/results/metrics/<stage>_<date>.json` (including a config snapshot + dependency versions)
-- When the report cites metrics, it must include the `metrics/*.json` file paths (included in the Dropbox deliverables)
+- Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`:
+  retrieval (§2), review (§4), or both in sequence. `all` includes paid LLM calls; use an explicit
+  stage for a bounded run. `--ablation` and generation/RAGAS runners remain unimplemented.
+- Retrieval writes `paths.results/metrics/retrieval_<tag>.json`; review writes
+  `paths.results/review_runs/<tag>/report.json` with its manifest and per-attempt traces.
+- Cite the exact report artifact and its dataset/config provenance in the course report.
+  Results stay gitignored and are included in the shared deliverables.
 
 ### D38 small-corpus diagnostic
 

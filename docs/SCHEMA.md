@@ -104,10 +104,23 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
   "input_text": "...",
   "query_plan": { ... see §4 ... },
   "papers": [ {"paper_id": "...", "verdict": "pass", "score": 4, "reasons": "...", "covered": ["..."], "missing": [], "round": 1, "evidence": {"title": "...", "top_passages": ["P1234_0007"]}} ],
+  "reviews": [ { ... see §5: every pass and reject record from every completed round ... } ],
   "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0", "review_backend": "llm"},
   "latency_by_stage": {"understanding_ms": 1500, "hyde_ms": 0, "retrieval_ms": 420, "review_ms": 3800, "rewrite_ms": 600, "total_ms": 6500}
 }
 ```
+
+`papers` contains only passing records, sorted by descending score then paper ID. `reviews`
+contains all `ReviewRecord` values produced by the run, including rejects, in round order;
+the order within a round is not a relevance ranking. Each record retains its round, verdict,
+reasons, covered/missing aspects and evidence for review evaluation. On a fresh run,
+`len(reviews)` equals `coverage_report.papers_reviewed`.
+
+`reviews` defaults to `[]` for existing callers and cached results written before this field
+was introduced. An empty trace from an old cache means the review records are unavailable;
+it must not be reconstructed from `papers`, which omits rejects. New cache entries preserve
+the complete trace. Consumers needing review records must run with `orchestration.loop.cache=false`
+or use a result known to contain the complete trace.
 
 ## 7. Evaluation Set (`data/eval/eval_set.jsonl`)
 
@@ -226,3 +239,27 @@ Passage records are read with `retrieval.lookup.get_lookup_store().get_passages(
 (D28): primary-key lookups in `lookup.sqlite`, the store that also hydrates retrieval hits.
 Missing IDs are omitted; an empty selection does not open the store. Results serialize with
 `asdict()` and JSON; the UI supports downloading this full payload for later evaluation.
+
+## 11. Review evaluation artifacts (D45)
+
+`paths.results/review_runs/<tag>/` contains evaluation-only artifacts, not online API types:
+
+- `manifest.json`: format identity, dataset SHA-256, selected query IDs/split/limit, effective
+  search config with credentials omitted, index metadata, source-code hash, environment and
+  creation time. `fingerprint` must match before resuming.
+- `attempts/NNNNNN.json`: one sequential attempt with the original eval question, `status`
+  (`running`, `complete`, `failed`), `started_at`, `cold_start`, and, when available, `wall_ms`
+  and `usage` (`calls`, `prompt_tokens`, `completion_tokens`). Completed attempts contain a
+  complete §6 `result`, including `reviews`. Failed attempts record query ID/error type.
+  A crash can leave `running`; resume retries it while retaining the original attempt.
+- `report.json`: `stage=review`, `format_version=1`, run `status`, selected/completed counts,
+  failed/interrupted attempt counts, incomplete IDs, protocol, manifest provenance, observed
+  usage and per-split metrics. Metrics include completed queries only. Known-source ranking
+  and source passed/rejected/not-reviewed counts do not imply candidate negative labels.
+  Coverage is model-reported; undefined ratios are JSON null.
+- `metrics/llm_usage.jsonl`: the shared client's best-effort raw usage log, useful for examining
+  interrupted attempts. It is not guaranteed to include all billed work.
+
+Completed checkpoints are reused without running or timing the query again. The first newly
+executed query of each process is flagged as a cold start; it may still reuse OS/model caches.
+A prefix selected with `--limit` is a development smoke test, not an unbiased quality sample.

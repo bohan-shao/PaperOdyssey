@@ -12,7 +12,7 @@
 | `benchmark_retrieval.py` | retrieval-core latency benchmark (per-stage latency per config, throughput, efSearch and rerank-depth sweeps) → `metrics/latency_retrieval_<date>.json` |
 | `probe_retrieval.py` | paired raw/template source diagnostic; four sparse/hybrid/rerank modes, unique run artifacts and one-switch comparisons (not human relevance evaluation) |
 | `eval_set.py` | evaluation set (D39): `draft` (LLM questions) -> `sheets` (one CSV per annotator) -> `build` (majority vote, eval_set.jsonl, agreement report, to_rewrite.csv) -> `rewrites` (next round); `sheets --per-question 2` and `tiebreak` for two annotators per question (D42) |
-| `run_eval.py` | unified evaluation entry point: `--stage retrieval` runs the eval set through the four EVALUATION §2 configurations → `retrieval_results/<configuration>_<date>.jsonl` + `metrics/retrieval_<date>.json` (`--configs`, `--limit`, `--tag`); `review`/`all`/`--ablation` are not implemented yet |
+| `run_eval.py` | `--stage retrieval`: four retrieval configurations → `retrieval_results/<configuration>_<tag>.jsonl` + `metrics/retrieval_<tag>.json`; `--stage review`: resumable Paper Search/review → `review_runs/<tag>/report.json`; `--stage all` (default): retrieval then review. Named `--ablation` remains unsupported |
 | `sanity_check.py` | dependency-free sanity checks: config loads, packages import, schema round-trips (see README: Sanity checks) |
 | `run_ui.sh` | start Streamlit |
 
@@ -20,6 +20,16 @@ Conventions:
 - Usage `python scripts/xxx.py --config config.yaml [args]`; `--help` must work
 - Output paths all come from config.yaml; print stage progress (tqdm) + write log files
 - Re-runnable (idempotent): resumable downloads, index rebuild overwrites, evaluation results carry a date suffix
+
+`run_eval.py --stage review --split eval --tag review-eval` runs the held-out Paper Search set;
+add `--limit 3` with a separate tag for a smoke check, or `--resume` with the original tag and
+selection to continue an interrupted run. Resume requires matching data/config/code fingerprints.
+`--split` and `--resume` affect review only, including within `--stage all`; `--configs` affects
+retrieval only. Use `--stage review` when resuming to avoid repeating retrieval. Incomplete review
+runs exit 1 and print their summary on stderr; artifacts remain under `review_runs/<tag>/`.
+Review labels currently identify positive source papers only; unjudged papers are never negatives.
+Usage includes successfully returned, reported LLM tokens only and is not a billing total or a
+monetary cost estimate. See `eval/README.md` for interpretation and limitations.
 
 `benchmark_retrieval.py --config <full-config.yaml>` uses the fixed `legacy_50_v2` ranking
 protocol with the configured models/backends/indexes, and saves complete queries and per-row

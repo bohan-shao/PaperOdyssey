@@ -2,8 +2,8 @@
 
 > Course assignment: AI6127 Deep Neural Networks for NLP (2026). Deadline **2026-11-07 23:59 SGT**, submit via Blackboard.
 > Current status: KB, retrieval core, LLM client, orchestration, cited paper QA, and a minimal UI are implemented.
-> Retrieval metrics, IAA and the eval-set tooling (`scripts/eval_set.py`) are implemented; review metrics and
-> `scripts/run_eval.py` are still stubs; generation/RAGAS metrics
+> Retrieval/review metrics, resumable Paper Search evaluation (`scripts/run_eval.py`), IAA and the eval-set
+> tooling (`scripts/eval_set.py`) are implemented; generation/RAGAS metrics
 > and a live end-to-end QA run on the built indexes are pending.
 
 ## What the System Does

@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +12,7 @@ from orchestration.errors import OrchestrationError
 from orchestration.query_understanding import understand
 from orchestration.review import batch_review
 from orchestration.rewrite import rewrite
-from orchestration.types import Criterion, QueryPlan, ReviewRecord, SubQuery
+from orchestration.types import Criterion, FinalResult, QueryPlan, ReviewRecord, SubQuery
 from retrieval.types import RetrieveResult, ScoredPassage
 
 
@@ -214,6 +215,91 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(sorted(reviewed_ids), ["P1", "P2", "P3"])
         self.assertEqual(result.coverage_report["termination_reason"], "coverage_met")
         self.assertEqual(result.coverage_report["papers_reviewed"], 3)
+
+    def test_review_trace_keeps_rejects_without_changing_ranked_papers(self) -> None:
+        records = {
+            "P1": ReviewRecord("P1", "pass", 3, covered=["aspect"]),
+            "P2": ReviewRecord("P2", "reject", 5, reasons="Does not answer the request",
+                               missing=["aspect"], evidence={"top_passages": ["P2_1"]}),
+            "P3": ReviewRecord("P3", "pass", 5, covered=["aspect"]),
+            "P4": ReviewRecord("P4", "pass", 5, covered=["aspect"]),
+        }
+        result = self._run_with_patches(
+            make_config(),
+            retrieve=lambda query, filters=None: RetrieveResult([hit(pid) for pid in records], 4),
+            batch_review=lambda candidates, criteria, text, round_no: [
+                records[candidate["paper_id"]] for candidate in candidates
+            ],
+        )
+        self.assertEqual(result.papers, [records[pid] for pid in ("P3", "P4", "P1")])
+        self.assertEqual({record.paper_id: record for record in result.reviews}, records)
+        self.assertEqual(result.coverage_report["papers_reviewed"], len(result.reviews))
+        self.assertEqual(result.coverage_report["papers_passed"], len(result.papers))
+
+    def test_review_trace_preserves_rounds_and_cache_roundtrip(self) -> None:
+        from orchestration import loop
+
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["max_rounds"] = 2
+
+        def fake_review(candidates, criteria, text, round_no):
+            return [ReviewRecord(
+                candidate["paper_id"], "reject" if round_no == 1 else "pass", round_no + 2,
+                reasons=f"Reviewed in round {round_no}", round=round_no,
+                covered=[] if round_no == 1 else ["aspect"],
+                missing=["aspect"] if round_no == 1 else [],
+                evidence={"top_passages": [candidate["top_passages"][0]["passage_id"]]},
+            ) for candidate in candidates]
+
+        with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+            result = self._run_with_patches(
+                cfg,
+                # P1 occurs again, but must retain its original reject record without re-review.
+                retrieve=lambda query, filters=None: RetrieveResult(
+                    [hit("P1")] if query == "q1" else [hit("P1"), hit("P2")], 2),
+                batch_review=fake_review,
+            )
+        self.assertEqual([(r.paper_id, r.verdict, r.round) for r in result.reviews],
+                         [("P1", "reject", 1), ("P2", "pass", 2)])
+        self.assertEqual([record.paper_id for record in result.papers], ["P2"])
+        self.assertEqual(result.coverage_report["rounds"], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            loop._write_cache(path, result)
+            restored = loop._read_cache(path, "request", "restored-id")
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.reviews, result.reviews)
+            self.assertEqual(restored.papers, result.papers)
+            self.assertEqual(restored.query_id, "restored-id")
+            self.assertTrue(restored.coverage_report["cache_hit"])
+            self.assertEqual(restored.latency_by_stage, result.latency_by_stage)
+
+    def test_legacy_cache_has_unavailable_trace_and_is_still_reused(self) -> None:
+        from orchestration import loop
+
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["cache"] = True
+        passed = ReviewRecord("P1", "pass", 4, covered=["aspect"])
+        previous = FinalResult("old-id", "request", QueryPlan("request"), [passed],
+                               {"papers_reviewed": 2, "papers_passed": 1}, {"total_ms": 10})
+        legacy = asdict(previous)
+        legacy.pop("reviews")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            with (
+                patch("orchestration.loop.get_config", return_value=cfg),
+                patch("orchestration.loop._cache_path", return_value=path),
+                patch("orchestration.loop._run_async") as workflow,
+            ):
+                result = loop.run_query("request", query_id="new-id")
+            workflow.assert_not_called()
+            self.assertEqual(result.reviews, [])
+            self.assertEqual(result.papers, [passed])
+            self.assertEqual(result.query_id, "new-id")
+            self.assertEqual(result.coverage_report["papers_reviewed"], 2)
+            self.assertTrue(result.coverage_report["cache_hit"])
+            self.assertNotIn("reviews", json.loads(path.read_text(encoding="utf-8")))
 
     def test_review_starts_before_slow_retrieval_finishes(self) -> None:
         cfg = make_config()
