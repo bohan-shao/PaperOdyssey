@@ -143,12 +143,17 @@ Constraints:
 {
   "query_id": "Q0001",
   "sub_query": "sub-query 1",
-  "stage": "bm25_only",                 // "bm25" | "dense" | "hybrid_rrf" | "hybrid_rerank"
+  "stage": "bm25",                      // "bm25" | "dense" | "hybrid_rrf" | "hybrid_rerank"
   "top_k": 10,
   "hits": [{"passage_id": "...", "score": 0.83, "rank": 1, "paper_id": "..."}],
   "latency_ms": 35
 }
 ```
+
+The retrieval stage of `scripts/run_eval.py` (`eval/retrieval_eval.py`) writes one JSONL file per
+configuration, `<stage>_<date>.jsonl`, with one record per eval-set question in eval-set order:
+`sub_query` is the question's `input_text` (retrieved as it is, no filters), `hits` the returned
+passages, `latency_ms` the `retrieve()` total.
 
 ## 9. Type Definition Locations
 

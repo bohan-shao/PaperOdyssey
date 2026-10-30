@@ -36,6 +36,35 @@ Both run on the same evaluation set.
 | Hybrid + rerank | everything on (system default) |
 
 - Granularity: paper-level metrics are primary (gold_paper_ids); passage-level metrics are reported separately on the annotated subset
+- **Run (D44)**: `python scripts/run_eval.py --config config.yaml --stage retrieval` (`eval/retrieval_eval.py`, a GPU job).
+  Every eval-set question's `input_text` goes to `retrieve()` as it is (no filters, the configured top 10 passages) under
+  the four rows, named `bm25`, `dense`, `hybrid_rrf` and `hybrid_rerank`. Each row sets exactly the three switches of the
+  table, in memory; every other setting stays as configured (query views and diversity on), so `hybrid_rerank` is what
+  Paper Search runs and `bm25` / `dense` are the system's own channels, not plain BM25/BGE rankings. Hits go to
+  `data/results/retrieval_results/<row>_<date>.jsonl` (SCHEMA.md §8). `data/results/metrics/retrieval_<date>.json` has the
+  metrics per split (eval = the reported number, dev = tuning) and per question type and form, each question's first gold
+  position per row, and the questions whose gold paper enters (failed → succeeded) or leaves the top 10 papers for
+  bm25 → hybrid_rrf, dense → hybrid_rrf and hybrid_rrf → hybrid_rerank (the rerank ablation of §3).
+- **First run** (2026-10-30, TC2 A40, 658,871 passages, 10 passages per question), paper level; report
+  `data/results/metrics/retrieval_2026-10-30.json`, hits `data/results/retrieval_results/<row>_2026-10-30.jsonl`:
+
+| Configuration | Split (questions) | Hit@1 | Hit@3 | Hit@5 | Hit@10 | MRR@10 | NDCG@10 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| bm25 | eval (912) | 0.818 | 0.904 | 0.931 | 0.958 | 0.867 | 0.889 |
+| dense | eval (912) | 0.828 | 0.940 | 0.956 | 0.974 | 0.885 | 0.907 |
+| hybrid_rrf | eval (912) | 0.873 | 0.959 | 0.978 | 0.984 | 0.918 | 0.934 |
+| hybrid_rerank | eval (912) | 0.919 | 0.975 | 0.986 | 0.991 | 0.947 | 0.958 |
+| bm25 | dev (115) | 0.843 | 0.965 | 0.974 | 0.974 | 0.903 | 0.921 |
+| dense | dev (115) | 0.800 | 0.904 | 0.965 | 0.991 | 0.865 | 0.896 |
+| hybrid_rrf | dev (115) | 0.887 | 0.983 | 0.983 | 0.991 | 0.935 | 0.949 |
+| hybrid_rerank | dev (115) | 0.957 | 1.000 | 1.000 | 1.000 | 0.975 | 0.982 |
+
+- On the eval split, BM25 and dense leave the gold paper out of their top 10 on 38 and 24 questions, both on only 6.
+  Fusion brings it into the top 10 on 27 questions BM25 misses (losing 4) and on 15 that dense misses (losing 6);
+  reranking adds 9 more (losing 2) and moves the gold paper up on 86 questions, down on 43. The observed p50
+  `retrieve()` time per question was 78 / 88 / 99 / 362 ms (page cache warmed; not the §7 benchmark). Every question
+  was drafted from its gold paper's abstract (D39), which favors lexical matching, and another relevant paper earns
+  nothing, so the scores are a lower bound.
 
 ## 3. Q3 Innovation Ablations
 
@@ -102,7 +131,9 @@ Metrics: the ROUGE/BERTScore/RAGAS trio + coverage.
 
 ## 9. Running and Reproduction
 
-- Planned unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`; the script remains a stub, and generation/ragas stages are not implemented.
+- Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`: the retrieval stage is
+  implemented (§2); `review`, `all` and `--ablation` stop with an error until review metrics exist, and generation/ragas
+  stages are not implemented.
 - Each evaluation run outputs: `data/results/metrics/<stage>_<date>.json` (including a config snapshot + dependency versions)
 - When the report cites metrics, it must include the `metrics/*.json` file paths (included in the Dropbox deliverables)
 
