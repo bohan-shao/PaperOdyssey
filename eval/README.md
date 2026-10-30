@@ -81,7 +81,7 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   relevance or answer faithfulness; reaching `min_papers` alone does not establish full coverage.
 
 ### review_eval.py — Resumable Paper Search and review evaluation
-- `run_review_eval(eval_set_path, results_dir, tag, *, limit=None, split="all", resume=False)`:
+- `run_review_eval(eval_set_path, results_dir, tag, *, limit=None, split="all", resume=False, workers=1)`:
   runs `orchestration.run_query()` for each selected question and saves results under
   `data/results/review_runs/<tag>/`: `manifest.json`, numbered `attempts/*.json`, `report.json`,
   and best-effort raw `metrics/llm_usage.jsonl`. Completed attempts include the question, full
@@ -89,13 +89,21 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   Unlike the retrieval stage, this
   includes query understanding, review and any configured rewrite rounds, and makes real LLM calls.
 - Run in a fresh dedicated process with `orchestration.review.backend=llm`. Jev is not supported
-  by this runner because its usage is not tracked. There is no hidden warm-up: the first newly
-  executed query of each process includes component loading and is marked `cold_start`.
+  by this runner because its usage is not tracked. There is no hidden warm-up: queries started
+  before the process finished its first query include component loading and are marked `cold_start`.
+- `workers` (`--workers N`, D48): up to N questions at once in this one process, sharing its models
+  and indexes; a question spends most of its time waiting for LLM replies. Usage is counted per
+  question (`llm.client.usage_scope`), attempts are numbered in start order, and after a query error
+  no new question starts. Wall times then include waiting for the other questions, so measure
+  per-query latency with one worker. A run may resume with a different worker count.
+  On TC2 (A40, 2026-10-30) 8 workers ran 24 dev questions in 172 s including model loading, about
+  4x the one-at-a-time rate (~30 s per question), with ~25k tokens per question either way.
 - Commands (built indexes, cached retrieval models and configured API credentials are required):
   ```bash
   python scripts/run_eval.py --config config.yaml --stage review --split dev --limit 3 --tag review-dev-smoke
   python scripts/run_eval.py --config config.yaml --stage review --split eval --tag review-eval
   python scripts/run_eval.py --config config.yaml --stage review --split eval --tag review-eval --resume
+  python scripts/run_eval.py --config config.yaml --stage review --split eval --tag review-eval-8 --workers 8
   ```
   `--split` is applied before `--limit`. Keep the same tag, selection and configuration when
   resuming. `--resume` requires matching configuration, dataset, code and index metadata fingerprints, and reuses
@@ -156,6 +164,7 @@ performance/cost, and ablation tables. (Generation metrics and RAGAS are pending
   for complete, partial and failed runs. `planned` and `complete` exit successfully; incomplete
   runs exit 1 and print their summary to stderr. Dry runs print only. Resume with the same
   arguments and `--resume`; provenance checks reject changed data, selection, config or code.
+  `--workers N` runs N questions at once inside each review cell (D48); it may differ on resume.
 - Known-source retrieval metrics and review coverage have the same limitations as above:
   positive source-paper labels do not make other candidates negatives, and self-reported
   coverage is not answer quality. Comparing `loop` and `hyde` at review level does not produce

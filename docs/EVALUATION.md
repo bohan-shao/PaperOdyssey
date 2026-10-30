@@ -155,14 +155,19 @@ full coverage. Zero-aspect coverage and all zero-denominator metrics are undefin
 
 Runs write `paths.results/review_runs/<tag>/manifest.json`, `report.json`, and atomic
 `attempts/NNNNNN.json` checkpoints with the question, full result, usage delta and elapsed time.
-A single-process lock prevents concurrent writers. A query error stops the run and is reported
-as incomplete, never as a retrieval miss; completed-query metrics in an incomplete run are
-not full-set results. Resume retains failed attempts' observed usage. Interrupted attempts
-can have additional usage in the best-effort `metrics/llm_usage.jsonl`, and transport failures
-may be billable without returned usage; totals are not an invoice. Only the shared `llm`
-review backend currently has supported usage accounting. No warm-up LLM calls are hidden:
-the first newly executed query of each process includes component loading. Prefix limits
-are smoke checks rather than representative quality samples. Generation evaluation remains
+A single-process lock prevents concurrent writers. `--workers N` (D48, default 1) runs up to N
+questions at once inside that process; attempts are numbered in the order questions start, and
+each counts its own usage (`llm.client.usage_scope`). A query error stops the run and is reported
+as incomplete, never as a retrieval miss; with several workers no new question starts after it,
+while questions already running finish and are recorded. Completed-query metrics in an incomplete
+run are not full-set results. Resume retains failed attempts' observed usage and may use another
+worker count. Interrupted attempts can have additional usage in the best-effort
+`metrics/llm_usage.jsonl`, and transport failures may be billable without returned usage; totals
+are not an invoice. Only the shared `llm` review backend currently has supported usage accounting.
+No warm-up LLM calls are hidden: queries started before the process finished its first query include
+component loading (`cold_start`). With several workers, wall times and stage latencies include
+waiting for the other questions' model and LLM calls, so per-query latency comes from a
+`--workers 1` run. Prefix limits are smoke checks rather than representative quality samples. Generation evaluation remains
 separate (§5).
 
 ## 5. Generation Metrics (Q4)

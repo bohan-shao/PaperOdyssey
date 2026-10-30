@@ -271,12 +271,14 @@ def _aggregate(plan: dict, cells: dict, questions: list[dict], manifest: dict,
 
 def run_ablation(eval_set_path: str | Path, results_dir: str | Path, tag: str, *,
                  factors: Sequence[str], stage: str, split: str = "all", limit: int | None = None,
-                 resume: bool = False, dry_run: bool = False) -> dict:
+                 resume: bool = False, dry_run: bool = False, workers: int = 1) -> dict:
     """Plan/run a controlled matrix; resume matches full provenance and retains completed work.
 
     Dry-run only reads the dataset/config and prints a plan through the CLI: it does not
     import models, inspect indexes, make API calls, create directories or change config.
     Failed cells stop the matrix and return status=failed. Interrupts persist a partial report.
+    `workers` questions run at once inside each review cell (D48); retrieval cells and the
+    fingerprint are unaffected, so a matrix may resume with another value.
     """
     dataset, cfg = Path(eval_set_path).resolve(), get_config()
     questions = _selection(dataset, split, limit)
@@ -336,7 +338,8 @@ def run_ablation(eval_set_path: str | Path, results_dir: str | Path, tag: str, *
                             cell_report = run_retrieval_cell(questions, cell_dir,
                                 _digest({"matrix": fingerprint, "row": row, "stage": cell_stage}), resume=cell_resume)
                         else:
-                            cell_report = run_review_eval(snapshot, cell_dir.parent, cell_stage, resume=cell_resume)
+                            cell_report = run_review_eval(snapshot, cell_dir.parent, cell_stage,
+                                                          resume=cell_resume, workers=workers)
                 except KeyboardInterrupt:
                     interrupted = True
                     if (cell_dir / "report.json").is_file():

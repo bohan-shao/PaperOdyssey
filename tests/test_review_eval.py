@@ -6,6 +6,8 @@ import copy
 import json
 import math
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
@@ -34,6 +36,7 @@ class FakeClient:
     def spend(self) -> None:
         for key, amount in (("calls", 1), ("prompt_tokens", 11), ("completion_tokens", 7)):
             self.totals[key] += amount
+        review_eval.llm_client._count_in_scope(11, 7)  # what LLMClient._record does (D48)
 
     def usage_summary(self) -> dict:
         return dict(self.totals)
@@ -322,6 +325,64 @@ class ReviewEvalTest(unittest.TestCase):
         self.assertEqual(report["splits"]["eval"]["n_queries"], 0)
         self.assertEqual(report["splits"]["dev"]["n_queries"], 1)
         self.assertEqual(report["selected_queries"], 1)
+
+    def test_workers_run_questions_at_once_with_per_question_usage(self) -> None:
+        gate = threading.Barrier(3, timeout=10)  # Q1-Q3 can only pass together, i.e. in parallel
+
+        def together(question):
+            if question["query_id"] != "Q4":
+                gate.wait()
+            return result_for(question)
+
+        with self.harness(together):
+            report = self.run_eval(workers=3)
+        with self.harness():
+            sequential = self.run_eval(tag="sequential")
+        self.assertEqual((report["status"], report["completed_queries"]), ("complete", 4))
+        rows = [json.loads(self.checkpoint(n).read_text()) for n in range(1, 5)]
+        self.assertEqual([r["question"]["query_id"] for r in rows], ["Q1", "Q2", "Q3", "Q4"])  # start order
+        self.assertEqual([r["usage"] for r in rows], [{"calls": 1, "prompt_tokens": 11, "completion_tokens": 7}] * 4)
+        self.assertEqual({r["workers"] for r in rows}, {3})
+        self.assertEqual(report["cold_start_query_ids"], ["Q1", "Q2", "Q3"])  # started before any finished
+        self.assertEqual(report["workers_used"], [3])
+        self.assertEqual(report["usage"], sequential["usage"])
+        for split in ("dev", "eval"):  # same results; only the wall-clock times differ
+            self.assertEqual({k: v for k, v in report["splits"][split].items() if k != "wall_ms"},
+                             {k: v for k, v in sequential["splits"][split].items() if k != "wall_ms"})
+        self.assertEqual((sequential["cold_start_query_ids"], sequential["workers_used"]), (["Q1"], [1]))
+
+    def test_workers_start_no_question_after_a_failure_and_resume_with_any_count(self) -> None:
+        def q1_fails_while_q2_runs(question):
+            if question["query_id"] == "Q1":
+                raise RuntimeError("provider failure")
+            if question["query_id"] == "Q2":  # finish only after Q1's failure is on disk
+                deadline = time.monotonic() + 10
+                while json.loads(self.checkpoint(1).read_text())["status"] != "failed":
+                    self.assertLess(time.monotonic(), deadline, "Q1 failure was never recorded")
+                    time.sleep(0.01)
+            return result_for(question)
+
+        with self.harness(q1_fails_while_q2_runs) as first:
+            failed = self.run_eval(workers=2)
+            self.assertEqual(sorted(c.kwargs["query_id"] for c in first.run_query.call_args_list), ["Q1", "Q2"])
+        self.assertEqual((failed["status"], failed["completed_queries"], failed["failed_attempts"]), ("failed", 1, 1))
+        self.assertEqual(failed["error"], {"query_id": "Q1", "type": "RuntimeError"})
+        self.assertEqual(failed["incomplete_query_ids"], ["Q1", "Q3", "Q4"])
+        with self.harness() as second:
+            resumed = self.run_eval(resume=True, workers=1)
+            self.assertEqual([c.kwargs["query_id"] for c in second.run_query.call_args_list], ["Q1", "Q3", "Q4"])
+        self.assertEqual((resumed["status"], resumed["completed_queries"], resumed["failed_attempts"]),
+                         ("complete", 4, 1))
+        self.assertEqual(resumed["usage"]["calls"], 5)
+        self.assertEqual(resumed["workers_used"], [1, 2])
+
+    def test_invalid_workers_fail_before_any_work(self) -> None:
+        for workers in (0, review_eval.MAX_WORKERS + 1, 2.0, True):
+            with self.subTest(workers=workers), self.harness() as fake:
+                with self.assertRaisesRegex(ValueError, "workers"):
+                    self.run_eval(workers=workers)
+                fake.run_query.assert_not_called()
+        self.assertFalse((self.results / "run").exists())
 
 
 class PassingOrderValidationTest(unittest.TestCase):

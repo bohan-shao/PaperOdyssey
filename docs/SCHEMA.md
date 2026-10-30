@@ -253,21 +253,25 @@ Missing IDs are omitted; an empty selection does not open the store. Results ser
 - `manifest.json`: format identity, dataset SHA-256, selected query IDs/split/limit, effective
   search config with credentials omitted, index metadata, source-code hash, environment and
   creation time. `fingerprint` must match before resuming.
-- `attempts/NNNNNN.json`: one sequential attempt with the original eval question, `status`
-  (`running`, `complete`, `failed`), `started_at`, `cold_start`, and, when available, `wall_ms`
-  and `usage` (`calls`, `prompt_tokens`, `completion_tokens`). Completed attempts contain a
+- `attempts/NNNNNN.json`: one attempt, numbered in the order attempts start, with the original
+  eval question, `status` (`running`, `complete`, `failed`), `started_at`, `cold_start`, `workers`
+  (questions allowed at once in its process, D48; absent in older attempts, meaning 1), and, when
+  available, `wall_ms` and `usage` (`calls`, `prompt_tokens`, `completion_tokens`, this attempt's
+  calls alone). Completed attempts contain a
   complete §6 `result`, including `reviews`. Failed attempts record query ID/error type.
   A crash can leave `running`; resume retries it while retaining the original attempt.
 - `report.json`: `stage=review`, `format_version=1`, run `status`, selected/completed counts,
-  failed/interrupted attempt counts, incomplete IDs, protocol, manifest provenance, observed
+  failed/interrupted attempt counts, incomplete IDs, `cold_start_query_ids`, `workers_used` (sorted
+  worker counts of all attempts), protocol, manifest provenance, observed
   usage and per-split metrics. Metrics include completed queries only. Known-source ranking
   and source passed/rejected/not-reviewed counts do not imply candidate negative labels.
   Coverage is model-reported; undefined ratios are JSON null.
 - `metrics/llm_usage.jsonl`: the shared client's best-effort raw usage log, useful for examining
   interrupted attempts. It is not guaranteed to include all billed work.
 
-Completed checkpoints are reused without running or timing the query again. The first newly
-executed query of each process is flagged as a cold start; it may still reuse OS/model caches.
+Completed checkpoints are reused without running or timing the query again. Queries started before
+the process finished its first query are flagged as cold starts (with one worker, only the first);
+they may still reuse OS/model caches.
 A prefix selected with `--limit` is a development smoke test, not an unbiased quality sample.
 
 ## 12. Automatic ablation artifacts (D46)
