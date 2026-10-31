@@ -218,7 +218,8 @@ so report the judge model. Judge and generation token usage are reported separat
   describe the deployed system.
 - Q2 five queries end to end: `scripts/run_examples.py` (D51) runs the five UI example inputs
   through Paper Search and the cited answer with the configured settings, and saves each input's
-  papers, answer, sources, per-stage latency and tokens. Report these whole-system times (tens
+  papers, answer, sources, per-stage latency and tokens; `--input` adds a hard comparison and an
+  out-of-KB question (honest insufficient evidence). Report these whole-system times (tens
   of seconds, dominated by the LLM review) apart from the sub-second retrieval-core times.
 
 ## 8. Q5 Downstream Innovation Ablations
