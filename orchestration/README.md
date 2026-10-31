@@ -56,7 +56,8 @@ input_text
   seen (D53): the new review gets the earlier and new passages interleaved (best earlier one first,
   at most 3) and replaces the earlier record, so `reviews` keeps one record per paper (its latest
   review) and coverage follows the latest records. `coverage_report.re_reviews` counts these.
-  The same passages found again cause no new review.
+  The same passages found again cause no new review. `orchestration.loop.re_review=false` switches
+  this off (the pre-D53 behaviour) for the `re_review` ablation (D56).
 - Outputs a list of ReviewRecord; papers with `verdict="reject"` do not enter the candidate set
 - Invalid or unavailable review output is retried once, then fails the query with `OrchestrationError`
 - Reviewer backend (config `review.backend`): `llm` (default) or `jev` (TypeSafe Jev, `llm/jev.py`).

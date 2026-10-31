@@ -333,6 +333,23 @@ class LoopTests(unittest.TestCase):
         self.assertEqual((report["papers_reviewed"], report["papers_passed"], report["re_reviews"]), (1, 1, 1))
         _validate_result({"query_id": result.query_id, "input_text": "request"}, asdict(result))
 
+    def test_re_review_off_keeps_the_pre_d53_behaviour(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["loop"].update(max_rounds=2, re_review=False)
+        reviewed = []
+
+        def fake_review(candidates, criteria, text, round_no):
+            reviewed.extend((round_no, c["paper_id"]) for c in candidates)
+            return [ReviewRecord(c["paper_id"], "reject", 2, round=round_no, missing=["aspect"]) for c in candidates]
+
+        with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+            result = self._run_with_patches(
+                cfg, batch_review=fake_review,
+                retrieve=lambda query, filters=None: RetrieveResult(
+                    [hit("P1")] if query == "q1" else [hit("P1", suffix="2")], 1))
+        self.assertEqual(reviewed, [(1, "P1")])  # round 2's new passage of P1 is not reviewed
+        self.assertEqual(result.coverage_report["re_reviews"], 0)
+
     def test_a_later_review_replaces_the_earlier_one_and_coverage_follows_it(self) -> None:
         cfg = make_config()
         cfg["orchestration"]["loop"]["max_rounds"] = 2

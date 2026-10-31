@@ -9,6 +9,7 @@ Submodules (active — the framework is decided):
 - ablation:          one/two-factor baseline/A/B/AB runs and paired single-factor comparisons
 - answer_eval:       answers and scores the questions of a finished review run or ablation (D49)
 - answer_audit:      human audit of sampled answers: correct / complete / supported (D54)
+- challenge:         comparison / two-part / date / out-of-KB questions for the agentic search (D56)
 - answer_metrics:    RAGAS-style faithfulness / answer relevance / context relevance+precision
 - latency:           retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7)
 - examples:          the five UI example inputs through Paper Search + cited answer (Q2, D51)

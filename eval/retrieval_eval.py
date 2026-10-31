@@ -107,7 +107,8 @@ def load_eval_set(path: str | Path) -> list[dict]:
             for key, kind in _FIELDS.items():
                 if not isinstance(q.get(key), kind):
                     raise ValueError(f"{path}:{n}: {key} is missing or not a {kind.__name__}")
-            if not q["input_text"].strip() or not q["gold_paper_ids"]:
+            # Only a question marked unanswerable (the challenge set's out_of_kb kind, D56) may have no gold.
+            if not q["input_text"].strip() or (not q["gold_paper_ids"] and q.get("answerable", True) is not False):
                 raise ValueError(f"{path}:{n}: empty input_text or gold_paper_ids")
             if q["split"] not in SPLITS:
                 raise ValueError(f"{path}:{n}: split must be one of {SPLITS}, not {q['split']!r}")

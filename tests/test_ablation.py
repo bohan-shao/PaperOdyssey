@@ -106,7 +106,7 @@ class AblationIntegrationTest(unittest.TestCase):
             looping = self.cfg["orchestration"]["loop"]["enabled"]
             reviews = [ReviewRecord("unknown", "reject", 1)]
             if looping:
-                reviews.append(ReviewRecord(question["gold_paper_ids"][0], "pass", 5, round=2))
+                reviews += [ReviewRecord(pid, "pass", 5, round=2) for pid in question["gold_paper_ids"][:1]]
             papers = [r for r in reviews if r.verdict == "pass"]
             return FinalResult(
                 query_id, text, QueryPlan(text), papers,
@@ -325,6 +325,8 @@ class AblationIntegrationTest(unittest.TestCase):
             ("agentic with loop", ["agentic", "loop"], "review", {}),
             ("agentic with HyDE", ["hyde", "agentic"], "review", {}),
             ("agentic retrieval stage", ["agentic"], "retrieval", {}),
+            ("agentic with re_review", ["agentic", "re_review"], "review", {}),
+            ("re_review without the loop", ["re_review"], "review", {"orchestration.loop.enabled": False}),
         ]
         for name, factors, stage, overrides in cases:
             self.cfg = copy.deepcopy(self.original_cfg)
@@ -364,6 +366,20 @@ class AblationIntegrationTest(unittest.TestCase):
             fake.run_query.assert_not_called()
             fake.get_client.assert_not_called()
         self.assertEqual(resumed["usage"], report["usage"])
+
+    def test_unanswerable_questions_run_in_every_cell_but_stay_out_of_ranking_comparisons(self) -> None:
+        extra = {"query_id": "E3", "input_text": "outside the KB", "gold_paper_ids": [], "split": "eval",
+                 "answerable": False}
+        questions = [*QUESTIONS, extra]
+        self.dataset.write_text("".join(json.dumps(q) + "\n" for q in questions), encoding="utf-8")
+        with patch(f"{__name__}.QUESTIONS", questions), self.harness() as fake:
+            report = self.run_matrix(factors=["loop"], stage="review", split="eval")
+            self.assertEqual(sorted(e[2] for e in fake.events), ["E1", "E1", "E2", "E2", "E3", "E3"])
+        self.assertEqual(report["status"], "complete")
+        edge = report["comparisons"]["review"][0]["splits"]["eval"]
+        self.assertEqual((edge["n_selected"], edge["paired_query_ids"]), (2, ["E1", "E2"]))
+        observation = report["rows"]["a"]["results"]["review"]["per_query"]["E3"]
+        self.assertEqual((observation["source_recall"], observation["source_success"]), (None, False))
 
     def test_all_stage_runs_retrieval_then_review_with_separate_artifacts_per_row(self) -> None:
         with self.harness() as fake:

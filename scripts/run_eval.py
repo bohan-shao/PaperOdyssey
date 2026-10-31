@@ -39,6 +39,9 @@ Stages:
   (report.json, rows/<row>/answers.jsonl, per-question checkpoints) and metrics/answer_<tag>.json.
   --split, --limit, --resume and --workers apply; not part of --stage all.
 
+--eval-set PATH runs the retrieval, review or ablation stages on another question file in the eval-set
+format, e.g. the challenge set (data/eval/challenge_set.jsonl, D56); the main set is the default.
+
 The tag defaults to today's date; with --limit it gets a `_first<N>` suffix, so a quick check
 never overwrites a full run's files. Reproducibility: the retrieval stage keeps no cache between
 runs (retrieval makes no LLM calls); it saves every question's hits, from which the metrics can be
@@ -88,6 +91,9 @@ def main(argv: list[str] | None = None) -> None:
         "--stage", choices=["retrieval", "review", "answer", "all"], default=None,
         help="stage to evaluate (default: all = retrieval then review; must be explicit with --ablation)",
     )
+    parser.add_argument("--eval-set", type=Path, default=None,
+                        help="question file (default paths.eval/eval.annotation.eval_set_file), "
+                             "e.g. data/eval/challenge_set.jsonl (D56)")
     parser.add_argument("--source", default=None,
                         help="answer stage: a finished review run or review ablation directory to answer from")
     parser.add_argument("--ablation", nargs="+", choices=list(FACTORS), default=None,
@@ -117,6 +123,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--dry-run requires --ablation")
     if (args.stage == "answer") != (args.source is not None):
         parser.error("--source is required by, and only used with, --stage answer")
+    if args.stage == "answer" and args.eval_set is not None:
+        parser.error("--eval-set does not apply to --stage answer (it answers the questions of --source)")
     if args.stage == "answer" and (args.ablation is not None or args.configs is not None):
         parser.error("--stage answer takes the ablation as --source; --ablation/--configs do not apply")
     args.stage = args.stage or "all"
@@ -134,7 +142,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = get_config(args.config)
     tag = args.tag or date.today().isoformat() + (f"_first{args.limit}" if args.limit else "")
-    eval_set = get_path("eval") / cfg["eval"]["annotation"]["eval_set_file"]
+    eval_set = args.eval_set or get_path("eval") / cfg["eval"]["annotation"]["eval_set_file"]
     if args.ablation is not None:
         try:
             report = run_ablation(eval_set, get_path("results") / "ablation_runs", tag,

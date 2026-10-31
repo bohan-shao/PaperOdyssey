@@ -224,13 +224,15 @@ def _claim(
     candidate: dict[str, Any],
     shown: dict[str, list[dict[str, str]]],
     queued: set[str],
+    re_review: bool = True,
 ) -> dict[str, Any] | None:
     """The candidate to review now, or None (D53). Call under the round's lock.
 
     A new paper is reviewed. A paper reviewed in an earlier round is reviewed again when this
     round retrieved passages of it that the reviewer has not seen: the new review gets its earlier
     and new passages interleaved (best earlier one first). A paper is reviewed at most once per
-    round, so round 1 behaves as before D53.
+    round, so round 1 behaves as before D53. `re_review=False` (`orchestration.loop.re_review`)
+    restores the pre-D53 behaviour: a paper is never reviewed twice.
     """
     paper_id = candidate["paper_id"]
     if paper_id in queued:
@@ -241,7 +243,7 @@ def _claim(
     else:
         seen = {passage["passage_id"] for passage in previous}
         new = [passage for passage in candidate["top_passages"] if passage["passage_id"] not in seen]
-        if not new:
+        if not new or not re_review:
             return None
         merged = [p for pair in zip_longest(previous, new) for p in pair if p is not None]
         shown[paper_id] = previous + new
@@ -276,6 +278,7 @@ async def _run_round(
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     seen_lock = asyncio.Lock()
     queued: set[str] = set()
+    re_review = bool(cfg["orchestration"].get("loop", {}).get("re_review", True))
     retrieval_intervals: list[tuple[float, float]] = []
     review_intervals: list[tuple[float, float]] = []
 
@@ -300,7 +303,7 @@ async def _run_round(
         candidates = await asyncio.to_thread(_candidates_from_result, result, database_path)
         for candidate in candidates:
             async with seen_lock:
-                claimed = _claim(candidate, shown, queued)
+                claimed = _claim(candidate, shown, queued, re_review)
             if claimed is not None:
                 await queue.put(claimed)
 

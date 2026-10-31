@@ -19,7 +19,8 @@ been collected.
 
 ## Workflow (D39/D42)
 For the annotators: [HOW_TO_MARK.md](HOW_TO_MARK.md) (what to do, with an example). The answer
-audit (D54) has its own guide: [ANSWER_AUDIT.md](ANSWER_AUDIT.md).
+audit (D54) has its own guide: [ANSWER_AUDIT.md](ANSWER_AUDIT.md), and so has the challenge set (D56):
+[CHALLENGE.md](CHALLENGE.md).
 
 Questions are drafted by the LLM from one paper each and checked by people; that paper is the gold paper.
 

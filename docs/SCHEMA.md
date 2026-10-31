@@ -394,3 +394,23 @@ writes under `out_dir` (default `paths.eval/answer_audit/`, gitignored, shared w
 `weighted_mean`, `sample_mean`}, `judge_vs_human`: {`judge_faithfulness_by_stratum`,
 `spearman_faithfulness_vs_supported`, `n`} and `per_answer_scores`. Every assigned row must be
 marked; changed IDs, repeated rows or other values than y/p/n raise ValueError.
+
+## 15. Challenge set (D56)
+
+`paths.eval/challenge/drafts.jsonl`: one object per drafted item: `challenge_id` (C001...), `kind`
+(`comparison` | `two_part` | `date` | `out_of_kb`), `question`, `gold_paper_ids` (two, one or none),
+`papers` [{`paper_id`, `title`, `year`, `abstract`}], `answerable`, `question_source`,
+`prompt_version`, and per kind `aspects`, `parts`, `time_bound` {`phrase`, `year_min` or
+`year_max`} or `field`. Sheets `challenge_<annotator>.csv`: `challenge_id, kind, question,
+time_bound, paper_1_title, paper_1_year, paper_1_abstract, paper_2_title, paper_2_year,
+paper_2_abstract, fits, note` (fits y/n).
+
+`paths.eval/challenge_set.jsonl` uses the eval-set fields of §7 (`split` "eval", `question_type` =
+kind, `annotations` [{`annotator`, `fits`}]) plus `answerable` and `time_bound`. An item with
+`answerable` false may have empty `gold_paper_ids`; `load_eval_set` accepts no other empty gold.
+
+`score_challenge(searches_dir, answers_dir=None) -> dict` (`metrics/challenge_<tag>.json`):
+`rows.<row>`: {`by_kind.<kind>`, `all`: {`n`, `searched`, `answered_run`, `found`, `all_found`,
+`cited`, `all_cited`, `abstained`, `rounds`, `re_reviews`, `search_ms`, `search_tokens`, and for
+date items `answers_citing_outside_bound`, `cited_sources_outside_bound`}, `per_question`}.
+Undefined means are null.

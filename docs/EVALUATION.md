@@ -264,6 +264,31 @@ ranking and acceptance (§4), latency per stage and tokens per question for both
 whether the orchestration earns its extra calls. `agentic` cannot be combined with `hyde` or `loop`,
 which act only inside the agentic search.
 
+### Challenge set (D56)
+
+The main set's questions mostly end in one round, so the loop and evidence merging (D53) are
+measured on a separate challenge set: 10 questions each of `comparison` (two gold papers),
+`two_part` (one paper, two asks), `date` (a year bound) and `out_of_kb` (no gold; the right outcome
+is insufficient evidence), LLM-drafted from papers that are not gold in the main set and checked by
+two annotators (`eval/annotation/CHALLENGE.md`; only items both accept are used; agreement and
+Fleiss' kappa reported). It is reported apart from the main set and never used for tuning.
+
+```bash
+python scripts/challenge_set.py draft --papers <full KB>/processed/papers.sqlite   # done 2026-11-01
+python scripts/challenge_set.py sheets && python scripts/challenge_set.py build      # after marking
+python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation agentic --tag challenge-agentic --workers 8
+python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation loop re_review --tag challenge-loop --workers 8
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-loop --tag answers-challenge-loop
+python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-loop --answers data/results/answer_runs/answers-challenge-loop --tag loop
+```
+
+The `loop re_review` matrix has baseline (loop off), A (loop on, no re-review), B (re-review on,
+loop off: identical to the baseline by design, since re-review acts only in rounds 2+) and AB
+(both, the configured system). Per kind: `comparison` all gold found / cited, `two_part` and `date`
+gold found / cited, `date` answers citing papers outside the bound, `out_of_kb` abstention, plus
+rounds, re-reviews, search time and tokens. With 10 questions per kind, report counts as well as
+rates, and repeat a run before reading a one-question difference as an effect (LLM variation).
+
 ## 9. Running and Reproduction
 
 - Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`:
@@ -276,6 +301,9 @@ which act only inside the agentic search.
 - The retrieval latency benchmark writes `paths.results/metrics/latency_retrieval_<date>.json`, or
   `latency_retrieval_production_<date>.json` with `--protocol production` (§7, D51). The five
   examples end to end write `paths.results/metrics/examples_<date>.json` (§7, D51).
+- The challenge set (§8, D56) keeps drafts and sheets under `paths.eval/challenge/`, the set at
+  `paths.eval/challenge_set.jsonl`, and writes `metrics/challenge_iaa_<date>.json` (build) and
+  `metrics/challenge_<tag>.json` (score).
 - The answer audit (§5, D54) writes its sheets, packets and manifest under
   `paths.eval/answer_audit/` and its report to `paths.results/metrics/answer_audit_<tag>.json`.
 - Answers write `paths.results/answer_runs/<tag>/` (report, `rows/<row>/answers.jsonl`, checkpoints;
