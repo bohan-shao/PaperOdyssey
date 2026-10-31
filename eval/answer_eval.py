@@ -269,7 +269,8 @@ def _report(manifest: dict, kind: str, plan: dict, state: dict, selection: list[
                        "raw best-effort usage is in metrics/llm_usage.jsonl. Not a billing total.",
         "protocol": {
             "answers": "downstream.answer_from_search on each stored search result: the UI's evidence and "
-                       "generation code, one generation call, no search calls.",
+                       "generation code, one generation call (re-asked once when the reply fails the citation "
+                       "check, D50), no search calls.",
             "labels": "gold_in_sources / gold_cited use the eval set's source paper (one per question).",
             "judge": "faithfulness, answer relevance, context relevance and precision are LLM-judge scores "
                      "(eval/answer_metrics.py), not human labels; a judge sharing the generator's model can "

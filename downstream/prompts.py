@@ -1,4 +1,4 @@
-"""One generation prompt; no additional reasoning or verification passes."""
+"""The answer prompt and its one re-ask for an invalid reply; no reasoning or verification passes."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 from .types import EvidenceSource
 
-PROMPT_VERSION = "1.0.0"
+PROMPT_VERSION = "1.1.0"  # 1.1.0: re-ask a reply that fails the citation check (D50)
 
 SYSTEM_PROMPT = """Answer the user's question using only the supplied paper excerpts.
 Write a concise, direct answer in the same language as the question. Preserve qualifications
@@ -25,6 +25,12 @@ An answered response must have at least one citation. Do not expose internal rea
 ANSWER_SCHEMA = ('object {"status": "answered" | "insufficient_evidence", '
                  '"answer": "answer text with [n] citations"}')
 
+# Sent once when a parsed reply fails the citation check in downstream.qa (D50).
+REASK_PROMPT = """Your previous reply was rejected: {problem}. Return the JSON object again with this fixed.
+Cite only the supplied source numbers 1 to {count}, each written as [n] after a space, as in
+"... the result [1][2]."; an answered response needs at least one citation. Write any other
+bracketed numbers, such as indices, without square brackets."""
+
 
 def build_answer_prompt(question: str, sources: list[EvidenceSource]) -> list[dict]:
     return [
@@ -33,4 +39,12 @@ def build_answer_prompt(question: str, sources: list[EvidenceSource]) -> list[di
             {"question": question, "paper_excerpts": [asdict(source) for source in sources]},
             ensure_ascii=False,
         )},
+    ]
+
+
+def build_answer_reask(messages: list[dict], reply: object, problem: str, source_count: int) -> list[dict]:
+    return [
+        *messages,
+        {"role": "assistant", "content": json.dumps(reply, ensure_ascii=False)},
+        {"role": "user", "content": REASK_PROMPT.format(problem=problem, count=source_count)},
     ]

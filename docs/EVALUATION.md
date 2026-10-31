@@ -215,8 +215,9 @@ so report the judge model. Judge and generation token usage are reported separat
 
 ## 8. Q5 Downstream Innovation Ablations
 
-> The QA baseline uses one generation call with numbered evidence. No extra self-check or
-> CoT switches are implemented. The existing agentic loop can be evaluated on QA outcomes.
+> The QA baseline uses one generation call with numbered evidence (re-asked once when the reply
+> fails the citation check, D50). No extra self-check or CoT switches are implemented. The
+> existing agentic loop can be evaluated on QA outcomes.
 
 | Innovation | Compared against | Existing switch |
 |---|---|---|
