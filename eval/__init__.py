@@ -10,6 +10,7 @@ Submodules (active — the framework is decided):
 - answer_eval:       answers and scores the questions of a finished review run or ablation (D49)
 - answer_metrics:    RAGAS-style faithfulness / answer relevance / context relevance+precision
 - latency:           retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7)
+- examples:          the five UI example inputs through Paper Search + cited answer (Q2, D51)
 - annotation/:       evaluation-set construction, mixed 2/3-annotator protocol and grouped IAA
 
 Review scoring uses explicitly labeled query-paper pairs only. The current fixed set labels
