@@ -9,6 +9,8 @@ Usage:
     python scripts/run_eval.py --config config.yaml --stage retrieval --ablation query_views diversity
         [--split all|dev|eval] [--limit N] [--tag TAG] [--resume] [--dry-run]
     python scripts/run_eval.py --config config.yaml --stage review --ablation loop hyde --workers 8
+    python scripts/run_eval.py --config config.yaml --stage answer --source RUN_DIR
+        [--split all|dev|eval] [--limit N] [--tag TAG] [--resume] [--workers N]
 
 Stages:
 - retrieval: eval.retrieval_eval.run_retrieval_eval. Every eval-set question goes through
@@ -29,7 +31,13 @@ Stages:
   or baseline/A/B/AB (two factors), with selected factors off in the baseline. --split and
   --resume also work for retrieval ablations. --dry-run prints the plan without writing files.
   Reports go under ablation_runs/<tag>/ and to metrics/ablation_<factors>_<tag>.json.
-  Generation/RAGAS stages remain unimplemented.
+- answer (D49): eval.answer_eval.run_answer_eval answers every question a finished search run
+  completed, from its stored result, with the UI's answer code, and scores the answers (source
+  paper supplied/cited; LLM-judged faithfulness, answer relevance, context relevance/precision).
+  --source is a review run (results/review_runs/<tag>) or a review ablation
+  (results/ablation_runs/<tag>, all rows plus paired comparisons). Writes results/answer_runs/<tag>/
+  (report.json, rows/<row>/answers.jsonl, per-question checkpoints) and metrics/answer_<tag>.json.
+  --split, --limit, --resume and --workers apply; not part of --stage all.
 
 The tag defaults to today's date; with --limit it gets a `_first<N>` suffix, so a quick check
 never overwrites a full run's files. Reproducibility: the retrieval stage keeps no cache between
@@ -52,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import get_config, get_path  # noqa: E402
 from eval.ablation import FACTORS, format_summary as format_ablation_summary, run_ablation  # noqa: E402
+from eval.answer_eval import format_summary as format_answer_summary, run_answer_eval  # noqa: E402
 from eval.retrieval_eval import CONFIGS, format_summary, run_retrieval_eval  # noqa: E402
 from eval.review_eval import MAX_WORKERS, format_summary as format_review_summary, run_review_eval  # noqa: E402
 
@@ -76,9 +85,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Unified evaluation entry point")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument(
-        "--stage", choices=["retrieval", "review", "all"], default=None,
-        help="stage to evaluate (default: all; must be explicit with --ablation)",
+        "--stage", choices=["retrieval", "review", "answer", "all"], default=None,
+        help="stage to evaluate (default: all = retrieval then review; must be explicit with --ablation)",
     )
+    parser.add_argument("--source", default=None,
+                        help="answer stage: a finished review run or review ablation directory to answer from")
     parser.add_argument("--ablation", nargs="+", choices=list(FACTORS), default=None,
                         help="one or two named factors; baseline disables all selected factors")
     parser.add_argument("--dry-run", action="store_true",
@@ -104,6 +115,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--configs cannot be combined with --ablation")
     elif args.dry_run:
         parser.error("--dry-run requires --ablation")
+    if (args.stage == "answer") != (args.source is not None):
+        parser.error("--source is required by, and only used with, --stage answer")
+    if args.stage == "answer" and (args.ablation is not None or args.configs is not None):
+        parser.error("--stage answer takes the ablation as --source; --ablation/--configs do not apply")
     args.stage = args.stage or "all"
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
@@ -140,6 +155,20 @@ def main(argv: list[str] | None = None) -> None:
         if not successful:
             if report.get("error"):
                 print(f"ablation error: {report['error']}", file=sys.stderr)
+            raise SystemExit(1)
+        return
+    if args.stage == "answer":
+        try:
+            report = run_answer_eval(args.source, get_path("results") / "answer_runs", tag, split=args.split or "all",
+                                     limit=args.limit, resume=args.resume, workers=args.workers)
+            out = get_path("results") / "metrics" / f"answer_{tag}.json"
+            _write_report(out, report)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"Answers {tag}: failed: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
+        complete = report["status"] == "complete"
+        print("\n" + format_answer_summary(report) + f"\n\nreport -> {out}", file=sys.stdout if complete else sys.stderr)
+        if not complete:
             raise SystemExit(1)
         return
     if args.stage in ("retrieval", "all"):

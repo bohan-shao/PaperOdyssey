@@ -3,7 +3,8 @@
 `downstream.run(input_text, query_id=None) -> DownstreamResult` calls Paper Search once,
 loads real passage text by ID from the retrieval lookup store (`retrieval.lookup`, D28), and
 makes one answer-generation call through `llm.client`. The existing search review/rewrite
-settings remain in effect.
+settings remain in effect. `answer_from_search(question, search)` is the part after the search;
+the answer evaluation (`eval/answer_eval.py`, D49) calls it on stored search results.
 
 ```python
 import json
@@ -69,5 +70,5 @@ dependencies from `requirements.txt` are required for the full test suite.
 
 The retrieval core (`retrieval.pipeline.retrieve()`) is now implemented, but a live
 end-to-end run on the built indexes, including the five configured example questions, has not
-been verified yet. This change does not claim generation quality scores or completion of the
-1,000-item coursework evaluation.
+been verified yet. Answer quality is measured by `scripts/run_eval.py --stage answer` (D49); no scores exist until
+it runs on a finished search run.

@@ -27,7 +27,7 @@ Both run on the same evaluation set.
   and gold answers are not collected.
 
 The current main set does not meet the original three-annotator target. D42 records the team's choice;
-its acceptability under the coursework instructions still needs checking. The 1,027 count includes dev
+the coursework brief allows it ("it is recommended to have 3 annotators, but 2 is also OK"). The 1,027 count includes dev
 questions and must not be reported as 1,027 held-out eval questions.
 
 ## 2. Retrieval Metrics (Q3)
@@ -170,27 +170,40 @@ waiting for the other questions' model and LLM calls, so per-query latency comes
 `--workers 1` run. Prefix limits are smoke checks rather than representative quality samples. Generation evaluation remains
 separate (§5).
 
-## 5. Generation Metrics (Q4)
+## 5. Answer Metrics (Q4, D49)
 
-> The task is now cited paper QA. Generation/RAGAS metric runners and the manually labeled
-> dataset remain separate follow-up work; offline functional tests are not quality scores.
-> Use `DownstreamResult.answer`, `sources[].text`, and `cited_source_numbers` as inputs.
+The task is cited paper QA. `scripts/run_eval.py --stage answer --source <review run>`
+(`eval/answer_eval.py`) answers every question a finished review run (§4) completed, from its stored
+search result, with `downstream.answer_from_search`: the UI's evidence selection and its one
+generation call, with no new search. Answers are paired with the search results the review
+report scored. Outputs: SCHEMA §13 (`answers.jsonl` holds the generated answers for the data zip).
 
-- **ROUGE-1/2/L** (`rouge-score`), **BERTScore** (vs. gold_answer)
-- Abstractive QA relies mainly on ROUGE/BERTScore; if the answer is extractive, EM/F1 can be added
-- Citation quality: manual checks that the cited passage supports the associated claim.
-  Runtime citation-number validation only verifies identity, not semantic faithfulness.
+Task metrics against the eval set's labels (one source paper per question):
 
-## 6. RAG Metrics (Q4, RAGAS)
+- **gold_in_sources**: the source paper is among the excerpts the answer model received
+- **gold_cited**: the answer cites an excerpt of the source paper
 
-Run on every evaluation query (or a representative subset):
+The eval set has no reference answers (`gold_answer` is empty, §1), so ROUGE, BERTScore and
+EM/F1 against a reference cannot be computed and are not reported. Runtime citation-number
+validation only checks source identity; semantic support is measured by faithfulness below.
 
-- **Faithfulness**: whether each claim in the answer is grounded in the retrieved passages
-- **Answer Relevance**: whether the answer addresses the user's input
-- **Context Relevance / Precision**: the proportion of retrieved evidence relevant to the question
+## 6. RAG Metrics (Q4, RAGAS-style)
 
-> RAGAS uses LLM-based evaluation (consumes API tokens); running it on all 1,000 items is affordable (DeepSeek),
-> so we recommend running the full set and recording token costs.
+Computed by `eval/answer_metrics.py` with an LLM judge, following the RAGAS definitions, for every
+selected question whose search completed, over exactly the excerpts the answer model saw:
+
+- **Faithfulness**: the judge splits the answer into standalone claims and checks each against
+  the excerpts; supported claims / claims (undefined for an answer without claims)
+- **Answer Relevance**: the judge writes `eval.answer.relevance_questions` (3) questions back from
+  the answer; mean cosine similarity of their dense-encoder embeddings with the question, 0 when
+  the judge finds the answer noncommittal
+- **Context Relevance / Precision**: the judge marks each excerpt relevant or not to the question;
+  relevant / excerpts, and average precision in source order
+
+An answer without excerpts (no passing paper) is not judged: faithfulness and context scores are
+undefined and answer relevance is 0. The judge defaults to the generator's model at temperature 0
+(`eval.answer.judge_model`, `judge_temperature`); a model judging its own answers can be lenient,
+so report the judge model. Judge and generation token usage are reported separately (§7).
 
 ## 7. Performance Metrics (Q2/Q4)
 
@@ -210,20 +223,23 @@ Run on every evaluation query (or a representative subset):
 | Agentic loop (orchestration layer) | Single-round parallel | `orchestration.loop.enabled=false` |
 
 Ablation matrix: baseline / +A / +B / +A+B (the assignment requires: add only A, add only B, add both, and report each gain).
-Metrics: the ROUGE/BERTScore/RAGAS trio + coverage.
 
-The D46 runner supplies this matrix for Paper Search outcomes (for example `--stage review
---ablation loop hyde`). It does not yet measure the downstream QA metrics above, so its
-coverage/source scores alone do not complete the Q5 generation evaluation.
+Run the D46 matrix for Paper Search (for example `--stage review --ablation loop hyde`), then
+`--stage answer --source <paths.results>/ablation_runs/<tag>` answers every row's questions and reports
+paired answer-metric means and deltas (§5–§6) for baseline→A, baseline→B, baseline→AB and the
+one-switch edges, next to the review report's source and coverage comparisons.
 
 ## 9. Running and Reproduction
 
 - Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`:
   retrieval (§2), review (§4), or both in sequence. `all` includes paid LLM calls; use an explicit
   stage for a bounded run. `--ablation FACTOR [FACTOR]` requires an explicit stage and follows
-  the controlled protocol in §3. Generation/RAGAS runners remain unimplemented.
+  the controlled protocol in §3. `--stage answer --source DIR` answers and scores a finished review
+  run or review ablation (§5, §6, §8); it is not part of `all`.
 - Retrieval writes `paths.results/metrics/retrieval_<tag>.json`; review writes
   `paths.results/review_runs/<tag>/report.json` with its manifest and per-attempt traces.
+- Answers write `paths.results/answer_runs/<tag>/` (report, `rows/<row>/answers.jsonl`, checkpoints;
+  SCHEMA §13) and publish `paths.results/metrics/answer_<tag>.json`.
 - Ablations write `paths.results/ablation_runs/<tag>/report.json`, a selected-query snapshot,
   manifest and isolated row/stage checkpoints (SCHEMA §12). The CLI atomically publishes a
   copy at `paths.results/metrics/ablation_<factor_names_joined_underscore>_<tag>.json`.

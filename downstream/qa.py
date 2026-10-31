@@ -147,13 +147,26 @@ def run(input_text: str, query_id: str | None = None) -> DownstreamResult:
         raise ValueError("Enter a question first.")
     question = input_text.strip()
     started = time.perf_counter()
-    cfg = get_config()
-    max_tokens = _limit(cfg.get("downstream", {}), "max_tokens", 1024)
+    _limit(get_config().get("downstream", {}), "max_tokens", 1024)  # fail before a paid search
     try:
         search = run_query(question, query_id=query_id)
     except Exception as exc:
         raise DownstreamError("Paper search failed. Check the retrieval index and search configuration.") from exc
+    return answer_from_search(question, search, started=started)
+
+
+def answer_from_search(question: str, search: FinalResult, *, started: float | None = None) -> DownstreamResult:
+    """The second half of `run`: evidence and one cited answer for a finished Paper Search result.
+
+    The answer evaluation (eval/answer_eval.py, D49) calls it on stored search results, so the UI
+    and the evaluation share one evidence and generation path. `started` is the caller's
+    `time.perf_counter()` before the search (search_ms is 0 without it). Raises like `run`.
+    """
     search_end = time.perf_counter()
+    started = search_end if started is None else started
+    question = question.strip()
+    cfg = get_config()
+    max_tokens = _limit(cfg.get("downstream", {}), "max_tokens", 1024)
     try:
         sources = _sources(search, cfg)
     except (OSError, RuntimeError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:

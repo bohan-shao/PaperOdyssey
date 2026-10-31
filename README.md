@@ -3,8 +3,8 @@
 > Course assignment: AI6127 Deep Neural Networks for NLP (2026). Deadline **2026-11-07 23:59 SGT**, submit via Blackboard.
 > Current status: KB, retrieval core, LLM client, orchestration, cited paper QA, and a minimal UI are implemented.
 > Retrieval/review metrics, resumable Paper Search evaluation and automatic ablations (`scripts/run_eval.py`), IAA and the eval-set
-> tooling (`scripts/eval_set.py`) are implemented; generation/RAGAS metrics
-> and a live end-to-end QA run on the built indexes are pending.
+> tooling (`scripts/eval_set.py`) are implemented, as are answer-level RAGAS-style metrics on finished search runs
+> (`--stage answer`, D49); running them, and a live end-to-end QA run, on the built indexes is pending.
 
 ## What the System Does
 
@@ -65,7 +65,7 @@ after changing model/index configuration so loaded components are replaced consi
 | `orchestration/` | Orchestration layer (Paper Search): query understanding/parallel retrieval/review/rewriting loop (agentic RAG, Q3/Q5 innovation) |
 | `downstream/` | Cited paper QA: calls Paper Search, reads evidence, generates an answer (Q4/Q5) |
 | `llm/` | Shared LLM client and orchestration prompts; answer prompts live in `downstream/` |
-| `eval/` | Retrieval/review evaluation and annotation tooling; generation/RAGAS evaluation remains pending |
+| `eval/` | Retrieval/review/answer evaluation (RAGAS-style answer metrics) and annotation tooling |
 | `ui/` | Streamlit interface (Q2) |
 | `scripts/` | One-click scripts: download/build index/run evaluation/sanity checks |
 | `docs/` | Architecture, schema, conventions, evaluation plan, decision records |
