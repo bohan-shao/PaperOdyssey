@@ -375,7 +375,55 @@ async def _generate_hyde(input_text: str) -> tuple[str | None, int]:
         return None, round((time.perf_counter() - started) * 1000)
 
 
+def _plain_rag(input_text: str, query_id: str) -> FinalResult:
+    """The non-agentic baseline (D55): the question as typed -> retrieve() -> papers in rank order.
+
+    No LLM call: no query understanding, HyDE, review or rewriting. Every paper among the
+    retrieved passages is kept ("pass", score 0 = not reviewed) in the order of its best passage,
+    with its passages in rank order as evidence, so Paper QA answers it with the same prompt and
+    evidence budget (`downstream.max_papers`, `passages_per_paper`) as the agentic search.
+    """
+    started = time.perf_counter()
+    try:
+        result = retrieve(input_text)
+    except Exception as exc:
+        raise OrchestrationError(f"retrieval failed for query {input_text!r}: {exc}") from exc
+    retrieval_ms = round((time.perf_counter() - started) * 1000)
+    passages: dict[str, list[str]] = {}
+    titles: dict[str, str] = {}
+    ranks: dict[str, int] = {}
+    for hit in sorted(result.hits, key=lambda hit: (hit.rank, -hit.score, hit.passage_id)):
+        ids = passages.setdefault(hit.paper_id, [])
+        if hit.passage_id not in ids:
+            ids.append(hit.passage_id)
+        titles.setdefault(hit.paper_id, hit.title)
+        ranks.setdefault(hit.paper_id, hit.rank)
+    records = [
+        ReviewRecord(paper_id, "pass", 0, reasons="Plain RAG baseline: retrieved, not reviewed.", round=1,
+                     evidence={"title": titles[paper_id], "top_passages": ids})
+        for paper_id, ids in passages.items()
+    ]
+    return FinalResult(
+        query_id=query_id,
+        input_text=input_text,
+        query_plan=QueryPlan(input_text, [SubQuery(input_text)], []),
+        papers=sorted(records, key=lambda record: passing_order_key(record.paper_id, record.score, ranks)),
+        coverage_report={
+            "total_aspects": 0, "covered_aspects": 0, "covered_criteria": [], "uncovered_aspects": [],
+            "rounds": 1, "papers_reviewed": len(records), "papers_passed": len(records), "re_reviews": 0,
+            "termination_reason": "plain_rag", "cache_hit": False, "template_version": TEMPLATE_VERSION,
+            "review_backend": "none",
+        },
+        reviews=records,
+        retrieval_ranks=ranks,
+        latency_by_stage={"understanding_ms": 0, "hyde_ms": 0, "retrieval_ms": retrieval_ms,
+                          "review_ms": 0, "rewrite_ms": 0, "total_ms": 0},
+    )
+
+
 async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any]) -> FinalResult:
+    if not cfg["orchestration"].get("agentic", {}).get("enabled", True):
+        return await asyncio.to_thread(_plain_rag, input_text, query_id)
     understanding_started = time.perf_counter()
     plan = await asyncio.to_thread(understand, input_text)
     understanding_ms = round((time.perf_counter() - understanding_started) * 1000)

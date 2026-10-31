@@ -83,7 +83,7 @@ hypothetical document is appended as one additional `SubQuery` with empty `keywo
 {
   "paper_id": "P1234",
   "verdict": "pass",              // "pass" | "reject"
-  "score": 4,                     // 1–5
+  "score": 4,                     // 1–5; 0 = not reviewed (plain RAG baseline, D55)
   "reasons": "covers LoRA variants but lacks comparison experiments",
   "covered": ["efficient fine-tuning methods"],
   "missing": ["comparison experiment conclusions"],
@@ -123,6 +123,11 @@ reasons, covered/missing aspects and evidence for review evaluation. A paper rev
 later round, because that round retrieved passages of it the reviewer had not seen (D53), keeps
 only its latest record; `coverage_report.re_reviews` counts these (absent before D53). On a fresh
 run, `len(reviews)` equals `coverage_report.papers_reviewed`.
+
+With `orchestration.agentic.enabled=false` (plain RAG baseline, D55) there is no review: every paper
+among the retrieved passages is a `pass` record with score 0 and its passage IDs in rank order as
+evidence, `papers` and `reviews` hold the same records in retrieval order, and `coverage_report`
+has `total_aspects` 0, `rounds` 1, `termination_reason` "plain_rag" and `review_backend` "none".
 
 `reviews` defaults to `[]` for existing callers and cached results written before this field
 was introduced. An empty trace from an old cache means the review records are unavailable;

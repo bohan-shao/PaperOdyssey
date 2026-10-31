@@ -41,6 +41,7 @@ Named ablations require an explicit stage and one or two canonical factor names:
 python scripts/run_eval.py --stage retrieval --ablation rerank --split eval --tag rerank-eval
 python scripts/run_eval.py --stage retrieval --ablation query_views diversity --split eval --tag views-diversity
 python scripts/run_eval.py --stage review --ablation loop hyde --split dev --limit 3 --tag loop-hyde-smoke
+python scripts/run_eval.py --stage review --ablation agentic --split eval --tag agentic --workers 8   # plain RAG vs agentic (D55)
 ```
 
 After a review run or a review ablation finishes, answer and score its questions (D49; LLM calls, no
@@ -49,6 +50,7 @@ new search; needs the same lookup store and the dense encoder):
 ```bash
 python scripts/run_eval.py --stage answer --source data/results/review_runs/review-eval --tag answers-eval --workers 8
 python scripts/run_eval.py --stage answer --source data/results/ablation_runs/loop-hyde --tag answers-loop-hyde --workers 8
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/agentic --tag answers-agentic --workers 8
 ```
 
 Append `--dry-run` to print the plan without querying or writing files. The baseline disables

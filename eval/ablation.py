@@ -37,6 +37,7 @@ FACTORS = {
     "parent_doc": {"key": "retrieval.parent_doc.enabled", "stages": ["review"]},
     "hyde": {"key": "orchestration.hyde.enabled", "stages": ["review"]},
     "loop": {"key": "orchestration.loop.enabled", "stages": ["review"]},
+    "agentic": {"key": "orchestration.agentic.enabled", "stages": ["review"]},  # D55: off = plain RAG
 }
 _UNSUPPORTED = {
     "semantic_chunking": "semantic chunking requires paired prebuilt corpus/lookup/sparse/dense indexes",
@@ -111,6 +112,8 @@ def _plan(cfg: dict, factors: Sequence[str], stage: str, tag: str, questions: li
             raise ValueError("loop ablation requires max_rounds >= 2")
         if cfg["orchestration"].get("rewrite", {}).get("max_queries_per_round", 2) < 1:
             raise ValueError("loop ablation requires at least one rewrite query per round")
+    if "agentic" in factors and {"hyde", "loop"} & set(factors):
+        raise ValueError("hyde and loop act only inside the agentic search; ablate them apart from agentic")
     seed = cfg.get("seed")
     if type(seed) is not int or not 0 <= seed < 2 ** 32:
         raise ValueError("seed must be an integer in [0, 2**32)")

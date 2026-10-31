@@ -322,6 +322,9 @@ class AblationIntegrationTest(unittest.TestCase):
             ("no rewrites", ["loop"], "review", {"orchestration.rewrite.max_queries_per_round": 0}),
             ("nonboolean switch", ["rerank"], "retrieval", {"retrieval.rerank.enabled": 1}),
             ("bad seed", ["rerank"], "retrieval", {"seed": True}),
+            ("agentic with loop", ["agentic", "loop"], "review", {}),
+            ("agentic with HyDE", ["hyde", "agentic"], "review", {}),
+            ("agentic retrieval stage", ["agentic"], "retrieval", {}),
         ]
         for name, factors, stage, overrides in cases:
             self.cfg = copy.deepcopy(self.original_cfg)

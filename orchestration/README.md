@@ -72,6 +72,14 @@ input_text
 - Output: 1–2 supplementary sub-queries (LLM), added to the next round of retrieval; round+1
 - Constraint: supplementary queries must not duplicate the semantics of existing sub-queries (the LLM instruction carries the existing query list for deduplication)
 
+### loop.py — Plain RAG baseline (D55)
+- `orchestration.agentic.enabled=false` replaces the whole agentic search with the question as typed →
+  one `retrieve()` (hybrid + rerank, configured settings, no filters) → every retrieved paper kept in the
+  order of its best passage (`pass`, score 0 = not reviewed, its passages as evidence). No LLM call:
+  query understanding, HyDE, review and the loop are skipped, and their switches are ignored.
+- Paper QA answers it with the same prompt and evidence budget as the agentic search, so
+  `--ablation agentic` measures what the orchestration adds (Q5).
+
 ### loop.py — Loop control (D11)
 - asyncio producer-consumer: retrieval tasks run in parallel and enqueue as soon as they finish; review workers consume in parallel
 - Termination conditions (stop when any one is met):
