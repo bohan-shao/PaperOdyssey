@@ -297,6 +297,62 @@ class LoopTests(unittest.TestCase):
             self.assertTrue(restored.coverage_report["cache_hit"])
             self.assertEqual(restored.latency_by_stage, result.latency_by_stage)
 
+    def test_a_later_round_reviews_a_paper_again_when_it_brings_new_passages(self) -> None:
+        from eval.review_eval import _validate_result
+
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["max_rounds"] = 3
+        plan = QueryPlan("request", [SubQuery("q1")], [Criterion("aspect", "extracted")])
+        seen_passages = []
+
+        def fake_review(candidates, criteria, text, round_no):
+            records = []
+            for candidate in candidates:
+                ids = [p["passage_id"] for p in candidate["top_passages"]]
+                seen_passages.append((round_no, ids))
+                ok = "P1_2" in ids  # only the passage found in round 2 covers the aspect
+                records.append(ReviewRecord(
+                    candidate["paper_id"], "pass" if ok else "reject", 5 if ok else 2, round=round_no,
+                    covered=["aspect"] if ok else [], missing=[] if ok else ["aspect"],
+                    evidence={"top_passages": ids}))
+            return records
+
+        def fake_retrieve(query, filters=None):
+            # Round 2 finds the same paper again through a different passage; round 3 adds nothing new.
+            return RetrieveResult([hit("P1")] if query == "q1" else [hit("P1", suffix="2"), hit("P1")], 1)
+
+        with patch("orchestration.loop.rewrite", side_effect=[[SubQuery("q2")], [SubQuery("q3")]]):
+            result = self._run_with_patches(cfg, understand=lambda text: plan,
+                                            retrieve=fake_retrieve, batch_review=fake_review)
+        self.assertEqual(seen_passages, [(1, ["P1_1"]), (2, ["P1_1", "P1_2"])])
+        self.assertEqual([(r.paper_id, r.verdict, r.round) for r in result.reviews], [("P1", "pass", 2)])
+        self.assertEqual([r.paper_id for r in result.papers], ["P1"])
+        report = result.coverage_report
+        self.assertEqual((report["rounds"], report["termination_reason"], report["covered_aspects"]),
+                         (2, "coverage_met", 1))
+        self.assertEqual((report["papers_reviewed"], report["papers_passed"], report["re_reviews"]), (1, 1, 1))
+        _validate_result({"query_id": result.query_id, "input_text": "request"}, asdict(result))
+
+    def test_a_later_review_replaces_the_earlier_one_and_coverage_follows_it(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["max_rounds"] = 2
+        plan = QueryPlan("request", [SubQuery("q1")], [Criterion("one", "extracted"), Criterion("two", "extracted")])
+
+        def fake_review(candidates, criteria, text, round_no):
+            # P1 first passes on "one"; with more evidence the reviewer rejects it.
+            return [ReviewRecord(c["paper_id"], "pass" if round_no == 1 else "reject", 3, round=round_no,
+                                 covered=["one"] if round_no == 1 else []) for c in candidates]
+
+        with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+            result = self._run_with_patches(
+                cfg, understand=lambda text: plan, batch_review=fake_review,
+                retrieve=lambda query, filters=None: RetrieveResult(
+                    [hit("P1")] if query == "q1" else [hit("P1", suffix="2")], 1))
+        self.assertEqual([(r.verdict, r.round) for r in result.reviews], [("reject", 2)])
+        self.assertEqual(result.papers, [])
+        self.assertEqual(result.coverage_report["covered_aspects"], 0)
+        self.assertEqual(result.coverage_report["uncovered_aspects"], ["one", "two"])
+
     def test_legacy_cache_has_unavailable_trace_and_is_still_reused(self) -> None:
         from orchestration import loop
 
@@ -495,6 +551,36 @@ class LoopTests(unittest.TestCase):
             self.assertEqual(calls["understand"], 2)
             self.assertEqual(loop_on.query_id, loop_off.query_id)
             self.assertEqual(len(list(Path(directory).glob("*.json"))), 2)
+
+    def test_cache_key_changes_when_the_corpus_is_rebuilt(self) -> None:
+        import os
+
+        from orchestration import loop
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = make_config()
+            cfg["paths"] = {"indices": str(root / "indices"), "processed": str(root / "processed")}
+            cfg["retrieval"] = {"lookup": {"db_file": "lookup.sqlite"}, "sparse": {"index_dir": "bm25"},
+                                "dense": {"faiss_dir": "faiss"}}
+            files = [root / "indices" / "lookup.sqlite", root / "indices" / "bm25" / "meta.json",
+                     root / "indices" / "faiss" / "meta.json", root / "processed" / "papers.sqlite"]
+            for path in files:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}", encoding="utf-8")
+                os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            with patch("orchestration.loop._paper_database_path", return_value=files[3]):
+                before = loop._cache_digest("request", cfg)
+                self.assertEqual(loop._cache_digest("request", cfg), before)
+                for path in files:  # every built file counts: rebuild one at a time
+                    os.utime(path, ns=(2_000_000_000, 2_000_000_000))
+                    after = loop._cache_digest("request", cfg)
+                    self.assertNotEqual(after, before, path.name)
+                    before = after
+                files[1].write_text('{"num_docs": 2}', encoding="utf-8")  # same time, other content size
+                os.utime(files[1], ns=(2_000_000_000, 2_000_000_000))
+                self.assertNotEqual(loop._cache_digest("request", cfg), before)
+        self.assertIsNone(loop._corpus_identity(make_config()))  # no corpus configured
 
     def test_corrupt_cache_is_rebuilt_and_failure_is_not_cached(self) -> None:
         from orchestration import loop

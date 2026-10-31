@@ -77,8 +77,8 @@ class FinalResult:
 
     This is the search result only — it contains no generated answer. The downstream
     task (downstream/) consumes this and produces its own task output (D24).
-    `papers` holds passing records in `passing_order_key` order; `reviews` retains all pass/reject
-    records across rounds; `retrieval_ranks` maps every reviewed paper to its best retrieval rank
+    `papers` holds passing records in `passing_order_key` order; `reviews` retains one pass/reject
+    record per reviewed paper, its latest review (D53); `retrieval_ranks` maps every reviewed paper to its best retrieval rank
     in this run (D47). Legacy cached results have an unavailable trace (`reviews=[]`) and no ranks.
     """
 

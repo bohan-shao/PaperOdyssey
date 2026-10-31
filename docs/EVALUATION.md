@@ -86,7 +86,7 @@ questions and must not be reported as 1,027 held-out eval questions.
 | Cross-encoder rerank | No reranking | `retrieval.rerank.enabled` | See §2 matrix |
 | Query views | Original query in both channels | `retrieval.query_processing.enabled` | Preserve dense semantics; deduplicate lexical tokens; retain negation/numbers |
 | Paper/section diversity | Plain top-k passage truncation | `retrieval.diversity.enabled` | Source recall and relevant-paper precision alongside distinct-paper count |
-| Sparse field weighting | Equal FTS5 field weights | `retrieval.sparse.field_weighting.enabled` | SQLite only; hold analyzer/backend/corpus fixed |
+| Sparse field weighting | Equal FTS5 field weights | `retrieval.sparse.field_weighting.enabled` | SQLite only; hold analyzer/backend/corpus fixed. A side experiment: the deployed sparse retriever is Pyserini, and the brief rules out SQL-based text search as the retriever |
 
 Each ablation must include: query instances that **failed before the improvement → succeeded after** (explicitly required by the assignment).
 
@@ -228,6 +228,14 @@ so report the judge model. Judge and generation token usage are reported separat
 - Cost: tokens per query (in/out) + estimated price; total index-building time
 - Scale: index size (BM25 directory, FAISS files), vector dimension, total number of chunks
 - Scalability discussion: effect of ANN parameters (efSearch), sharding, and batch encoding on throughput (measured or estimated)
+- Q2 speed of the deployed retriever: `scripts/benchmark_retrieval.py --protocol production` (D51) times
+  the configured settings, including the five UI example queries and their results. The default
+  `legacy_50_v2` protocol fixes older settings for comparisons across config changes; it does not
+  describe the deployed system.
+- Q2 five queries end to end: `scripts/run_examples.py` (D51) runs the five UI example inputs
+  through Paper Search and the cited answer with the configured settings, and saves each input's
+  papers, answer, sources, per-stage latency and tokens. Report these whole-system times (tens
+  of seconds, dominated by the LLM review) apart from the sub-second retrieval-core times.
 
 ## 8. Q5 Downstream Innovation Ablations
 
@@ -255,6 +263,9 @@ one-switch edges, next to the review report's source and coverage comparisons.
   run or review ablation (§5, §6, §8); it is not part of `all`.
 - Retrieval writes `paths.results/metrics/retrieval_<tag>.json`; review writes
   `paths.results/review_runs/<tag>/report.json` with its manifest and per-attempt traces.
+- The retrieval latency benchmark writes `paths.results/metrics/latency_retrieval_<date>.json`, or
+  `latency_retrieval_production_<date>.json` with `--protocol production` (§7, D51). The five
+  examples end to end write `paths.results/metrics/examples_<date>.json` (§7, D51).
 - The answer audit (§5, D54) writes its sheets, packets and manifest under
   `paths.eval/answer_audit/` and its report to `paths.results/metrics/answer_audit_<tag>.json`.
 - Answers write `paths.results/answer_runs/<tag>/` (report, `rows/<row>/answers.jsonl`, checkpoints;
@@ -315,6 +326,7 @@ configured, not silently substituted. Every row saves effective settings; report
 queries, requested settings and baseline overrides. Rerank-depth sweeps expand the collection
 budget to the largest requested depth and report actual pairs, so undersized pools are visible.
 `cold_start_s` covers component loading and warm-up, not process creation or cold filesystem caches.
+`--protocol production` (D51) fixes none of these settings and times config.yaml as it is.
 
 Before selecting a new production model/default, repeat on manually annotated dev queries,
 then evaluate untouched held-out queries at paper and passage granularity. Include filtered,

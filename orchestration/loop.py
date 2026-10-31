@@ -10,6 +10,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -17,6 +18,8 @@ from config import get_config, get_path
 from kb.store import load_paper
 from llm.client import get_client
 from llm.prompt import TEMPLATE_VERSION, build_hyde_prompt
+from retrieval.index_paths import index_directory
+from retrieval.lookup import lookup_path
 from retrieval.pipeline import retrieve
 from retrieval.types import RetrievalFilters, RetrieveResult, ScoredPassage
 
@@ -41,12 +44,41 @@ def _auto_query_id(digest: str) -> str:
     return f"Q{digest[:12].upper()}"
 
 
+def _file_stamp(path: Path) -> list[object] | None:
+    """Path, size and modification time of a built file; None while it does not exist."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return [str(path), info.st_size, info.st_mtime_ns]
+
+
+def _corpus_identity(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """The built files a search reads, stamped so that a rebuild changes the cache key (D52).
+
+    The lookup store, both index manifests and the paper store. A rebuild writes them anew, so
+    their modification times change even at the same paths and corpus size. None when the
+    configuration names no corpus.
+    """
+    try:
+        retrieval_cfg = cfg["retrieval"]
+        files = {
+            "lookup": lookup_path(cfg),
+            "sparse": index_directory(retrieval_cfg["sparse"]["index_dir"], cfg) / "meta.json",
+            "dense": index_directory(retrieval_cfg["dense"]["faiss_dir"], cfg) / "meta.json",
+            "papers": _paper_database_path(cfg),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {name: _file_stamp(path) for name, path in files.items()}
+
+
 def _config_fingerprint(cfg: dict[str, Any]) -> str:
-    """The settings that can change a search result, as a stable string.
+    """The settings and built corpus that can change a search result, as a stable string.
 
     It is part of the cache key, so flipping an ablation switch (loop on/off, HyDE, reviewer,
-    retrieval settings, LLM model, chunking) or a prompt template change never returns a
-    result that was computed under different settings.
+    retrieval settings, LLM model, chunking), a prompt template change or a rebuilt KB or index
+    never returns a result that was computed under different settings or another corpus.
     """
     kb_cfg = cfg.get("kb", {})
     relevant = {
@@ -55,6 +87,7 @@ def _config_fingerprint(cfg: dict[str, Any]) -> str:
         "llm": cfg.get("llm", {}),
         "kb": {"chunk": kb_cfg.get("chunk", {}), "store": kb_cfg.get("store", {})},
         "template_version": TEMPLATE_VERSION,
+        "corpus": _corpus_identity(cfg),
     }
     return json.dumps(relevant, sort_keys=True, default=str)
 
@@ -184,6 +217,39 @@ def _candidate_from_hits(
     }
 
 
+_EVIDENCE_PASSAGES = 3  # passages per review, as in _candidate_from_hits
+
+
+def _claim(
+    candidate: dict[str, Any],
+    shown: dict[str, list[dict[str, str]]],
+    queued: set[str],
+) -> dict[str, Any] | None:
+    """The candidate to review now, or None (D53). Call under the round's lock.
+
+    A new paper is reviewed. A paper reviewed in an earlier round is reviewed again when this
+    round retrieved passages of it that the reviewer has not seen: the new review gets its earlier
+    and new passages interleaved (best earlier one first). A paper is reviewed at most once per
+    round, so round 1 behaves as before D53.
+    """
+    paper_id = candidate["paper_id"]
+    if paper_id in queued:
+        return None
+    previous = shown.get(paper_id)
+    if previous is None:
+        shown[paper_id] = list(candidate["top_passages"])
+    else:
+        seen = {passage["passage_id"] for passage in previous}
+        new = [passage for passage in candidate["top_passages"] if passage["passage_id"] not in seen]
+        if not new:
+            return None
+        merged = [p for pair in zip_longest(previous, new) for p in pair if p is not None]
+        shown[paper_id] = previous + new
+        candidate = {**candidate, "top_passages": merged[:_EVIDENCE_PASSAGES]}
+    queued.add(paper_id)
+    return candidate
+
+
 def _candidates_from_result(result: RetrieveResult, database_path: Path) -> list[dict[str, Any]]:
     grouped: dict[str, list[ScoredPassage]] = {}
     for hit in result.hits:
@@ -199,7 +265,7 @@ async def _run_round(
     criteria: list[Criterion],
     input_text: str,
     round_no: int,
-    seen_papers: set[str],
+    shown: dict[str, list[dict[str, str]]],
     best_ranks: dict[str, int],
     cfg: dict[str, Any],
 ) -> tuple[list[ReviewRecord], int, int]:
@@ -209,6 +275,7 @@ async def _run_round(
     database_path = _paper_database_path(cfg)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     seen_lock = asyncio.Lock()
+    queued: set[str] = set()
     retrieval_intervals: list[tuple[float, float]] = []
     review_intervals: list[tuple[float, float]] = []
 
@@ -233,11 +300,9 @@ async def _run_round(
         candidates = await asyncio.to_thread(_candidates_from_result, result, database_path)
         for candidate in candidates:
             async with seen_lock:
-                paper_id = candidate["paper_id"]
-                if paper_id in seen_papers:
-                    continue
-                seen_papers.add(paper_id)
-            await queue.put(candidate)
+                claimed = _claim(candidate, shown, queued)
+            if claimed is not None:
+                await queue.put(claimed)
 
     async def review_worker() -> list[ReviewRecord]:
         records: list[ReviewRecord] = []
@@ -342,9 +407,10 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
 
     current_queries = list(plan.sub_queries)
     existing_queries = [query.query for query in current_queries]
-    seen_papers: set[str] = set()
+    shown: dict[str, list[dict[str, str]]] = {}
     best_ranks: dict[str, int] = {}
-    all_reviews: list[ReviewRecord] = []
+    latest: dict[str, ReviewRecord] = {}  # one record per paper, its latest review, in round order (D53)
+    re_reviews = 0
     covered: set[str] = set()
     retrieval_ms = 0
     review_ms = 0
@@ -359,18 +425,18 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             plan.criteria,
             input_text,
             round_no,
-            seen_papers,
+            shown,
             best_ranks,
             cfg,
         )
         retrieval_ms += round_retrieval_ms
         review_ms += round_review_ms
-        all_reviews.extend(reviews)
         for record in reviews:
-            if record.verdict == "pass":
-                covered.update(item for item in record.covered if item in coverage_criteria)
-
-        passed = [record for record in all_reviews if record.verdict == "pass"]
+            if latest.pop(record.paper_id, None) is not None:
+                re_reviews += 1
+            latest[record.paper_id] = record
+        passed = [record for record in latest.values() if record.verdict == "pass"]
+        covered = {item for record in passed for item in record.covered if item in coverage_criteria}
         if covered.issuperset(coverage_criteria):
             termination_reason = "coverage_met"
             break
@@ -393,6 +459,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             break
         existing_queries.extend(query.query for query in current_queries)
 
+    all_reviews = list(latest.values())
     retrieval_ranks = {
         paper_id: best_ranks[paper_id]
         for paper_id in sorted({record.paper_id for record in all_reviews})
@@ -411,6 +478,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
         "rounds": rounds,
         "papers_reviewed": len(all_reviews),
         "papers_passed": len(passed_papers),
+        "re_reviews": re_reviews,
         "termination_reason": termination_reason,
         "cache_hit": False,
         "template_version": TEMPLATE_VERSION,

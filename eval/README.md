@@ -193,9 +193,22 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   unit = one (question, paper) pair, grouped by original annotator count with tie-breakers excluded;
   report in `data/results/metrics/iaa_<date>.json`
 
+### examples.py — The five example inputs end to end (Q2, EVALUATION.md §7, D51)
+- Run: `python scripts/run_examples.py [--config config.yaml] [--out PATH]` (needs the built indexes,
+  the models and an LLM key; fresh process) → `data/results/metrics/examples_<date>.json` + one
+  line per input
+- Each `ui.example_inputs` entry goes through `downstream.run()`, the UI's Paper QA path (Paper
+  Search, then one cited answer), with the configured settings and `orchestration.loop.cache`
+  off in memory, so nothing comes from an earlier run. Retrieval components load first
+  (`cold_start_s`); the inputs then run warm, one after another.
+- Per input: passing papers (ID, title, score), coverage report, answer, numbered sources with
+  the excerpts the model saw, cited numbers, search-stage and answer latency, and LLM usage
+  (`usage_scope`). A failed input keeps its error and the run continues; the script then exits 1.
+
 ### latency.py — Retrieval-core latency benchmark (Q2, EVALUATION.md §7)
-- Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100]` (needs the built
-  indexes and models) → `data/results/metrics/latency_retrieval_<date>.json` + a summary table
+- Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100] [--protocol production]`
+  (needs the built indexes and models) → `data/results/metrics/latency_retrieval_<date>.json`
+  (`latency_retrieval_production_<date>.json` with `--protocol production`) + a summary table
 - Times `retrieve()` only (no LLM stages), warm, over paper titles sampled from papers.sqlite
   (seeded): per-stage p50/p95 for the four ablation rows + filtered + parent-doc, the DESIGN §4
   budget check (hybrid+rerank p95 < 500 ms), throughput at 1/4/8 concurrent callers, an efSearch
@@ -211,6 +224,10 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   includes requested/baseline configs and the full query batch. The CLI accepts `--config`.
   Actual index paths/manifests are recorded; the latest build-log path is unverified context
   and is not assumed to describe the measured indexes (`index_build` is null in v2).
+- `--protocol production` (D51) fixes none of the settings above: every row, the throughput, the
+  sweeps and the examples use config.yaml as it is, each row changing only its own switches.
+  Use it for the deployed system's Q2 latency. With `dense.top_k` 150, FAISS HNSW searches with
+  max(efSearch, k), so pass `--ef` values of at least 150.
 - Run in a fresh dedicated process; loaded components from another configuration are rejected.
   `cold_start_s` is retained for compatibility but measures component load plus warm-up, with
   possibly warm OS/model file caches. Rerank sweeps collect up to the largest requested depth

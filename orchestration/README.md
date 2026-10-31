@@ -51,7 +51,12 @@ input_text
   title + abstract (truncated) + top 2–3 passages (truncated), token budget controlled by config
 - Review concurrency is bounded by `review.max_concurrency`; paper metadata is enriched through
   the read-only `kb.store.load_paper()` interface and safely falls back to retrieval evidence
-- Deduplication: a paper hit by multiple paths is reviewed only once (by paper_id)
+- Deduplication: within a round, a paper hit by multiple paths is reviewed only once (by paper_id).
+  A later round reviews a paper again when it retrieved passages of it that the reviewer has not
+  seen (D53): the new review gets the earlier and new passages interleaved (best earlier one first,
+  at most 3) and replaces the earlier record, so `reviews` keeps one record per paper (its latest
+  review) and coverage follows the latest records. `coverage_report.re_reviews` counts these.
+  The same passages found again cause no new review.
 - Outputs a list of ReviewRecord; papers with `verdict="reject"` do not enter the candidate set
 - Invalid or unavailable review output is retried once, then fails the query with `OrchestrationError`
 - Reviewer backend (config `review.backend`): `llm` (default) or `jev` (TypeSafe Jev, `llm/jev.py`).
@@ -80,8 +85,11 @@ input_text
   not content aspects. A started round finishes before a termination condition is evaluated.
 - Cache identity is SHA-256 over the whitespace-normalized input plus the settings that can change
   the result (`orchestration.*`, `retrieval.*`, `llm.*`, `kb.chunk` / `kb.store` and
-  `TEMPLATE_VERSION`), stored under `data/results/final_results/`. Flipping an ablation switch
-  therefore runs the search again instead of returning a result made under other settings.
+  `TEMPLATE_VERSION`) and the built corpus it reads (D52: path, size and modification time of
+  the lookup store, both index `meta.json` files and papers.sqlite), stored under
+  `data/results/final_results/`. Flipping an ablation switch or rebuilding the KB or an index
+  therefore runs the search again instead of returning a result made under other settings or
+  from another corpus.
   Auto-generated query IDs depend on the input only, so they stay stable across settings; an
   explicitly supplied query ID overrides the returned ID while reusing cached content. Writes are
   atomic and failed queries are never cached.

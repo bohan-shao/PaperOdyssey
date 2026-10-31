@@ -104,9 +104,9 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
   "input_text": "...",
   "query_plan": { ... see §4 ... },
   "papers": [ {"paper_id": "...", "verdict": "pass", "score": 4, "reasons": "...", "covered": ["..."], "missing": [], "round": 1, "evidence": {"title": "...", "top_passages": ["P1234_0007"]}} ],
-  "reviews": [ { ... see §5: every pass and reject record from every completed round ... } ],
+  "reviews": [ { ... see §5: one pass or reject record per reviewed paper, its latest review ... } ],
   "retrieval_ranks": {"P1234": 1, "P5678": 3},
-  "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0", "review_backend": "llm"},
+  "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "re_reviews": 0, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0", "review_backend": "llm"},
   "latency_by_stage": {"understanding_ms": 1500, "hyde_ms": 0, "retrieval_ms": 420, "review_ms": 3800, "rewrite_ms": 600, "total_ms": 6500}
 }
 ```
@@ -117,10 +117,12 @@ reviewed paper to its best position (1 = first) among the passages of any sub-qu
 result in the run, including sub-queries that returned it after its review; review scores are
 1–5 integers, so this keeps the retriever's order among equal scores. Results written before D47
 have no ranks (`{}`) and fall back to score then paper ID. `reviews`
-contains all `ReviewRecord` values produced by the run, including rejects, in round order;
+contains one `ReviewRecord` per reviewed paper, including rejects, in round order;
 the order within a round is not a relevance ranking. Each record retains its round, verdict,
-reasons, covered/missing aspects and evidence for review evaluation. On a fresh run,
-`len(reviews)` equals `coverage_report.papers_reviewed`.
+reasons, covered/missing aspects and evidence for review evaluation. A paper reviewed again in a
+later round, because that round retrieved passages of it the reviewer had not seen (D53), keeps
+only its latest record; `coverage_report.re_reviews` counts these (absent before D53). On a fresh
+run, `len(reviews)` equals `coverage_report.papers_reviewed`.
 
 `reviews` defaults to `[]` for existing callers and cached results written before this field
 was introduced. An empty trace from an old cache means the review records are unavailable;
