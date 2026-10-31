@@ -194,7 +194,7 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   report in `data/results/metrics/iaa_<date>.json`
 
 ### examples.py — The five example inputs end to end (Q2, EVALUATION.md §7, D51)
-- Run: `python scripts/run_examples.py [--config config.yaml] [--out PATH]` (needs the built indexes,
+- Run: `python scripts/run_examples.py [--config config.yaml] [--input TEXT ...] [--out PATH]` (needs the built indexes,
   the models and an LLM key; fresh process) → `data/results/metrics/examples_<date>.json` + one
   line per input
 - Each `ui.example_inputs` entry goes through `downstream.run()`, the UI's Paper QA path (Paper
@@ -204,6 +204,8 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
 - Per input: passing papers (ID, title, score), coverage report, answer, numbered sources with
   the excerpts the model saw, cited numbers, search-stage and answer latency, and LLM usage
   (`usage_scope`). A failed input keeps its error and the run continues; the script then exits 1.
+- `--input` adds inputs after the five. For the report, add one hard multi-paper comparison and one
+  question outside the KB, which should get an honest insufficient-evidence reply.
 
 ### latency.py — Retrieval-core latency benchmark (Q2, EVALUATION.md §7)
 - Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100] [--protocol production]`
