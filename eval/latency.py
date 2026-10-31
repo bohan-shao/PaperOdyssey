@@ -1,8 +1,9 @@
 """Retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7).
 
 Times `retrieval.pipeline.retrieve()` alone (no LLM stages) against the built indexes, in one
-process, and returns one report (written to `data/results/metrics/latency_retrieval_<date>.json`
-by `scripts/benchmark_retrieval.py`):
+process, and returns one report (written to `data/results/metrics/latency_retrieval_<date>.json`,
+or `latency_retrieval_production_<date>.json` with the production protocol, by
+`scripts/benchmark_retrieval.py`):
 
 - cold start: loading every component (`warm_up()`), reported apart from per-query numbers.
 - configs: the four ablation rows (bm25, dense, hybrid, hybrid_rerank) plus hybrid_rerank with
@@ -23,6 +24,13 @@ by `scripts/benchmark_retrieval.py`):
 Queries are paper titles sampled from papers.sqlite with the configured seed (latency needs no
 relevance labels). Configurations are switched by overriding the in-memory config
 (`config_overrides`), never config.yaml, and are restored afterwards.
+
+Protocols (D51): `legacy_50_v2` (the default) fixes the ranking switches and budgets in `BASE`
+before loading anything, so runs stay comparable across config changes. `production` fixes
+nothing: every row, the throughput, the examples and the sweeps run the configured settings
+(query processing, diversity, 150/150/50 budgets), with each row changing only its own
+switches, as in the retrieval stage of run_eval.py. Use `production` for the deployed
+system's latency (Q2).
 
 Conventions: latencies in milliseconds; percentiles interpolate linearly between ranks (numpy's
 default): p of sorted x at position (n - 1) * p / 100. Numbers depend on corpus size (BM25 and
@@ -68,6 +76,7 @@ BASE = {"sparse.enabled": True, "dense.enabled": True, "rerank.enabled": True,
         "sparse.bm25.k1": 0.9, "sparse.bm25.b": 0.4,
         "dense.hnsw.efSearch": 128, "dense.filter_exact_max": 50000,
         "rerank.batch_size": 64, "rerank.max_length": 512}
+PROTOCOLS: dict[str, dict[str, object]] = {"legacy_50_v2": BASE, "production": {}}
 FILTERS = RetrievalFilters(year_min=2020, categories=["cs.CL"])  # "recent NLP papers"
 CONFIGS: dict[str, tuple[dict[str, object], RetrievalFilters | None]] = {
     "bm25": ({"dense.enabled": False, "rerank.enabled": False}, None),
@@ -153,12 +162,12 @@ def config_overrides(section: dict, overrides: dict[str, object]) -> Iterator[di
 
 
 def measure_config(section: dict, queries: Sequence[str], overrides: dict[str, object],
-                   filters: RetrievalFilters | None = None) -> dict:
+                   filters: RetrievalFilters | None = None, base: dict[str, object] = BASE) -> dict:
     """Per-stage latency of retrieve() for every query under one configuration."""
     stages: dict[str, list[float]] = {}
     hits = candidates = 0
     parent_counts = {"expanded": 0, "unchanged": 0, "no_parent": 0}
-    with config_overrides(section, {**BASE, **overrides}):
+    with config_overrides(section, {**base, **overrides}):
         effective_config = copy.deepcopy(section)
         for q in queries[:_UNMEASURED]:
             retrieve(q, filters)
@@ -184,10 +193,11 @@ def measure_config(section: dict, queries: Sequence[str], overrides: dict[str, o
             "mean_hits": round(hits / n, 2), "mean_candidates": round(candidates / n, 2)}
 
 
-def measure_throughput(section: dict, queries: Sequence[str], levels: Sequence[int]) -> list[dict]:
+def measure_throughput(section: dict, queries: Sequence[str], levels: Sequence[int],
+                       base: dict[str, object] = BASE) -> list[dict]:
     """Queries/second of the default configuration with each number of concurrent callers."""
     rows = []
-    with config_overrides(section, BASE):
+    with config_overrides(section, base):
         for level in levels:
             start = time.perf_counter()
             with ThreadPoolExecutor(level) as pool:
@@ -249,10 +259,11 @@ def sweep_rerank_depth(queries: Sequence[str], candidates: Sequence[Sequence[Sco
             for d in depths]
 
 
-def example_results(section: dict, inputs: Sequence[str], top_n: int = 3) -> list[dict]:
+def example_results(section: dict, inputs: Sequence[str], top_n: int = 3,
+                    base: dict[str, object] = BASE) -> list[dict]:
     """The default configuration's top hits and latency for each example input."""
     rows = []
-    with config_overrides(section, BASE):
+    with config_overrides(section, base):
         for text in inputs:
             result = retrieve(text)
             rows.append({"query": text, "latency_ms": result.latency_ms, "top": [
@@ -285,33 +296,38 @@ def environment() -> dict:
 
 def run_benchmark(n_queries: int = 100, concurrency: Sequence[int] = (1, 4, 8),
                   ef_values: Sequence[int] = (32, 64, 128, 256),
-                  rerank_depths: Sequence[int] = (10, 20, 30, 50)) -> dict:
-    """Run the fixed legacy protocol with configured models/indexes in a fresh process."""
+                  rerank_depths: Sequence[int] = (10, 20, 30, 50), protocol: str = "legacy_50_v2") -> dict:
+    """Run one protocol (`PROTOCOLS`) with configured models/indexes in a fresh process."""
+    if protocol not in PROTOCOLS:
+        raise ValueError(f"unknown latency protocol {protocol!r}; choose from {sorted(PROTOCOLS)}")
     if n_queries <= 0 or any(not values or any(v <= 0 for v in values)
                              for values in (concurrency, ef_values, rerank_depths)):
         raise ValueError("benchmark query count, concurrency, ef values and depths must be positive")
     require_fresh_runtime()
     section = get_config()["retrieval"]
     requested = copy.deepcopy(section)
+    base = PROTOCOLS[protocol]
     try:
-        with config_overrides(section, BASE):
-            report = _run_benchmark(n_queries, concurrency, ef_values, rerank_depths)
+        with config_overrides(section, base):
+            report = _run_benchmark(n_queries, concurrency, ef_values, rerank_depths, protocol)
             report["requested_config_snapshot"] = requested
             return report
     finally:
         clear_runtime(release_models=True)
 
 
-def _depth_candidates(section: dict, queries: Sequence[str], depth: int) -> tuple[list, dict]:
-    overrides = {**BASE, "rerank.enabled": False, "fusion.top_k": depth,
-                 "sparse.top_k": max(BASE["sparse.top_k"], depth),
-                 "dense.top_k": max(BASE["dense.top_k"], depth)}
+def _depth_candidates(section: dict, queries: Sequence[str], depth: int,
+                      base: dict[str, object] = BASE) -> tuple[list, dict]:
+    sparse_k = base.get("sparse.top_k", section["sparse"].get("top_k", 50))
+    dense_k = base.get("dense.top_k", section["dense"].get("top_k", 50))
+    overrides = {**base, "rerank.enabled": False, "fusion.top_k": depth,
+                 "sparse.top_k": max(sparse_k, depth), "dense.top_k": max(dense_k, depth)}
     with config_overrides(section, overrides):
         return [retrieve(q, top_k=depth).hits for q in queries], copy.deepcopy(section)
 
 
 def _run_benchmark(n_queries: int, concurrency: Sequence[int], ef_values: Sequence[int],
-                   rerank_depths: Sequence[int]) -> dict:
+                   rerank_depths: Sequence[int], protocol: str = "legacy_50_v2") -> dict:
     """Run every measurement against the configured indexes and return the report."""
     from retrieval import dense, lookup, rerank, sparse
 
@@ -325,18 +341,19 @@ def _run_benchmark(n_queries: int, concurrency: Sequence[int], ef_values: Sequen
 
     log.info("cold start: loading indexes and models")
     start = time.perf_counter()
-    with config_overrides(section, {**BASE, "parent_doc.enabled": True}):
+    base = PROTOCOLS[protocol]
+    with config_overrides(section, {**base, "parent_doc.enabled": True}):
         warm_up()
     cold_start_s = round(time.perf_counter() - start, 2)
 
     configs = {}
     for name, (overrides, filters) in CONFIGS.items():
         log.info("config %s: %d queries", name, len(queries))
-        configs[name] = measure_config(section, queries, overrides, filters)
+        configs[name] = measure_config(section, queries, overrides, filters, base)
     p95 = configs["hybrid_rerank"]["latency_ms"]["total"]["p95"]
 
     log.info("throughput at concurrency %s", list(concurrency))
-    throughput = measure_throughput(section, queries, concurrency)
+    throughput = measure_throughput(section, queries, concurrency, base)
 
     log.info("efSearch sweep %s", list(ef_values))
     retriever = dense.get_dense_retriever()
@@ -348,16 +365,16 @@ def _run_benchmark(n_queries: int, concurrency: Sequence[int], ef_values: Sequen
     ef_rows = sweep_ef_search(query_vecs, retriever.index, ef_values, k)
 
     log.info("rerank depth sweep %s", list(rerank_depths))
-    fused, depth_config = _depth_candidates(section, queries, max(rerank_depths))
+    fused, depth_config = _depth_candidates(section, queries, max(rerank_depths), base)
     top_k = section["rerank"].get("top_k", 10)
     depth_rows = sweep_rerank_depth(queries, fused, rerank_depths, rerank.rerank, top_k)
 
-    examples = example_results(section, cfg.get("ui", {}).get("example_inputs", []))
+    examples = example_results(section, cfg.get("ui", {}).get("example_inputs", []), base=base)
 
     metrics_dir = get_path("results") / "metrics"
     builds = sorted(metrics_dir.glob("index_build_*.json"))
     return {
-        "format_version": 2, "baseline": "legacy_50_v2", "baseline_overrides": copy.deepcopy(BASE),
+        "format_version": 2, "baseline": protocol, "baseline_overrides": copy.deepcopy(base),
         "created": datetime.now().isoformat(timespec="seconds"),
         "queries": {"source": "paper titles from papers.sqlite", "n": len(queries), "seed": seed,
                     "metadata_path": str(paper_db.resolve()), "first": queries[:5], "all": queries},
@@ -387,7 +404,7 @@ def _run_benchmark(n_queries: int, concurrency: Sequence[int], ef_values: Sequen
 
 def format_summary(report: dict) -> str:
     """Plain-text tables of the headline numbers (the JSON report has everything)."""
-    lines = [f"Retrieval latency benchmark: {report['queries']['n']} queries, "
+    lines = [f"Retrieval latency benchmark ({report['baseline']}): {report['queries']['n']} queries, "
              f"{report['corpus']['passages']} passages, cold start {report['cold_start_s']} s", "",
              f"{'config':<24}{'total p50':>10}{'total p95':>10}  stage p50 (ms)"]
     for name, row in report["configs"].items():

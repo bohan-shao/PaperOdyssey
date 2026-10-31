@@ -4,7 +4,9 @@
 > Current status: KB, retrieval core, LLM client, orchestration, cited paper QA, and a minimal UI are implemented.
 > Retrieval/review metrics, resumable Paper Search evaluation and automatic ablations (`scripts/run_eval.py`), IAA and the eval-set
 > tooling (`scripts/eval_set.py`) are implemented, as are answer-level RAGAS-style metrics on finished search runs
-> (`--stage answer`, D49); running them, and a live end-to-end QA run, on the built indexes is pending.
+> (`--stage answer`, D49). The evaluation runs on the full KB finished on 2026-10-30/31 (shared as
+> `paperodyssey_results_2026-10-31_v2.zip`, listed in its `RESULTS_INDEX.md`); the retrieval latency benchmark under
+> the production protocol (`benchmark_retrieval.py --protocol production`, D51) is pending.
 
 ## What the System Does
 

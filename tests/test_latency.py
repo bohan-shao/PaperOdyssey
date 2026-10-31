@@ -187,7 +187,7 @@ class FormatSummaryTest(unittest.TestCase):
     def test_headline_tables(self) -> None:
         stats = {"n": 5, "mean": 9, "p50": 8, "p95": 12, "max": 13}
         report = {
-            "queries": {"n": 5}, "corpus": {"passages": 1997}, "cold_start_s": 28.4,
+            "baseline": "production", "queries": {"n": 5}, "corpus": {"passages": 1997}, "cold_start_s": 28.4,
             "configs": {"hybrid_rerank": {"latency_ms": {"sparse": stats, "rerank": stats, "total": stats}}},
             "budget": {"config": "hybrid_rerank", "p95_ms": 12, "limit_ms": 500, "within": True},
             "throughput": [{"concurrency": 4, "qps": 2.5, "latency_ms": stats}],
@@ -195,7 +195,7 @@ class FormatSummaryTest(unittest.TestCase):
             "rerank_depth_sweep": {"top_k": 10, "rows": [{"depth": 30, "rerank_ms": stats, "top_k_agreement": 0.9}]},
         }
         text = latency.format_summary(report)
-        for expected in ("5 queries, 1997 passages, cold start 28.4 s", "hybrid_rerank", "sparse 8, rerank 8",
+        for expected in ("(production): 5 queries, 1997 passages, cold start 28.4 s", "hybrid_rerank", "sparse 8, rerank 8",
                          "-> within", "recall@50", "top-10 agree", "0.99", "0.9"):
             self.assertIn(expected, text)
 

@@ -165,6 +165,55 @@ class ExperimentTest(unittest.TestCase):
         self.assertTrue(all(cfg == row["effective_config"] for cfg in seen))
         self.assertEqual(section, original)
 
+    def test_production_protocol_keeps_the_configured_settings(self) -> None:
+        section = copy.deepcopy(config.get_config()["retrieval"])
+        section["query_processing"]["enabled"] = section["diversity"]["enabled"] = True
+        section["sparse"]["top_k"] = section["dense"]["top_k"] = 150
+        original = copy.deepcopy(section)
+        with patch.object(latency, "retrieve", return_value=RetrieveResult([], 0, {"total_ms": 1})):
+            row = latency.measure_config(section, ["neural"], {"rerank.enabled": False},
+                                         base=latency.PROTOCOLS["production"])
+        expected = copy.deepcopy(original)
+        expected["rerank"]["enabled"] = False  # the row's own switch, nothing else
+        self.assertEqual(row["effective_config"], expected)
+        self.assertEqual(section, original)
+
+    def test_production_rerank_sweep_keeps_the_configured_channel_budgets(self) -> None:
+        section = copy.deepcopy(config.get_config()["retrieval"])
+        section["sparse"]["top_k"] = section["dense"]["top_k"] = 150
+        section["diversity"]["enabled"] = True
+        original = copy.deepcopy(section)
+        with patch.object(latency, "retrieve", return_value=RetrieveResult([], 0, {})):
+            _, cfg = latency._depth_candidates(section, ["query"], 50, base=latency.PROTOCOLS["production"])
+        self.assertEqual((cfg["sparse"]["top_k"], cfg["dense"]["top_k"], cfg["fusion"]["top_k"]), (150, 150, 50))
+        self.assertEqual((cfg["rerank"]["enabled"], cfg["diversity"]["enabled"]), (False, True))
+        self.assertEqual(section, original)
+
+    def test_benchmark_runs_the_chosen_protocol_and_rejects_unknown_ones(self) -> None:
+        cfg = copy.deepcopy(config.get_config())
+        cfg["retrieval"]["query_processing"]["enabled"] = True
+        original = copy.deepcopy(cfg)
+        seen = []
+
+        def run(*args):
+            seen.append((args[-1], copy.deepcopy(cfg["retrieval"])))
+            return {}
+
+        with patch.object(latency, "get_config", return_value=cfg), \
+                patch.object(latency, "require_fresh_runtime") as fresh, \
+                patch.object(latency, "clear_runtime"), \
+                patch.object(latency, "_run_benchmark", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "unknown latency protocol"):
+                latency.run_benchmark(protocol="fast")
+            fresh.assert_not_called()
+            report = latency.run_benchmark(protocol="production")
+            latency.run_benchmark()
+        self.assertEqual(seen[0], ("production", original["retrieval"]))
+        self.assertEqual(report["requested_config_snapshot"], original["retrieval"])
+        self.assertEqual(seen[1][0], "legacy_50_v2")
+        self.assertFalse(seen[1][1]["query_processing"]["enabled"])  # the legacy protocol still pins it
+        self.assertEqual(cfg, original)
+
     def test_benchmark_restores_config_and_models_on_failure(self) -> None:
         cfg = copy.deepcopy(config.get_config())
         original = copy.deepcopy(cfg)
