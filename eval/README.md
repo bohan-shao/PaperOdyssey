@@ -193,6 +193,18 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   unit = one (question, paper) pair, grouped by original annotator count with tie-breakers excluded;
   report in `data/results/metrics/iaa_<date>.json`
 
+### examples.py — The five example inputs end to end (Q2, EVALUATION.md §7, D51)
+- Run: `python scripts/run_examples.py [--config config.yaml] [--out PATH]` (needs the built indexes,
+  the models and an LLM key; fresh process) → `data/results/metrics/examples_<date>.json` + one
+  line per input
+- Each `ui.example_inputs` entry goes through `downstream.run()`, the UI's Paper QA path (Paper
+  Search, then one cited answer), with the configured settings and `orchestration.loop.cache`
+  off in memory, so nothing comes from an earlier run. Retrieval components load first
+  (`cold_start_s`); the inputs then run warm, one after another.
+- Per input: passing papers (ID, title, score), coverage report, answer, numbered sources with
+  the excerpts the model saw, cited numbers, search-stage and answer latency, and LLM usage
+  (`usage_scope`). A failed input keeps its error and the run continues; the script then exits 1.
+
 ### latency.py — Retrieval-core latency benchmark (Q2, EVALUATION.md §7)
 - Run: `./run_docker.sh python scripts/benchmark_retrieval.py [--queries 100] [--protocol production]`
   (needs the built indexes and models) → `data/results/metrics/latency_retrieval_<date>.json`

@@ -6,7 +6,8 @@
 > tooling (`scripts/eval_set.py`) are implemented, as are answer-level RAGAS-style metrics on finished search runs
 > (`--stage answer`, D49). The evaluation runs on the full KB finished on 2026-10-30/31 (shared as
 > `paperodyssey_results_2026-10-31_v2.zip`, listed in its `RESULTS_INDEX.md`); the retrieval latency benchmark under
-> the production protocol (`benchmark_retrieval.py --protocol production`, D51) is pending.
+> the production protocol and the five example inputs end to end (`benchmark_retrieval.py --protocol production`,
+> `run_examples.py`, D51) are pending.
 
 ## What the System Does
 

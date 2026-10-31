@@ -216,6 +216,10 @@ so report the judge model. Judge and generation token usage are reported separat
   the configured settings, including the five UI example queries and their results. The default
   `legacy_50_v2` protocol fixes older settings for comparisons across config changes; it does not
   describe the deployed system.
+- Q2 five queries end to end: `scripts/run_examples.py` (D51) runs the five UI example inputs
+  through Paper Search and the cited answer with the configured settings, and saves each input's
+  papers, answer, sources, per-stage latency and tokens. Report these whole-system times (tens
+  of seconds, dominated by the LLM review) apart from the sub-second retrieval-core times.
 
 ## 8. Q5 Downstream Innovation Ablations
 
@@ -244,7 +248,8 @@ one-switch edges, next to the review report's source and coverage comparisons.
 - Retrieval writes `paths.results/metrics/retrieval_<tag>.json`; review writes
   `paths.results/review_runs/<tag>/report.json` with its manifest and per-attempt traces.
 - The retrieval latency benchmark writes `paths.results/metrics/latency_retrieval_<date>.json`, or
-  `latency_retrieval_production_<date>.json` with `--protocol production` (§7, D51).
+  `latency_retrieval_production_<date>.json` with `--protocol production` (§7, D51). The five
+  examples end to end write `paths.results/metrics/examples_<date>.json` (§7, D51).
 - Answers write `paths.results/answer_runs/<tag>/` (report, `rows/<row>/answers.jsonl`, checkpoints;
   SCHEMA §13) and publish `paths.results/metrics/answer_<tag>.json`.
 - Ablations write `paths.results/ablation_runs/<tag>/report.json`, a selected-query snapshot,
