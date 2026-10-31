@@ -200,6 +200,11 @@ eval:
     judge_temperature: 0.0
     judge_max_tokens: 2048      # first-attempt output limit per judge call (doubled on a cut-off reply)
     relevance_questions: 3      # RAGAS answer relevance: questions written back from each answer
+  answer_audit:                 # human answer audit (D54, scripts/answer_audit.py); files under paths.eval
+    dir: answer_audit           # sheets, reading packets and the manifest
+    split: eval
+    per_answer: 2               # annotators per answer (eval.annotation.annotators, pairs cycled as in D42)
+    sizes: {perfect: 40, mostly: 30, low: 20, no_answer: 10}   # answers per LLM-judge stratum (100)
 
 # ---- ui/ ----
 ui:

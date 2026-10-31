@@ -8,6 +8,7 @@ Submodules (active — the framework is decided):
 - review_eval:       resumable Paper Search runs with complete review traces (`--stage review`)
 - ablation:          one/two-factor baseline/A/B/AB runs and paired single-factor comparisons
 - answer_eval:       answers and scores the questions of a finished review run or ablation (D49)
+- answer_audit:      human audit of sampled answers: correct / complete / supported (D54)
 - answer_metrics:    RAGAS-style faithfulness / answer relevance / context relevance+precision
 - latency:           retrieval-core latency benchmark (Q2 latency, EVALUATION.md section 7)
 - annotation/:       evaluation-set construction, mixed 2/3-annotator protocol and grouped IAA
