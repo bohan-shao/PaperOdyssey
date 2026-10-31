@@ -7,7 +7,8 @@ Implementation requirements (see orchestration/README.md for details, D10):
   - config.review.batch_size papers per batch (default 5); each paper is fed title + truncated abstract + top 2–3 truncated passages
     (token budget from config `review.max_tokens_per_paper`)
   - Requires a JSON array output (verdict/score/reasons/covered/missing), retry once on parse failure
-- Deduplication: by paper_id (a paper hit by multiple paths is reviewed only once); deduplication happens at enqueue time (handled by loop),
+- Deduplication: by paper_id (a paper hit by multiple paths in a round is reviewed once; a later round re-reviews it
+  only with passages not seen before, D53); deduplication happens at enqueue time (handled by loop),
   this module only reviews the batch it is given.
 - verdict="reject" papers do not enter the candidate set; covered/missing are aggregated into the coverage_report (used by loop).
 - Record the review-stage latency.
