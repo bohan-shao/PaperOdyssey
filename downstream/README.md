@@ -2,9 +2,10 @@
 
 `downstream.run(input_text, query_id=None) -> DownstreamResult` calls Paper Search once,
 loads real passage text by ID from the retrieval lookup store (`retrieval.lookup`, D28), and
-makes one answer-generation call through `llm.client`. The existing search review/rewrite
-settings remain in effect. `answer_from_search(question, search)` is the part after the search;
-the answer evaluation (`eval/answer_eval.py`, D49) calls it on stored search results.
+makes one answer-generation call through `llm.client`, re-asked once if the reply is invalid
+(D50). The existing search review/rewrite settings remain in effect.
+`answer_from_search(question, search)` is the part after the search; the answer evaluation
+(`eval/answer_eval.py`, D49) calls it on stored search results.
 
 ```python
 import json
@@ -32,12 +33,15 @@ print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
 - The prompt requests a concise answer in the question's language and requires inline
   citations. The model may report insufficient evidence even when excerpts exist.
 - Generation goes through `llm.client.chat_json`, so a reply that is not valid JSON, or is
-  cut off at the token limit, is re-asked there. Citations are then checked in code without a
-  second model call: grouped forms such as `[1, 2]`, `[1-3]` or `[01]` are rewritten as
-  `[1][2]`, `[1][2][3]`, `[1]`; a bracket whose numbers are not all supplied sources (the
-  interval `[0, 1]`, a year range) stays plain text; a lone `[n]` outside the sources, or an
-  answered response with no citation, raises `DownstreamError`. These checks validate source
-  identity, **not semantic support for every claim**.
+  cut off at the token limit, is re-asked there. Citations are then checked in code
+  (`downstream/citations.py`, shared with the UI's source links and the answer judge): grouped
+  forms such as `[1, 2]`, `[1-3]` or `[01]` are rewritten as `[1][2]`, `[1][2][3]`, `[1]`; a
+  bracket whose numbers are not all supplied sources (the interval `[0, 1]`, a year range), a
+  lone `[0]`, and index notation attached to a name (`X[0]`, `x^{[0]}`, `A[i][1]`) stay plain
+  text. A lone `[n]` outside the sources, an answered response with no citation, or a bad
+  status or shape is re-asked once with the reason (D50); a second invalid reply raises
+  `DownstreamError`. These checks validate source identity, **not semantic support for every
+  claim**.
 - Blank input raises `ValueError`; search, evidence lookup, and model failures raise
   `DownstreamError`, with the underlying exception chained for debugging.
 
@@ -62,10 +66,10 @@ python -m unittest discover -s tests -v
 python scripts/sanity_check.py
 ```
 
-Tests cover a real temporary lookup store, citation/source mapping, budgets, no-evidence
-behavior, failures, and Streamlit interactions. The integration test runs the real
-orchestration and LLM SDK against controlled retrieval results and an HTTP mock transport.
-It makes no external model calls. Python >=3.11 and the relevant common/LLM/UI/KB
+Tests cover a real temporary lookup store, citation/source mapping, index notation, the
+re-ask, budgets, no-evidence behavior, failures, and Streamlit interactions. The integration
+test runs the real orchestration and LLM SDK against controlled retrieval results and an HTTP
+mock transport. It makes no external model calls. Python >=3.11 and the relevant common/LLM/UI/KB
 dependencies from `requirements.txt` are required for the full test suite.
 
 The retrieval core (`retrieval.pipeline.retrieve()`) is now implemented, but a live

@@ -226,7 +226,7 @@ record by `passage_id`, as specified in section 10.
 | `cited_source_numbers` | list[int] | Distinct cited numbers in first-appearance order; all must exist in `sources` |
 | `search_result` | FinalResult | Original Paper Search result (section 6), unchanged |
 | `latency_by_stage` | dict[str, int] | `search_ms`, `evidence_ms`, `generation_ms`, `total_ms`; wall-clock milliseconds |
-| `prompt_version` | str | Downstream prompt version, currently `1.0.0` |
+| `prompt_version` | str | Downstream prompt version, currently `1.1.0` |
 
 `EvidenceSource` contains `number: int`, `paper_id: str`, `passage_id: str`, `title: str`,
 `year: int | None`, `section: str`, `url: str | None`, and `text: str`. The URL is constructed
@@ -236,7 +236,9 @@ to generation, loaded from the stored child passage. `[n]` identifies a passage,
 Answered results require at least one valid citation. An insufficient-evidence result may
 have no citations; any citations present still undergo validation. `answer` stores citations
 as individual `[n]`: grouped forms (`[1, 2]`, `[1-3]`, `[01]`) are rewritten, and brackets
-whose numbers are not all supplied sources (e.g. the interval `[0, 1]`) are plain text.
+whose numbers are not all supplied sources (e.g. the interval `[0, 1]`) are plain text. So are
+a lone `[0]` and brackets attached to a name, i.e. index notation such as `X[0]`, `x^{[0]}` or
+`A[i][1]` (D50); `downstream.sub_citations` finds the citations of a stored answer.
 Missing individual passages are skipped. A missing/corrupt lookup store is an error, not an
 empty search.
 No new evidence fields are required on `FinalResult` or `ReviewRecord`.

@@ -370,7 +370,9 @@ class JudgeAnswerTest(unittest.TestCase):
     def test_citations_are_removed_before_judging(self) -> None:
         judge = FakeJudge()
         with patch.dict(CLAIMS, {"q": ["D works."]}), patch.dict(GENERATED, {"q": (["same"], False)}):
-            scores = answer_metrics.judge_answer(judge, FakeEncoder(), "q", "D works [1].", [self.source(1)])
+            scores = answer_metrics.judge_answer(judge, FakeEncoder(), "q", "D works [1]. X[0] grows [1].",
+                                                 [self.source(1)])
+        self.assertEqual(list(judge.question_by_answer), ["D works. X[0] grows."])  # notation kept (D50)
         self.assertEqual(scores["claims"], ["D works."])
         self.assertEqual(scores["source_verdicts"], [{"source": 1, "relevant": True, "reason": "r"}])
 

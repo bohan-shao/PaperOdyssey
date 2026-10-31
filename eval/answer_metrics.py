@@ -25,14 +25,13 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from downstream.citations import sub_citations
 from downstream.types import EvidenceSource
 
 JUDGE_PROMPT_VERSION = "1.0.0"
-_CITATION = re.compile(r"\s*\[\d+\]")
 
 CLAIMS_PROMPT = """Split the answer into the factual claims it makes about the question's topic.
 Each claim is one short standalone sentence: replace pronouns with what they refer to and drop
@@ -138,7 +137,7 @@ def judge_answer(client: Any, encoder: Any, question: str, answer: str,
         return {"claims": [], "claim_verdicts": [], "faithfulness": None,
                 "generated_questions": [], "noncommittal": True, "answer_relevance": 0.0,
                 "source_verdicts": [], "context_relevance": None, "context_precision": None}
-    plain = _CITATION.sub("", answer).strip()
+    plain = sub_citations(answer, lambda m: "").strip()  # index notation such as X[0] stays (D50)
     claims = _ask(client, _messages(CLAIMS_PROMPT, {"question": question, "answer": plain}),
                   'object {"claims": [string]}', _claims, max_tokens)
     claim_verdicts = []

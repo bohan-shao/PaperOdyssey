@@ -32,4 +32,4 @@ class DownstreamResult:
     cited_source_numbers: list[int]
     search_result: FinalResult
     latency_by_stage: dict[str, int] = field(default_factory=dict)
-    prompt_version: str = "1.0.0"
+    prompt_version: str = "1.1.0"

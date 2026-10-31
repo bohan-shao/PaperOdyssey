@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import sys
 from dataclasses import asdict
@@ -32,7 +31,7 @@ def _show_answer(result: downstream.DownstreamResult) -> None:
     if result.status == "insufficient_evidence":
         st.info(result.answer)
     else:
-        answer = re.sub(r"\[(\d+)\]", r"[\1](#source-\1)", result.answer)
+        answer = downstream.sub_citations(result.answer, lambda m: f"{m[1]}[{m[2]}](#source-{m[2]})")
         st.markdown(answer)
     for source in result.sources:
         if source.number not in result.cited_source_numbers:
