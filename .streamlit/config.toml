@@ -1,0 +1,27 @@
+# Streamlit settings for the PaperOdyssey UI (ui/README.md). Read from the repository root,
+# where scripts/run_ui.sh starts the app.
+
+[theme]
+# A paper-like reading surface with one ink-red accent, kept for the primary action,
+# links and selection. Every text colour pair passes WCAG AA (4.5:1) on both grounds.
+base = "light"
+primaryColor = "#9B2C2C"
+backgroundColor = "#FAF8F4"
+secondaryBackgroundColor = "#F0ECE4"
+textColor = "#1F1C18"
+linkColor = "#9B2C2C"
+borderColor = "#DDD6CA"
+showWidgetBorder = true
+baseRadius = "0.5rem"
+# Notices (st.info) in a muted slate that sits on the paper ground (8.4:1).
+blueBackgroundColor = "#E7EBEE"
+blueTextColor = "#2D4458"
+# Streamlit's bundled faces (no download): sans for controls, serif for headings.
+font = "sans-serif"
+headingFont = "serif"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

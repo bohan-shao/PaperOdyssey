@@ -217,7 +217,7 @@ eval:
 
 # ---- ui/ ----
 ui:
-  title: "PaperOdyssey — arXiv Paper RAG"
+  title: "PaperOdyssey"
   example_inputs:               # Q2: 5 example inputs
     - "Compare LoRA and full fine-tuning for large language models: methods, trade-offs, and recent variants."
     - "What techniques improve long-context transformer efficiency since 2023?"

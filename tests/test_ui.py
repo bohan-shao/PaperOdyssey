@@ -41,10 +41,12 @@ class UITests(unittest.TestCase):
             answer.assert_called_once_with("How does it work?")
             search.assert_not_called()
             self.assertEqual([tab.label for tab in app.tabs], ["Paper QA", "Paper Search"])
-            self.assertTrue(any("W[0] [1](#source-1)" in item.value for item in app.markdown))  # notation unlinked
+            # Notation stays unlinked; citations keep their brackets, so [1][2] never reads as 12.
+            self.assertTrue(any("W[0] [\\[1\\]](#source-1)" in item.value for item in app.markdown))
             self.assertTrue(any(item.value == self.source.text for item in app.text))
             self.assertTrue(any("[1] Paper" in item.label for item in app.expander))
-            self.assertEqual(len(app.get("download_button")), 1)
+            self.assertEqual([button.proto.label for button in app.get("download_button")],
+                             ["Download answer and sources (JSON)", "Download search record (JSON)"])
             app.run()
             answer.assert_called_once()
 
