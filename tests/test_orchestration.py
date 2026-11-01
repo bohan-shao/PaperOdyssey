@@ -108,6 +108,22 @@ class ReviewAndRewriteTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0].evidence["top_passages"], ["P1_1"])
         self.assertEqual(client.chat_json.call_count, 2)
+        self.assertIsNone(client.chat_json.call_args.kwargs["max_tokens"])  # unset: the client's llm.max_tokens
+
+    def test_review_reply_limit_comes_from_config(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["review"]["max_output_tokens"] = 2048
+        client = MagicMock()
+        client.chat_json.return_value = [
+            {"paper_id": "P1", "verdict": "pass", "score": 5, "reasons": "yes", "covered": [], "missing": []}]
+        candidate = {"paper_id": "P1", "title": "One", "abstract": "A", "top_passages": [{"passage_id": "P1_1", "text": "x"}]}
+        with (
+            patch("orchestration.review.get_config", return_value=cfg),
+            patch("orchestration.review.get_client", return_value=client),
+            patch("orchestration.review.build_review_prompt", return_value=[]),
+        ):
+            batch_review([candidate], [], "request", 1)
+        self.assertEqual(client.chat_json.call_args.kwargs["max_tokens"], 2048)
 
     def test_invalid_review_retries_then_fails(self) -> None:
         client = MagicMock()

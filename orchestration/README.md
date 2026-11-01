@@ -49,7 +49,9 @@ input_text
 - Input-extracted criteria are merged with the fixed items into the review prompt; each paper outputs verdict/score/reasons/covered/missing
 - **Batched** review: 5 papers per batch (config `review.batch_size`); each paper is given
   title + abstract (truncated) + top 2–3 passages (truncated), token budget controlled by config
-- Review concurrency is bounded by `review.max_concurrency`; paper metadata is enriched through
+- Review concurrency is bounded by `review.max_concurrency` (6 since D58, so a round's batches
+  run at once rather than two at a time) and each call's first reply limit by
+  `review.max_output_tokens` (2048; 1024 cut a third of 5-paper replies); paper metadata is enriched through
   the read-only `kb.store.load_paper()` interface and safely falls back to retrieval evidence
 - Deduplication: within a round, a paper hit by multiple paths is reviewed only once (by paper_id).
   A later round reviews a paper again (D53) when it retrieved passages of it that the reviewer has

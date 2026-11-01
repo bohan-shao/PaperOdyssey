@@ -280,6 +280,8 @@ def batch_review(
         raise OrchestrationError(f"unknown orchestration.review.backend {backend!r} (use 'llm' or 'jev')")
     batch_size = max(1, int(cfg.get("batch_size", 5)))
     max_tokens = max(100, int(cfg.get("max_tokens_per_paper", 1500)))
+    # First-attempt output limit of one review call (D58); None keeps the client's `llm.max_tokens`.
+    output_limit = int(cfg["max_output_tokens"]) if cfg.get("max_output_tokens") else None
     rubric = cfg.get("rubric", [])
     fixed = [Criterion(str(item), source="fixed") for item in rubric]
     merged: list[Criterion] = []
@@ -305,7 +307,7 @@ def batch_review(
         last_error: Exception | None = None
         for _ in range(2):
             try:
-                raw = client.chat_json(messages, _SCHEMA_DESC)
+                raw = client.chat_json(messages, _SCHEMA_DESC, max_tokens=output_limit)
                 records.extend(_validate_reviews(raw, batch, criteria, round_no))
                 last_error = None
                 break
