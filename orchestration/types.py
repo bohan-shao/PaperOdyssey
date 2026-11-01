@@ -53,7 +53,7 @@ class ReviewRecord:
     Attributes:
         paper_id: Paper ID.
         verdict: "pass" | "reject".
-        score: Score from 1–5 (5 is best).
+        score: Score from 1–5 (5 is best); 0 = not reviewed (the plain RAG baseline, D55).
         reasons: Review reasons (for UI display and report case studies).
         covered: Aspects of the input requirements covered by this paper.
         missing: Aspects not covered by this paper that other papers still need to fill in.
@@ -99,8 +99,8 @@ def passing_order_key(paper_id: str, score: int, retrieval_ranks: Mapping[str, i
 
     Descending review score, then the paper's best retrieval rank (1 = the top passage of some
     sub-query's retrieve() result; a paper without a rank, as in legacy results, sorts last), then
-    paper ID. Review scores are 1-5 integers, so ties are common: the rank keeps the retriever's
-    order among them instead of arXiv-ID order.
+    paper ID. Review scores are 1-5 integers (0 for every paper of the plain RAG baseline, D55),
+    so ties are common: the rank keeps the retriever's order among them instead of arXiv-ID order.
     """
     rank = retrieval_ranks.get(paper_id)
     return -score, float(rank) if rank is not None else float("inf"), paper_id

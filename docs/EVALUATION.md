@@ -267,8 +267,11 @@ one-switch edges, next to the review report's source and coverage comparisons.
 search) and the configured agentic system on the same questions; `--stage answer` on that ablation
 answers both with the same generator, prompt and evidence budget (`downstream.max_papers`,
 `passages_per_paper`, `max_chars_per_passage`). Report the paired answer metrics (§5–§6), source
-ranking and acceptance (§4), latency per stage and tokens per question for both rows: this shows
-whether the orchestration earns its extra calls. `agentic` cannot be combined with `hyde` or `loop`,
+ranking (§4), latency per stage and tokens per question for both rows: this shows whether the
+orchestration earns its extra calls. Compare the rows on rank-based numbers (known-source MRR@10,
+Hit@5) and the answer stage's `gold_in_sources` / `gold_cited`, not on `source_success` or
+`source_acceptance_rate`: every plain-RAG paper is a `pass`, and the two rows' paper lists differ
+in length, neither equal to the 5 papers the answer uses. `agentic` cannot be combined with `hyde` or `loop`,
 which act only inside the agentic search.
 
 ## 9. Running and Reproduction

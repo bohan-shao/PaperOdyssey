@@ -119,7 +119,7 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 descending score, then ascending `retrieval_ranks`, then paper ID. `retrieval_ranks` maps every
 reviewed paper to its best position (1 = first) among the passages of any sub-query's `retrieve()`
 result in the run, including sub-queries that returned it after its review; review scores are
-1–5 integers, so this keeps the retriever's order among equal scores. Results written before D47
+1–5 integers (0 for every plain-RAG paper, D55), so this keeps the retriever's order among equal scores. Results written before D47
 have no ranks (`{}`) and fall back to score then paper ID. `reviews`
 contains one `ReviewRecord` per reviewed paper, including rejects, in order of first review;
 the order within a round is not a relevance ranking. Each record retains its round, verdict,
