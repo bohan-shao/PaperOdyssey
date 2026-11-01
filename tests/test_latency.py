@@ -178,6 +178,7 @@ class EfSearchSweepTest(unittest.TestCase):
         faiss.normalize_L2(queries)
         rows = latency.sweep_ef_search(queries, index, [10, 400], k=20)
         self.assertEqual([r["ef_search"] for r in rows], [10, 400])
+        self.assertEqual([r["effective_ef_search"] for r in rows], [20, 400])  # FAISS uses max(efSearch, k)
         self.assertLessEqual(rows[0]["recall_at_k"], rows[1]["recall_at_k"])
         self.assertGreaterEqual(rows[1]["recall_at_k"], 0.98)
         self.assertEqual(rows[1]["search_ms"]["n"], 30)
@@ -196,7 +197,7 @@ class FormatSummaryTest(unittest.TestCase):
         }
         text = latency.format_summary(report)
         for expected in ("(production): 5 queries, 1997 passages, cold start 28.4 s", "hybrid_rerank", "sparse 8, rerank 8",
-                         "-> within", "recall@50", "top-10 agree", "0.99", "0.9"):
+                         "-> within", "recall@50", "top-10 agree", "0.99", "0.9", "64 (64)"):
             self.assertIn(expected, text)
 
 

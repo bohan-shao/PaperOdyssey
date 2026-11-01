@@ -64,6 +64,7 @@ protocol with the configured models/backends/indexes, and saves complete queries
 effective settings. Use `--out` to retain multiple runs on the same day. Start it in a fresh
 process; see `eval/README.md` for baseline and startup timing definitions.
 `--protocol production` (D51) times the configured settings instead, for the deployed system's
-Q2 latency; with `dense.top_k` 150 pass `--ef` values of at least 150.
+Q2 latency; `--ef` then defaults to 150 200 256 512 (efSearch below `dense.top_k` 150 would time
+the same search) and each row records the efSearch actually used.
 Probe format v2 shares the canonical paper metrics. Sparse-only depth is tested by comparing
 `depth_with_diversity` with `diversity_only`; `depth_only` is explicitly skipped for that mode.
