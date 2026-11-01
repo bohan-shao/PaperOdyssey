@@ -91,6 +91,7 @@ sum of BM25/cosine scores. Zero-weight channels contribute no candidates; ties a
 | `rerank.py` | CrossEncoder sigmoid scoring, serialized inference, reference batch size 64 |
 | `lookup.py` | Primary-key hydration, missing-ID errors, bounded parent excerpts |
 | `pipeline.py` | Parallel sparse/dense, sequential cold loading, selected-pool count, stage timings |
+| `device.py` | Device `null` picks CUDA, then Apple MPS, then CPU; models on MPS share one lock (Metal aborts on overlapping calls), D58 |
 
 The rank-bm25 fallback checks lexical overlap when query terms have zero/negative IDF, so
 small or repetitive corpora retain matching documents even when BM25 scores are nonpositive.

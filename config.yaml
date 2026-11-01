@@ -105,7 +105,7 @@ retrieval:
     query_instruction: null    # explicit override for local model paths; null selects query_format
     task_instruction: "Given a scientific question, retrieve relevant passages from research papers"
     max_length: 512            # document token limit in manifest; Qwen3 trial: 1024, batch_size: 8
-    device: null               # automatic CUDA/CPU, or an explicit torch device
+    device: null               # automatic CUDA, then Apple MPS, then CPU (D58), or an explicit torch device
     batch_size: 64
     fp16: true
     faiss_dir: faiss            # relative to paths.indices
@@ -119,7 +119,7 @@ retrieval:
   rerank:
     enabled: true
     model_name: BAAI/bge-reranker-v2-m3
-    device: null               # automatic CUDA/CPU; diagnostic runs explicitly choose CPU
+    device: null               # automatic CUDA, then Apple MPS, then CPU (D58); diagnostic runs choose CPU
     top_k: 10
     max_length: 512             # (query, passage) tokens per pair; longer pairs are truncated
     batch_size: 64              # retain the reference baseline; tune per hardware with latency benchmark

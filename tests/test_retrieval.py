@@ -693,5 +693,32 @@ class CategoryTokenTest(unittest.TestCase):
                          ["cs_cl", "q_bio_nc", "physics_soc_ph"])
 
 
+
+class DeviceTests(unittest.TestCase):
+    """Device choice and model locks (D58); a stand-in torch, so no GPU or torch install is needed."""
+
+    @staticmethod
+    def fake_torch(cuda: bool, mps: bool):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: cuda),
+                               backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)))
+
+    def test_configured_device_wins_then_cuda_then_mps_then_cpu(self):
+        from retrieval.device import torch_device
+
+        self.assertEqual(torch_device("cpu"), "cpu")
+        for cuda, mps, expected in ((True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")):
+            with patch.dict("sys.modules", {"torch": self.fake_torch(cuda, mps)}):
+                self.assertEqual(torch_device(None), expected)
+
+    def test_models_on_mps_share_one_lock_and_others_get_their_own(self):
+        from retrieval.device import model_lock
+
+        self.assertIs(model_lock("mps"), model_lock("mps:0"))
+        self.assertIsNot(model_lock("cuda"), model_lock("cuda"))
+        self.assertIsNot(model_lock("cpu"), model_lock("mps"))
+
+
 if __name__ == "__main__":
     unittest.main()
