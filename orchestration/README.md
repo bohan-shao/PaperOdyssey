@@ -52,12 +52,17 @@ input_text
 - Review concurrency is bounded by `review.max_concurrency`; paper metadata is enriched through
   the read-only `kb.store.load_paper()` interface and safely falls back to retrieval evidence
 - Deduplication: within a round, a paper hit by multiple paths is reviewed only once (by paper_id).
-  A later round reviews a paper again when it retrieved passages of it that the reviewer has not
-  seen (D53): the new review gets the earlier and new passages interleaved (best earlier one first,
-  at most 3) and replaces the earlier record, so `reviews` keeps one record per paper (its latest
-  review) and coverage follows the latest records. `coverage_report.re_reviews` counts these.
-  The same passages found again cause no new review. `orchestration.loop.re_review=false` switches
-  this off (the pre-D53 behaviour) for the `re_review` ablation (D56).
+  A later round reviews a paper again (D53) when it retrieved passages of it that the reviewer has
+  not seen and the paper's kept record is a reject or lists as missing an aspect still uncovered.
+  The re-review gets the kept record's passages with the new ones interleaved after the best of
+  them (at most 3), and only the passages shown count as seen. A re-review can only add: a reject
+  never replaces the kept record (a pass stays a pass), a pass replaces a reject, and two passes
+  keep the union of covered aspects and the higher score (the new review's reasons and evidence
+  only when it covers more). `reviews` keeps one record per paper; `round` is the round of its
+  first kept verdict and `evidence.review_rounds` lists every round it was reviewed in.
+  `coverage_report.re_reviews` counts re-reviews. The same passages found again cause no new
+  review. `orchestration.loop.re_review: false` switches this off (the pre-D53 behaviour), for the
+  `re_review` ablation (D56).
 - Outputs a list of ReviewRecord; papers with `verdict="reject"` do not enter the candidate set
 - Invalid or unavailable review output is retried once, then fails the query with `OrchestrationError`
 - Reviewer backend (config `review.backend`): `llm` (default) or `jev` (TypeSafe Jev, `llm/jev.py`).

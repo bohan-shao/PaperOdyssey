@@ -195,11 +195,15 @@ of one finished answer-run row (default sizes 40/30/20/10 from the LLM-judge str
 the five annotators (pairs cycled as in D42) and writes a marking sheet and a reading packet
 per annotator. Strata and judge scores are hidden from annotators. Each answer is marked y / p
 (partly) / n on **correct**, **complete** and **supported** (every cited statement backed by its
-excerpt; rules in eval/annotation/ANSWER_AUDIT.md). `score` reports, per criterion, exact
+excerpt; rules in eval/annotation/ANSWER_AUDIT.md). Annotators judge from the question, the
+answer and its excerpts, so report `correct` as "correct with respect to the evidence shown",
+not as accuracy against the full papers. `score` reports, per criterion, exact
 agreement and Fleiss' kappa, the mean per stratum (y = 1, p = 0.5, n = 0; an answer's score is
 the mean of its two annotators) and the mean weighted by each stratum's share of the row
 (post-stratification, the estimate for the whole row), plus the judge's faithfulness per stratum
-and Spearman's correlation between judge faithfulness and human `supported`. Audit the row of the
+and Spearman's correlation between judge faithfulness and human `supported`. The correlation runs on
+the stratified sample, where low faithfulness is oversampled, so it describes whether the judge
+tracks people where it matters, not the whole row; say so next to the number. Audit the row of the
 configured system (loop on, HyDE off: row `a` of the loop × HyDE answer run). The audit checks
 the answers and the LLM judge; it is separate from the eval set's IAA (§1).
 
@@ -231,7 +235,10 @@ so report the judge model. Judge and generation token usage are reported separat
 - Q2 speed of the deployed retriever: `scripts/benchmark_retrieval.py --protocol production` (D51) times
   the configured settings, including the five UI example queries and their results. The default
   `legacy_50_v2` protocol fixes older settings for comparisons across config changes; it does not
-  describe the deployed system.
+  describe the deployed system. HNSW searches with max(efSearch, k), so the production efSearch
+  sweep defaults to 150 200 256 512 and records the value used. The rerank-depth `top_k_agreement`
+  is the raw reranker's top 10, before the final per-paper/per-parent caps users see; quote it as
+  a cost/quality proxy.
 - Q2 five queries end to end: `scripts/run_examples.py` (D51) runs the five UI example inputs
   through Paper Search and the cited answer with the configured settings, and saves each input's
   papers, answer, sources, per-stage latency and tokens; `--input` adds a hard comparison and an
@@ -260,8 +267,11 @@ one-switch edges, next to the review report's source and coverage comparisons.
 search) and the configured agentic system on the same questions; `--stage answer` on that ablation
 answers both with the same generator, prompt and evidence budget (`downstream.max_papers`,
 `passages_per_paper`, `max_chars_per_passage`). Report the paired answer metrics (§5–§6), source
-ranking and acceptance (§4), latency per stage and tokens per question for both rows: this shows
-whether the orchestration earns its extra calls. `agentic` cannot be combined with `hyde` or `loop`,
+ranking (§4), latency per stage and tokens per question for both rows: this shows whether the
+orchestration earns its extra calls. Compare the rows on rank-based numbers (known-source MRR@10,
+Hit@5) and the answer stage's `gold_in_sources` / `gold_cited`, not on `source_success` or
+`source_acceptance_rate`: every plain-RAG paper is a `pass`, and the two rows' paper lists differ
+in length, neither equal to the 5 papers the answer uses. `agentic` cannot be combined with `hyde` or `loop`,
 which act only inside the agentic search.
 
 ### Challenge set (D56)

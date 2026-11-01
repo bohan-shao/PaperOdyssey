@@ -193,10 +193,11 @@ class ExperimentTest(unittest.TestCase):
         cfg = copy.deepcopy(config.get_config())
         cfg["retrieval"]["query_processing"]["enabled"] = True
         original = copy.deepcopy(cfg)
-        seen = []
+        seen, efs = [], []
 
         def run(*args):
             seen.append((args[-1], copy.deepcopy(cfg["retrieval"])))
+            efs.append(tuple(args[2]))
             return {}
 
         with patch.object(latency, "get_config", return_value=cfg), \
@@ -209,6 +210,7 @@ class ExperimentTest(unittest.TestCase):
             report = latency.run_benchmark(protocol="production")
             latency.run_benchmark()
         self.assertEqual(seen[0], ("production", original["retrieval"]))
+        self.assertEqual(efs, [(150, 200, 256, 512), (32, 64, 128, 256)])  # production starts at dense.top_k 150
         self.assertEqual(report["requested_config_snapshot"], original["retrieval"])
         self.assertEqual(seen[1][0], "legacy_50_v2")
         self.assertFalse(seen[1][1]["query_processing"]["enabled"])  # the legacy protocol still pins it

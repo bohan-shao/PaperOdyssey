@@ -350,25 +350,124 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(reviewed, [(1, "P1")])  # round 2's new passage of P1 is not reviewed
         self.assertEqual(result.coverage_report["re_reviews"], 0)
 
-    def test_a_later_review_replaces_the_earlier_one_and_coverage_follows_it(self) -> None:
+    def test_a_rejecting_re_review_keeps_the_earlier_pass_and_its_coverage(self) -> None:
+        # Repro from the PR #28 review: aspect A's evidence is only in P_2, which the 3-slot
+        # re-review no longer sees, so the re-review rejects. The run must not end worse than round 1.
         cfg = make_config()
         cfg["orchestration"]["loop"]["max_rounds"] = 2
-        plan = QueryPlan("request", [SubQuery("q1")], [Criterion("one", "extracted"), Criterion("two", "extracted")])
+        plan = QueryPlan("request", [SubQuery("q1")], [Criterion("A", "extracted"), Criterion("B", "extracted")])
+        seen = []
+
+        def fake_retrieve(query, filters=None):
+            hits = [hit("P", 1, "0"), hit("P", 2, "1"), hit("P", 3, "2")] if query == "q1" else [hit("P", 1, "n0")]
+            return RetrieveResult(hits, 1)
 
         def fake_review(candidates, criteria, text, round_no):
-            # P1 first passes on "one"; with more evidence the reviewer rejects it.
-            return [ReviewRecord(c["paper_id"], "pass" if round_no == 1 else "reject", 3, round=round_no,
-                                 covered=["one"] if round_no == 1 else []) for c in candidates]
+            out = []
+            for c in candidates:
+                ids = [p["passage_id"] for p in c["top_passages"]]
+                seen.append((round_no, ids))
+                ok = "P_2" in ids
+                out.append(ReviewRecord("P", "pass" if ok else "reject", 4 if ok else 2, round=round_no,
+                                        covered=["A"] if ok else [], missing=["B"] if ok else ["A", "B"],
+                                        evidence={"top_passages": ids}))
+            return out
+
+        with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+            result = self._run_with_patches(cfg, understand=lambda text: plan, retrieve=fake_retrieve,
+                                            batch_review=fake_review)
+        self.assertEqual(seen, [(1, ["P_0", "P_1", "P_2"]), (2, ["P_0", "P_n0", "P_1"])])
+        self.assertEqual([r.paper_id for r in result.papers], ["P"])
+        record = result.reviews[0]
+        self.assertEqual((record.verdict, record.score, record.round, record.covered), ("pass", 4, 1, ["A"]))
+        self.assertEqual(record.evidence, {"top_passages": ["P_0", "P_1", "P_2"], "review_rounds": [1, 2]})
+        self.assertEqual(result.coverage_report["covered_criteria"], ["A"])
+        self.assertEqual(result.coverage_report["re_reviews"], 1)
+
+    def test_a_passing_re_review_adds_coverage_and_its_evidence(self) -> None:
+        from eval.review_eval import _score, _validate_result
+
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["max_rounds"] = 2
+        plan = QueryPlan("request", [SubQuery("q1")], [Criterion("A", "extracted"), Criterion("B", "extracted")])
+
+        def fake_review(candidates, criteria, text, round_no):
+            ids = [p["passage_id"] for p in candidates[0]["top_passages"]]
+            # Round 1 covers A only; the re-review with the new passage covers B but not A.
+            covered, score = (["A"], 3) if round_no == 1 else (["B"], 5)
+            return [ReviewRecord("P1", "pass", score, reasons=f"r{round_no}", round=round_no, covered=covered,
+                                 missing=["B"] if round_no == 1 else ["A"], evidence={"top_passages": ids})]
 
         with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
             result = self._run_with_patches(
                 cfg, understand=lambda text: plan, batch_review=fake_review,
                 retrieve=lambda query, filters=None: RetrieveResult(
                     [hit("P1")] if query == "q1" else [hit("P1", suffix="2")], 1))
-        self.assertEqual([(r.verdict, r.round) for r in result.reviews], [("reject", 2)])
-        self.assertEqual(result.papers, [])
-        self.assertEqual(result.coverage_report["covered_aspects"], 0)
-        self.assertEqual(result.coverage_report["uncovered_aspects"], ["one", "two"])
+        record = result.reviews[0]
+        self.assertEqual((record.verdict, record.score, record.round), ("pass", 5, 1))
+        self.assertEqual((record.covered, record.missing), (["A", "B"], []))
+        self.assertEqual(record.reasons, "r1 Round 2 re-review: r2")
+        # The answer reads the first two evidence passages, so the new one must be among them.
+        self.assertEqual(record.evidence, {"top_passages": ["P1_1", "P1_2"], "review_rounds": [1, 2]})
+        report = result.coverage_report
+        self.assertEqual((report["termination_reason"], report["covered_aspects"], report["re_reviews"]),
+                         ("coverage_met", 2, 1))
+        row = {"question": {"query_id": result.query_id, "input_text": "request", "gold_paper_ids": ["P1"]},
+               "result": asdict(result), "wall_ms": 1}
+        _validate_result(row["question"], row["result"])
+        rounds = _score([row])["per_query"][result.query_id]
+        self.assertEqual((rounds["first_source_review_round"], rounds["first_source_pass_round"]), (1, 1))
+
+    def test_a_pass_after_a_reject_reports_both_rounds(self) -> None:
+        from eval.review_eval import _score
+
+        cfg = make_config()
+        cfg["orchestration"]["loop"]["max_rounds"] = 2
+
+        def fake_review(candidates, criteria, text, round_no):
+            ok = round_no == 2
+            return [ReviewRecord("P1", "pass" if ok else "reject", 4 if ok else 2, round=round_no,
+                                 covered=["aspect"] if ok else [], missing=[] if ok else ["aspect"])]
+
+        with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+            result = self._run_with_patches(
+                cfg, batch_review=fake_review,
+                retrieve=lambda query, filters=None: RetrieveResult(
+                    [hit("P1")] if query == "q1" else [hit("P1", suffix="2")], 1))
+        self.assertEqual([(r.verdict, r.round, r.evidence) for r in result.reviews],
+                         [("pass", 2, {"review_rounds": [1, 2]})])
+        row = {"question": {"query_id": result.query_id, "gold_paper_ids": ["P1"]}, "result": asdict(result), "wall_ms": 1}
+        rounds = _score([row])["per_query"][result.query_id]
+        self.assertEqual((rounds["first_source_review_round"], rounds["first_source_pass_round"]), (1, 2))
+
+    def test_only_a_reject_or_a_pass_missing_an_uncovered_aspect_is_re_reviewed(self) -> None:
+        from orchestration import loop
+
+        def state(verdict, missing):
+            return loop._Reviewed(ReviewRecord("P", verdict, 3, missing=missing),
+                                  [{"passage_id": "p0", "text": "t"}], {"p0"})
+
+        candidate = {"paper_id": "P", "top_passages": [{"passage_id": "n0", "text": "t"}]}
+        for verdict, missing, expected in (("reject", [], True), ("pass", ["B"], True),
+                                           ("pass", ["A"], False), ("pass", [], False)):
+            claimed = loop._claim(candidate, {}, {"P": state(verdict, missing)}, {"B"})
+            self.assertEqual(claimed is not None, expected, (verdict, missing))
+
+    def test_only_the_passages_shown_count_as_seen(self) -> None:
+        from orchestration import loop
+
+        def passages(*ids):
+            return [{"passage_id": pid, "text": pid} for pid in ids]
+
+        reviewed = {"P": loop._Reviewed(ReviewRecord("P", "reject", 2), passages("p0", "p1", "p2"), {"p0", "p1", "p2"})}
+        queued = {}
+        claimed = loop._claim({"paper_id": "P", "top_passages": passages("n0", "n1")}, queued, reviewed, {"A"})
+        self.assertEqual([p["passage_id"] for p in claimed["top_passages"]], ["p0", "n0", "p1"])
+        self.assertEqual([p["passage_id"] for p in queued["P"]], ["p0", "n0", "p1"])
+        # The loop then adds only the shown ids, so n1 found again later still triggers a re-review.
+        reviewed["P"].seen |= {p["passage_id"] for p in queued["P"]}
+        again = loop._claim({"paper_id": "P", "top_passages": passages("n1")}, {}, reviewed, {"A"})
+        self.assertEqual([p["passage_id"] for p in again["top_passages"]], ["p0", "n1", "p1"])
 
     def test_plain_rag_keeps_the_retrieved_papers_in_rank_order_without_any_llm_call(self) -> None:
         from eval.review_eval import _validate_result

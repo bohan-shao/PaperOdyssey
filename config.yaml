@@ -156,9 +156,9 @@ orchestration:
   loop:
     enabled: true               # Q5 ablation: false = single-round parallel (agentic baseline)
     max_rounds: 3
-    re_review: true             # D53 evidence merging: a later round re-reviews a paper with passages not seen before
     min_papers: 5               # stop when the pass paper count reaches the target
     cache: true                 # cache identical inputs (saved under data/results/final_results/)
+    re_review: true             # D53: a later round re-reviews a paper with passages not seen before
   rewrite:
     max_queries_per_round: 2
 

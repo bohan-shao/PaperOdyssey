@@ -155,7 +155,10 @@ def _score(rows: list[dict]) -> dict:
         by_query[qid] = {
             "source_passed": sorted(accepted), "source_rejected": sorted(found - accepted),
             "source_not_reviewed": sorted(gold_ids - found),
-            "first_source_review_round": min((trace[p]["round"] for p in found), default=None),
+            # A re-reviewed paper (D53) keeps the round of its first verdict in `round` and every
+            # round it was reviewed in under evidence["review_rounds"].
+            "first_source_review_round": min((min((trace[p].get("evidence") or {}).get("review_rounds")
+                                                  or [trace[p]["round"]]) for p in found), default=None),
             "first_source_pass_round": min((trace[p]["round"] for p in accepted), default=None),
         }
         for name, ms in result["latency_by_stage"].items():
