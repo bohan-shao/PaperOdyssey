@@ -721,6 +721,14 @@ class StoreTest(unittest.TestCase):
             cols = [r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(papers)")]
             self.assertEqual(cols, store.PAPER_COLUMNS)
 
+    def test_count_papers_counts_only_papers_with_passages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "papers.sqlite"
+            self.assertEqual(store.count_papers(db), 0)  # no store yet
+            store.upsert_papers([{"paper_id": p, "title": p} for p in "ABC"], db)
+            store.set_num_chunks({"A": 7, "B": 0}, db)  # C was never chunked
+            self.assertEqual(store.count_papers(db), 1)
+
 
 class BuildTest(unittest.TestCase):
     def test_rebuild_resets_num_chunks_of_a_paper_that_now_fails(self) -> None:

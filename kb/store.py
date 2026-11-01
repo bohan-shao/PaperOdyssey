@@ -253,6 +253,14 @@ def load_paper(paper_id: str, path: str | Path) -> dict | None:
     return paper
 
 
+def count_papers(path: str | Path) -> int:
+    """Papers with at least one stored passage (`num_chunks` > 0); 0 if the store does not exist."""
+    if not Path(path).exists():
+        return 0
+    with _connect(path) as conn:
+        return conn.execute("SELECT COUNT(*) FROM papers WHERE num_chunks > 0").fetchone()[0]
+
+
 def iter_papers(path: str | Path) -> Iterator[dict]:
     """All papers (categories decoded), ordered by paper_id."""
     with _connect(path) as conn:

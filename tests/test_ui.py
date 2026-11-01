@@ -67,8 +67,8 @@ class UITests(unittest.TestCase):
             app = AppTest.from_file(APP).run()
             app.button[0].click().run()
             self.assertEqual(app.warning[0].value, "Enter a question first.")
-            example = app.selectbox[0].options[1]
-            app.selectbox[0].select(example).run()
+            example = app.button(key="example_1").label
+            app.button(key="example_1").click().run()
             self.assertEqual(app.text_area[0].value, example)
             answer.assert_not_called()
             search.assert_not_called()

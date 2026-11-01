@@ -1,9 +1,14 @@
 # Streamlit settings for the PaperOdyssey UI (ui/README.md). Read from the repository root,
 # where scripts/run_ui.sh starts the app.
 
+[server]
+# Serves ui/static/ (the Latin Modern fonts) at app/static/.
+enableStaticServing = true
+
 [theme]
-# A paper-like reading surface with one ink-red accent, kept for the primary action,
-# links and selection. Every text colour pair passes WCAG AA (4.5:1) on both grounds.
+# A page set like a LaTeX paper: paper ground, Latin Modern for headings, the answer and the
+# excerpts, sans for controls, and one ink-red accent for the primary action, links and selection.
+# Every text colour pair passes WCAG AA (4.5:1) on both grounds.
 base = "light"
 primaryColor = "#9B2C2C"
 backgroundColor = "#FAF8F4"
@@ -16,9 +21,32 @@ baseRadius = "0.5rem"
 # Notices (st.info) in a muted slate that sits on the paper ground (8.4:1).
 blueBackgroundColor = "#E7EBEE"
 blueTextColor = "#2D4458"
-# Streamlit's bundled faces (no download): sans for controls, serif for headings.
 font = "sans-serif"
-headingFont = "serif"
+headingFont = "Latin Modern Roman, serif"
+
+[[theme.fontFaces]]
+family = "Latin Modern Roman"
+url = "app/static/fonts/LMRoman10-regular.woff2"
+weight = 400
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Latin Modern Roman"
+url = "app/static/fonts/LMRoman10-italic.woff2"
+weight = 400
+style = "italic"
+
+[[theme.fontFaces]]
+family = "Latin Modern Roman"
+url = "app/static/fonts/LMRoman10-bold.woff2"
+weight = 700
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Latin Modern Roman"
+url = "app/static/fonts/LMRoman10-bold-italic.woff2"
+weight = 700
+style = "italic"
 
 [client]
 toolbarMode = "minimal"
