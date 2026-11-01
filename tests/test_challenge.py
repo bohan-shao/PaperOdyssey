@@ -121,6 +121,8 @@ class SheetsAndBuildTest(unittest.TestCase):
         self.assertEqual((unanswerable["gold_paper_ids"], unanswerable["answerable"], unanswerable["question_type"]),
                          ([], False, "out_of_kb"))
         self.assertEqual(questions[1]["time_bound"], self.drafts[2]["time_bound"])
+        # A comparison keeps its aspects as the parts its answer must cover; other kinds have none.
+        self.assertEqual([q["parts"] for q in questions], [["a", "b"], None, None])
         with self.assertRaisesRegex(ValueError, "exist"):
             challenge.write_sheets(self.drafts, self.dir, ["A"])
 
@@ -148,22 +150,43 @@ class LoaderTest(unittest.TestCase):
                     load_eval_set(path)
 
 
+class FakePartJudge:
+    """Covers a part when the answer mentions its text; records every call."""
+
+    model = "fake-judge"
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def chat_json(self, messages, schema, max_tokens=None):
+        assert messages[0]["content"] == challenge.PART_JUDGE
+        payload = json.loads(messages[1]["content"])
+        self.calls.append(payload["question"])
+        return {"verdicts": [{"part": p["part"], "covered": p["text"] in payload["answer"]} for p in payload["parts"]]}
+
+
 class ScoreTest(unittest.TestCase):
     def test_hand_computed_scores_per_row_and_kind(self) -> None:
         questions = [
-            {"query_id": "C001", "question_type": "comparison", "gold_paper_ids": ["A", "B"], "answerable": True},
-            {"query_id": "C002", "question_type": "comparison", "gold_paper_ids": ["C", "D"], "answerable": True},
+            {"query_id": "C001", "question_type": "comparison", "gold_paper_ids": ["A", "B"], "answerable": True,
+             "input_text": "q1", "parts": ["what A does", "what B does"]},
+            {"query_id": "C002", "question_type": "comparison", "gold_paper_ids": ["C", "D"], "answerable": True,
+             "input_text": "q2", "parts": ["what C does", "what D does"]},
             {"query_id": "C003", "question_type": "date", "gold_paper_ids": ["E"], "answerable": True,
-             "time_bound": {"phrase": "since 2021", "year_min": 2021}},
-            {"query_id": "C004", "question_type": "out_of_kb", "gold_paper_ids": [], "answerable": False},
+             "time_bound": {"phrase": "since 2021", "year_min": 2021}, "input_text": "q3", "parts": None},
+            {"query_id": "C004", "question_type": "out_of_kb", "gold_paper_ids": [], "answerable": False,
+             "input_text": "q4", "parts": None},
+            {"query_id": "C005", "question_type": "two_part", "gold_paper_ids": ["F"], "answerable": True,
+             "input_text": "q5", "parts": ["how", "tested"]},
         ]
         searches = {  # query_id -> (passing papers, rounds, re_reviews, total_ms, tokens)
             "C001": (["A", "B", "X"], 2, 1, 4000, 300), "C002": (["C"], 1, 0, 2000, 100),
-            "C003": (["E", "Y"], 1, 0, 3000, 200), "C004": ([], 3, 0, 9000, 900)}
-        answers = {  # query_id -> (status, [(number, paper_id, year)], cited numbers)
-            "C001": ("answered", [(1, "A", 2020), (2, "B", 2021)], [1, 2]),
-            "C002": ("answered", [(1, "C", 2020)], [1]),
-            "C003": ("answered", [(1, "E", 2022), (2, "Y", 2019)], [1, 2]),
+            "C003": (["E", "Y"], 1, 0, 3000, 200), "C004": ([], 3, 0, 9000, 900), "C005": ([], 2, 0, 5000, 400)}
+        answers = {  # query_id -> (status, [(number, paper_id, year)], cited numbers, answer text)
+            "C001": ("answered", [(1, "A", 2020), (2, "B", 2021)], [1, 2], "what A does [1]; what B does [2]"),
+            "C002": ("answered", [(1, "C", 2020)], [1], "what C does [1]"),
+            "C003": ("answered", [(1, "E", 2022), (2, "Y", 2019)], [1, 2], "E [1] and Y [2]"),
+            "C005": ("insufficient_evidence", [], [], "The excerpts do not say."),
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -179,10 +202,14 @@ class ScoreTest(unittest.TestCase):
                 (attempts / f"{n:06d}.json").write_text(json.dumps(attempt), encoding="utf-8")
             (answers_dir / "rows" / "a").mkdir(parents=True)
             (answers_dir / "rows" / "a" / "answers.jsonl").write_text("".join(json.dumps({
-                "query_id": qid, "status": status, "cited_source_numbers": cited,
+                "query_id": qid, "status": status, "cited_source_numbers": cited, "answer": text,
                 "sources": [{"number": n, "paper_id": p, "year": y} for n, p, y in sources]}) + "\n"
-                for qid, (status, sources, cited) in answers.items()), encoding="utf-8")
+                for qid, (status, sources, cited, text) in answers.items()), encoding="utf-8")
             report = challenge.score_challenge(searches_dir, answers_dir)
+            judge = FakePartJudge()
+            judged = challenge.score_challenge(searches_dir, answers_dir, client=judge)
+            with self.assertRaisesRegex(ValueError, "needs --answers"):
+                challenge.score_challenge(searches_dir, client=judge)
         row = report["rows"]["a"]["by_kind"]
         comparison = row["comparison"]
         self.assertEqual((comparison["found"], comparison["all_found"]), (0.75, 0.5))   # 2/2 and 1/2 gold found
@@ -193,8 +220,35 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual((date["answers_citing_outside_bound"], date["cited_sources_outside_bound"]), (1.0, 0.5))
         out_of_kb = row["out_of_kb"]
         self.assertEqual((out_of_kb["n"], out_of_kb["answered_run"], out_of_kb["abstained"], out_of_kb["found"]), (1, 0, None, None))
-        self.assertEqual(report["by_kind_n"], {"comparison": 2, "two_part": 0, "date": 1, "out_of_kb": 1})
-        self.assertIn("comparison n=2", challenge.format_summary(report))
+        self.assertEqual(report["by_kind_n"], {"comparison": 2, "two_part": 1, "date": 1, "out_of_kb": 1})
+        self.assertEqual(comparison["counts"]["all_found"], {"k": 1, "n": 2})
+        self.assertNotIn("parts_covered", comparison)  # no judge, no part scores
+        self.assertIsNone(report["part_judge"])
+        self.assertIn("comparison n=2  all_found 0.50 (1/2), all_cited 0.50 (1/2), rounds", challenge.format_summary(report))
+        # The part judge: one call per answered two_part / comparison question; an insufficient-evidence
+        # answer covers no part without a call.
+        self.assertEqual(judge.calls, ["q1", "q2"])
+        parts = judged["rows"]["a"]["by_kind"]
+        self.assertEqual((parts["comparison"]["parts_covered"], parts["comparison"]["all_parts_covered"]), (0.75, 0.5))
+        self.assertEqual((parts["two_part"]["parts_covered"], parts["two_part"]["counts"]["all_parts_covered"]),
+                         (0.0, {"k": 0, "n": 1}))
+        self.assertEqual(judged["rows"]["a"]["per_question"]["C002"]["part_verdicts"], [True, False])
+        self.assertEqual(judged["part_judge"], {"prompt_version": challenge.PART_PROMPT_VERSION, "model": "fake-judge"})
+        self.assertIn("all_parts_covered 0.50 (1/2)", challenge.format_summary(judged))
+
+    def test_a_part_reply_of_the_wrong_shape_is_asked_again_then_raises(self) -> None:
+        class Judge:
+            def __init__(self, replies):
+                self.replies = list(replies)
+
+            def chat_json(self, messages, schema, max_tokens=None):
+                return self.replies.pop(0)
+
+        good = {"verdicts": [{"part": 1, "covered": True}, {"part": 2, "covered": False}]}
+        self.assertEqual(challenge.judge_parts(Judge([{"verdicts": []}, good]), "q", "a", ["x", "y"]), [True, False])
+        bad = {"verdicts": [{"part": 2, "covered": True}, {"part": 1, "covered": False}]}
+        with self.assertRaisesRegex(ValueError, "wrong shape"):
+            challenge.judge_parts(Judge([bad, bad]), "q", "a", ["x", "y"])
 
 
 if __name__ == "__main__":

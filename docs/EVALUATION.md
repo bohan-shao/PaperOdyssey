@@ -182,6 +182,8 @@ Task metrics against the eval set's labels (one source paper per question):
 
 - **gold_in_sources**: the source paper is among the excerpts the answer model received
 - **gold_cited**: the answer cites an excerpt of the source paper
+- Both are undefined (null) for a question without gold papers (the challenge set's out_of_kb,
+  D56) and left out of means and paired deltas
 
 The eval set has no reference answers (`gold_answer` is empty, §1), so ROUGE, BERTScore and
 EM/F1 against a reference cannot be computed and are not reported. Runtime citation-number
@@ -288,16 +290,27 @@ python scripts/challenge_set.py draft --papers <full KB>/processed/papers.sqlite
 python scripts/challenge_set.py sheets && python scripts/challenge_set.py build      # after marking
 python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation agentic --tag challenge-agentic --workers 8
 python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation loop re_review --tag challenge-loop --workers 8
-python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-loop --tag answers-challenge-loop
-python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-loop --answers data/results/answer_runs/answers-challenge-loop --tag loop
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-agentic --tag answers-challenge-agentic --workers 8
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-loop --tag answers-challenge-loop --workers 8
+python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-agentic --answers data/results/answer_runs/answers-challenge-agentic --judge-parts --tag agentic
+python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-loop --answers data/results/answer_runs/answers-challenge-loop --judge-parts --tag loop
 ```
 
 The `loop re_review` matrix has baseline (loop off), A (loop on, no re-review), B (re-review on,
 loop off: identical to the baseline by design, since re-review acts only in rounds 2+) and AB
 (both, the configured system). Per kind: `comparison` all gold found / cited, `two_part` and `date`
 gold found / cited, `date` answers citing papers outside the bound, `out_of_kb` abstention, plus
-rounds, re-reviews, search time and tokens. With 10 questions per kind, report counts as well as
-rates, and repeat a run before reading a one-question difference as an effect (LLM variation).
+rounds, re-reviews, search time and tokens. Found and cited are paper-level, so they move only
+when a paper turns from reject to pass; D53's main case, a later round bringing the other part's
+passage of a paper that already passed, shows only in the answer. `--judge-parts` therefore asks
+the answer judge (`eval.answer.judge_model`), once per answered `two_part` / `comparison` question,
+whether the answer addresses each drafted part (`parts`, or a comparison's `aspects`) with a cited
+statement: `parts_covered` and `all_parts_covered` (an insufficient-evidence answer covers none; the
+judge is an LLM, not a human label). With 10 questions per kind, report counts as well as rates
+(the summary prints k/n next to each yes/no rate), and repeat a run before reading a one-question
+difference as an effect (LLM variation). Quote challenge-set numbers from `challenge_<tag>.json`;
+the answer report's paired deltas leave out_of_kb questions out (no gold, null labels) but mix the
+four kinds.
 
 ## 9. Running and Reproduction
 

@@ -353,7 +353,7 @@ The CLI passes `paths.results/answer_runs` as `results_dir`. Online types are un
   ablation): the eval `question`, `status` (`complete` or `failed`), `workers`, `wall_ms`,
   `usage.generation` / `usage.judge` (`calls`, `prompt_tokens`, `completion_tokens`), and
   `earlier_usage` (same shape) when it retries failed attempts. Complete checkpoints add `answer`
-  (§10 `DownstreamResult` without `search_result`), `task` (`gold_in_sources`, `gold_cited`),
+  (§10 `DownstreamResult` without `search_result`), `task` (`gold_in_sources`, `gold_cited`; null for a question without gold papers),
   `scores` (`claims`, `claim_verdicts` [{claim, supported, reason}], `faithfulness`,
   `generated_questions`, `noncommittal`, `answer_relevance`, `source_verdicts`
   [{source, relevant, reason}], `context_relevance`, `context_precision`) and `judge_ms`.
@@ -411,11 +411,15 @@ time_bound, paper_1_title, paper_1_year, paper_1_abstract, paper_2_title, paper_
 paper_2_abstract, fits, note` (fits y/n).
 
 `paths.eval/challenge_set.jsonl` uses the eval-set fields of §7 (`split` "eval", `question_type` =
-kind, `annotations` [{`annotator`, `fits`}]) plus `answerable` and `time_bound`. An item with
+kind, `annotations` [{`annotator`, `fits`}]) plus `answerable`, `time_bound` and `parts` (the asks
+an answer must cover: a two_part item's `parts`, a comparison's `aspects`; null for other kinds). An item with
 `answerable` false may have empty `gold_paper_ids`; `load_eval_set` accepts no other empty gold.
 
-`score_challenge(searches_dir, answers_dir=None) -> dict` (`metrics/challenge_<tag>.json`):
-`rows.<row>`: {`by_kind.<kind>`, `all`: {`n`, `searched`, `answered_run`, `found`, `all_found`,
-`cited`, `all_cited`, `abstained`, `rounds`, `re_reviews`, `search_ms`, `search_tokens`, and for
-date items `answers_citing_outside_bound`, `cited_sources_outside_bound`}, `per_question`}.
+`score_challenge(searches_dir, answers_dir=None, client=None) -> dict` (`metrics/challenge_<tag>.json`):
+`part_judge` ({`prompt_version`, `model`} or null), `rows.<row>`: {`by_kind.<kind>`, `all`: {`n`,
+`searched`, `answered_run`, `found`, `all_found`, `cited`, `all_cited`, `abstained`, `rounds`,
+`re_reviews`, `search_ms`, `search_tokens`, for date items `answers_citing_outside_bound`,
+`cited_sources_outside_bound`, with a part judge `parts_covered`, `all_parts_covered`, and
+`counts`: {`all_found`, `all_cited`, `abstained`, `answers_citing_outside_bound`,
+`all_parts_covered`: {`k`, `n`}}}, `per_question` (with a part judge also `part_verdicts`)}.
 Undefined means are null.

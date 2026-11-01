@@ -246,6 +246,19 @@ class AnswerEvalTest(unittest.TestCase):
         self.assertEqual(manifest["source"]["fingerprints"], {"run": "search-fp"})
         self.assertNotIn("fake-secret", json.dumps(manifest))
 
+    def test_a_question_without_gold_papers_has_no_labels(self) -> None:
+        # An out_of_kb challenge question (D56): no gold, so neither label counts as a miss.
+        path = self.source / "attempts" / "000003.json"
+        attempt = json.loads(path.read_text(encoding="utf-8"))
+        attempt["question"] = {**attempt["question"], "gold_paper_ids": [], "answerable": False}
+        _write(path, attempt)
+        with self.harness():
+            report = self.run_eval()
+        ev = report["rows"]["run"]["splits"]["eval"]
+        self.assertEqual((ev["gold_in_sources"]["n"], ev["gold_cited"]["n"]), (2, 2))
+        self.assertAlmostEqual(ev["gold_in_sources"]["mean"], 1 / 2)
+        self.assertEqual((ev["per_query"]["Q3"]["gold_in_sources"], ev["per_query"]["Q3"]["gold_cited"]), (None, None))
+
     def test_resume_skips_completed_and_requires_the_same_fingerprint(self) -> None:
         with self.harness():
             first = self.run_eval()

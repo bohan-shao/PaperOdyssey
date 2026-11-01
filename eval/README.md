@@ -256,7 +256,10 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   `data/eval/challenge_set.jsonl` + `metrics/challenge_iaa_<date>.json`.
 - Run it like the main set with `run_eval.py --eval-set data/eval/challenge_set.jsonl` (factors
   `agentic`, `loop`, `re_review`), answer it with `--stage answer`, then `score --searches <ablation>
-  --answers <answer run>` → `metrics/challenge_<tag>.json`. Commands: EVALUATION.md §8.
+  --answers <answer run> [--judge-parts]` → `metrics/challenge_<tag>.json`. `--judge-parts`: one
+  answer-judge call per answered two_part / comparison question, whether the answer addresses each
+  drafted part with a cited statement (`parts_covered`); the paper-level found / cited cannot show
+  D53 adding a passage of a paper that already passed. Commands: EVALUATION.md §8.
 
 ## answer_audit.py — Human answer audit (Q4, D54)
 

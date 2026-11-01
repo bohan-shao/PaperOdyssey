@@ -4,7 +4,7 @@ Usage:
     python scripts/challenge_set.py draft --papers PAPERS_SQLITE [--config config.yaml]
     python scripts/challenge_set.py sheets
     python scripts/challenge_set.py build
-    python scripts/challenge_set.py score --searches ABLATION_DIR [--answers ANSWER_RUN_DIR] [--tag TAG]
+    python scripts/challenge_set.py score --searches ABLATION_DIR [--answers ANSWER_RUN_DIR] [--judge-parts] [--tag TAG]
 
 draft: eval.challenge.draft_challenge, eval.challenge.per_kind questions per kind from the full KB's
 papers.sqlite (papers that are gold in the main eval set are left out) -> paths.eval/<challenge.dir>/
@@ -12,7 +12,9 @@ drafts.jsonl (LLM calls; never overwritten). sheets: one marking sheet per eval.
 (challenge_<annotator>.csv; guide eval/annotation/CHALLENGE.md). build: keeps the items every
 annotator accepted -> paths.eval/<challenge.set_file> + metrics/challenge_iaa_<date>.json. Run it like
 the main set, e.g. run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation loop
-re_review, then --stage answer on that ablation. score: per row and kind -> metrics/challenge_<tag>.json.
+re_review, then --stage answer on that ablation. score: per row and kind -> metrics/challenge_<tag>.json;
+--judge-parts adds one answer-judge call (eval.answer.judge_model) per answered two_part / comparison
+question: whether the answer addresses each part with a cited statement.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from eval.challenge import (  # noqa: E402
     candidate_papers,
     draft_challenge,
     format_summary,
+    part_judge_client,
     read_jsonl,
     score_challenge,
     write_sheets,
@@ -50,6 +53,8 @@ def main() -> None:
     parser.add_argument("--papers", type=Path, default=None, help="draft: papers.sqlite of the full KB")
     parser.add_argument("--searches", type=Path, default=None, help="score: a review ablation on the challenge set")
     parser.add_argument("--answers", type=Path, default=None, help="score: the answer run of that ablation")
+    parser.add_argument("--judge-parts", action="store_true",
+                        help="score: LLM check that each answer covers every part (needs --answers)")
     parser.add_argument("--tag", default=None, help="score: report suffix (default today's date)")
     args = parser.parse_args()
     cfg = get_config(args.config)
@@ -87,7 +92,8 @@ def main() -> None:
         else:
             if args.searches is None:
                 parser.error("score needs --searches ABLATION_DIR")
-            report = score_challenge(args.searches, args.answers)
+            client = part_judge_client(cfg) if args.judge_parts else None
+            report = score_challenge(args.searches, args.answers, client)
             out = get_path("results") / "metrics" / f"challenge_{args.tag or date.today().isoformat()}.json"
             _write_json(out, report)
             print(format_summary(report) + f"\n\nreport -> {out}")

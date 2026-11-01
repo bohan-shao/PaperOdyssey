@@ -16,7 +16,9 @@ drafted by the LLM from KB papers that are not in the main set, and checked by p
 Pipeline: `draft_challenge` (LLM) -> `write_sheets` (each annotator checks every item: fits y/n)
 -> `build_challenge_set` (keeps the items every annotator accepted; agreement) ->
 challenge_set.jsonl in the eval-set format, run like the main set with `run_eval.py --eval-set`
--> `score_challenge` (per kind and configuration, from a review ablation and its answer run).
+-> `score_challenge` (per kind and configuration, from a review ablation and its answer run;
+optionally an LLM check of whether each answer addresses every part of a two_part or comparison
+question, `judge_parts`).
 Papers are taken in sha256("<seed>:<paper_id>") order; related pairs are the nearest TF-IDF
 neighbours (title + abstract) within a cosine band, so they share a problem without being
 near-duplicates.
@@ -35,6 +37,7 @@ from kb import store
 
 from .annotation.iaa import _fleiss
 from .annotation.questions import MIN_ABSTRACT_CHARS
+from .answer_metrics import _ask as _ask_judge
 
 KINDS = ("comparison", "two_part", "date", "out_of_kb")
 PROMPT_VERSION = "c1"
@@ -257,7 +260,7 @@ def build_challenge_set(drafts: Sequence[Mapping], sheet_dir: str | Path, annota
                 "question_form": "question", "question_source": d["question_source"], "round": 1,
                 "annotations": [{"annotator": a, "fits": marks[a][d["challenge_id"]]} for a in annotators],
                 "majority_paper_ids": d["gold_paper_ids"], "answerable": d["answerable"],
-                "time_bound": d.get("time_bound"),
+                "time_bound": d.get("time_bound"), "parts": _parts(d),
             }, ensure_ascii=False) + "\n")
     votes = [[marks[a][cid] for a in annotators] for cid in by_id]
     _, kappa = _fleiss([[sum(v), len(v) - sum(v)] for v in votes]) if len(annotators) > 1 else (None, None)
@@ -274,6 +277,51 @@ def build_challenge_set(drafts: Sequence[Mapping], sheet_dir: str | Path, annota
 
 
 # ---------------------------------------------------------------- scoring
+
+PART_PROMPT_VERSION = "p1"
+PART_JUDGE = ("You check whether an answer addresses each part of a question. A part is covered only if the "
+              "answer makes a substantive statement about it that cites an excerpt ([n]). Saying the evidence "
+              "does not cover it, or a vague general remark, is not covered. Judge only whether each part is "
+              "addressed, not whether the answer is correct.\nReply with JSON only: "
+              '{"verdicts": [{"part": 1, "covered": true}, ...]} with one verdict per part, in part order.')
+_PART_SCHEMA = 'object {"verdicts": [{"part": integer, "covered": boolean}]}'
+
+
+def _parts(draft: Mapping) -> list[str] | None:
+    """The asks an answer must cover: a two_part question's parts, a comparison's aspects."""
+    if draft["kind"] not in ("two_part", "comparison"):
+        return None
+    parts = draft.get("parts") if draft["kind"] == "two_part" else draft.get("aspects")
+    if not isinstance(parts, list) or len(parts) < 2 or not all(isinstance(x, str) and x.strip() for x in parts):
+        raise ValueError(f"{draft['challenge_id']}: a {draft['kind']} item needs two or more non-empty parts")
+    return parts
+
+
+def judge_parts(client, question: str, answer: str, parts: Sequence[str], max_tokens: int = 512) -> list[bool]:
+    """One LLM call: whether `answer` addresses each of `parts` with a cited statement."""
+    messages = [{"role": "system", "content": PART_JUDGE},
+                {"role": "user", "content": json.dumps({"question": question, "answer": answer,
+                                                        "parts": [{"part": i, "text": t} for i, t in enumerate(parts, 1)]},
+                                                       ensure_ascii=False)}]
+
+    def check(reply):
+        verdicts = reply["verdicts"]
+        if not isinstance(verdicts, list) or len(verdicts) != len(parts):
+            raise ValueError(f"expected {len(parts)} verdicts")
+        if any(type(v["part"]) is not int or v["part"] != i or type(v["covered"]) is not bool
+               for i, v in enumerate(verdicts, 1)):
+            raise ValueError("verdicts out of order or not booleans")
+        return [v["covered"] for v in verdicts]
+
+    return _ask_judge(client, messages, _PART_SCHEMA, check, max_tokens)
+
+
+def part_judge_client(cfg: Mapping):
+    """The answer judge's client (`eval.answer.judge_model`, `judge_temperature`; D49)."""
+    from llm.client import LLMClient
+
+    settings = cfg.get("eval", {}).get("answer") or {}
+    return LLMClient(model=settings.get("judge_model"), temperature=settings.get("judge_temperature", 0.0))
 
 
 def read_jsonl(path: str | Path) -> list[dict]:
@@ -296,7 +344,7 @@ def _in_bound(year: object, bound: Mapping) -> bool:
     return bound.get("year_min", year) <= year <= bound.get("year_max", year)
 
 
-def _question_scores(question: Mapping, attempt: Mapping | None, answer: Mapping | None) -> dict:
+def _question_scores(question: Mapping, attempt: Mapping | None, answer: Mapping | None, client=None) -> dict:
     gold = set(question["gold_paper_ids"])
     row: dict = {"kind": question["question_type"], "searched": attempt is not None, "answered_run": answer is not None}
     if attempt is not None:
@@ -316,6 +364,12 @@ def _question_scores(question: Mapping, attempt: Mapping | None, answer: Mapping
         if question.get("time_bound"):
             outside = [s for s in cited if not _in_bound(s.get("year"), question["time_bound"])]
             row.update(cited_outside_bound=len(outside), cited_sources=len(cited))
+        if client is not None and question.get("parts"):
+            parts = question["parts"]
+            # An insufficient-evidence reply addresses no part; it needs no call.
+            verdicts = (judge_parts(client, question["input_text"], answer["answer"], parts)
+                        if answer["status"] == "answered" else [False] * len(parts))
+            row.update(part_verdicts=verdicts, parts_covered=sum(verdicts) / len(verdicts))
     return row
 
 
@@ -324,9 +378,15 @@ def _mean(values: Sequence[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _count(flags: Sequence[bool | None]) -> dict:
+    defined = [f for f in flags if f is not None]
+    return {"k": sum(defined), "n": len(defined)}
+
+
 def _summary(rows: Sequence[Mapping]) -> dict:
     searched = [r for r in rows if r["searched"]]
     answered = [r for r in rows if r["answered_run"]]
+    judged = [r for r in answered if "parts_covered" in r]
     out = {"n": len(rows), "searched": len(searched), "answered_run": len(answered),
            "found": _mean([r["found"] for r in searched]),
            "all_found": _mean([float(r["found"] == 1) for r in searched if r["found"] is not None]),
@@ -341,24 +401,45 @@ def _summary(rows: Sequence[Mapping]) -> dict:
         out["answers_citing_outside_bound"] = _mean([float(r["cited_outside_bound"] > 0) for r in bounded])
         sources = sum(r["cited_sources"] for r in bounded)
         out["cited_sources_outside_bound"] = sum(r["cited_outside_bound"] for r in bounded) / sources if sources else None
+    if judged:
+        out["parts_covered"] = _mean([r["parts_covered"] for r in judged])
+        out["all_parts_covered"] = _mean([float(r["parts_covered"] == 1) for r in judged])
+    # Counts behind the yes/no rates, to report next to them (10 questions per kind).
+    out["counts"] = {
+        "all_found": _count([None if r["found"] is None else r["found"] == 1 for r in searched]),
+        "all_cited": _count([None if r["cited"] is None else r["cited"] == 1 for r in answered]),
+        "abstained": _count([r["abstained"] for r in answered]),
+        "answers_citing_outside_bound": _count([r["cited_outside_bound"] > 0 for r in bounded]),
+        "all_parts_covered": _count([r["parts_covered"] == 1 for r in judged]),
+    }
     return out
 
 
-def score_challenge(searches_dir: str | Path, answers_dir: str | Path | None = None) -> dict:
+def score_challenge(searches_dir: str | Path, answers_dir: str | Path | None = None, client=None) -> dict:
     """Per row and kind: gold found / cited, abstention, bound violations, rounds, latency, tokens.
 
     `searches_dir` is a review ablation over the challenge set (`ablation_runs/<tag>`); `answers_dir`
     its answer run (`answer_runs/<tag>`), or None for search-only scores. Questions come from the
     ablation's selected_eval.jsonl; incomplete questions are counted (`searched`, `answered_run`)
-    and left out of the means.
+    and left out of the means. With a `client` (`part_judge_client`) and answers, every answered
+    two_part / comparison question gets one `judge_parts` call: `parts_covered` is the share of its
+    parts the answer addresses with a cited statement. Found and cited are paper-level, so they
+    cannot show a later round adding another passage of a paper that already passed (D53); this can.
     """
     searches_dir = Path(searches_dir)
     questions = read_jsonl(searches_dir / "selected_eval.jsonl")
     if not any("answerable" in q for q in questions):
         raise ValueError(f"{searches_dir} was not run on the challenge set (no 'answerable' field)")
     rows_dir = searches_dir / "rows"
+    if client is not None and answers_dir is None:
+        raise ValueError("judging parts needs --answers")
+    if client is not None and any(q["question_type"] in ("two_part", "comparison") and not q.get("parts")
+                                  for q in questions):
+        raise ValueError(f"{searches_dir}: two_part / comparison questions have no parts; rebuild the challenge set")
     report: dict = {"format_version": 1, "created": datetime.now().isoformat(timespec="seconds"),
                     "searches": str(searches_dir), "answers": str(answers_dir) if answers_dir else None,
+                    "part_judge": ({"prompt_version": PART_PROMPT_VERSION, "model": getattr(client, "model", None)}
+                                   if client is not None else None),
                     "n_questions": len(questions), "by_kind_n": {k: sum(q["question_type"] == k for q in questions)
                                                                  for k in KINDS},
                     "rows": {}}
@@ -372,7 +453,8 @@ def score_challenge(searches_dir: str | Path, answers_dir: str | Path | None = N
         if answers_dir is not None:
             path = Path(answers_dir) / "rows" / row_dir.name / "answers.jsonl"
             answers = {answer["query_id"]: answer for answer in read_jsonl(path)}
-        per_question = {q["query_id"]: _question_scores(q, attempts.get(q["query_id"]), answers.get(q["query_id"]))
+        per_question = {q["query_id"]: _question_scores(q, attempts.get(q["query_id"]), answers.get(q["query_id"]),
+                                                        client)
                         for q in questions}
         report["rows"][row_dir.name] = {
             "by_kind": {k: _summary([r for r in per_question.values() if r["kind"] == k]) for k in KINDS},
@@ -383,18 +465,24 @@ def score_challenge(searches_dir: str | Path, answers_dir: str | Path | None = N
 
 
 def format_summary(report: Mapping) -> str:
-    """One line per row and kind with the headline measure of that kind."""
+    """One line per row and kind with the headline measures of that kind, counts next to rates."""
     lines = [f"Challenge set: {report['n_questions']} questions {report['by_kind_n']}", ""]
-    measures = {"comparison": ("all_found", "all_cited"), "two_part": ("found", "cited"),
-                "date": ("found", "answers_citing_outside_bound"), "out_of_kb": ("abstained", None)}
+    measures = {"comparison": ("all_found", "all_cited", "all_parts_covered"),
+                "two_part": ("all_found", "all_cited", "all_parts_covered"),
+                "date": ("all_found", "answers_citing_outside_bound"), "out_of_kb": ("abstained",)}
 
     def show(value: object) -> str:
         return "n/a" if value is None else f"{value:.2f}"
 
     for row, data in report["rows"].items():
-        for kind, (first, second) in measures.items():
+        for kind, names in measures.items():
             s = data["by_kind"][kind]
-            parts = [f"{first} {show(s.get(first))}"] + ([f"{second} {show(s.get(second))}"] if second else [])
+            parts = []
+            for name in names:
+                if name == "all_parts_covered" and name not in s:
+                    continue  # parts were not judged
+                count = s["counts"][name]
+                parts.append(f"{name} {show(s.get(name))} ({count['k']}/{count['n']})")
             lines.append(f"{row:<9}{kind:<11}n={s['n']:<3}" + ", ".join(parts)
                          + f", rounds {show(s['rounds'])}, re-reviews {show(s['re_reviews'])}, "
                          f"search {show(None if s['search_ms'] is None else s['search_ms'] / 1000)} s")
