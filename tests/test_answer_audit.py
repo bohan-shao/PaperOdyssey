@@ -122,6 +122,8 @@ class ScoreTest(unittest.TestCase):
         self.assertAlmostEqual(report["judge_vs_human"]["spearman_faithfulness_vs_supported"], 4 / 18 ** 0.5)
         self.assertEqual(report["judge_vs_human"]["judge_faithfulness_by_stratum"], {"perfect": 1.0, "low": 0.5})
         self.assertIn("correct", audit.format_summary(report))
+        self.assertIn("stratified sample", audit.format_summary(report))
+        self.assertIn("stratified sample", report["judge_vs_human"]["scope"])
 
     def test_marks_are_checked(self) -> None:
         a, b = self.marks()
