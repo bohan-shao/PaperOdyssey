@@ -84,8 +84,12 @@ def _env_key(base_url: str) -> tuple[str, str]:
     return "", " / ".join(names)
 
 
-def parse_json_reply(text: str) -> dict | list:
+def parse_json_reply(text: str, *, complete: bool = False) -> dict | list:
     """Parse a model reply as JSON: plain JSON, a ```json fenced block, or JSON inside prose.
+
+    `complete=True` accepts only a reply that is JSON as a whole (plain or fenced). A reply cut
+    off at the token limit can still hold a decodable inner object, such as the first item of a
+    truncated array, which must not be taken for the answer.
 
     Raises:
         ValueError: no JSON object/array can be decoded from the reply.
@@ -97,6 +101,8 @@ def parse_json_reply(text: str) -> dict | list:
     try:
         value = json.loads(body)
     except json.JSONDecodeError:
+        if complete:
+            raise ValueError("reply is not complete JSON") from None
         # JSON embedded in prose: take the longest decodable object/array, so a citation such
         # as "[1]" in the prose never wins over the actual payload.
         value, best_len, i = None, 0, 0
@@ -267,7 +273,9 @@ class LLMClient:
         for _ in range(self.retries + 1):
             text, finish_reason = self._complete(conversation, None, max_tokens, "json")
             try:
-                return parse_json_reply(text)
+                # A cut-off reply is accepted only if it is complete JSON; otherwise it is asked
+                # again with a doubled limit, never parsed for a fragment.
+                return parse_json_reply(text, complete=finish_reason == "length")
             except ValueError as exc:
                 error = str(exc)
                 if finish_reason == "length":

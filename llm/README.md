@@ -56,7 +56,9 @@ with usage_scope() as used: ...                        # this context's calls on
 - **chat_json**: accepts plain JSON, ```json fences, or JSON embedded in prose (the longest
   object/array wins, so a citation like `[1]` is never mistaken for the payload). On a parse
   failure it re-asks with the model's previous reply, the error and `schema_desc`; a reply cut
-  off by the token limit is retried with doubled `max_tokens` (cap 8192). The optional
+  off by the token limit is retried with doubled `max_tokens` (cap 8192). A cut-off reply is
+  accepted only when it is complete JSON as a whole (D57): the prose fallback would otherwise
+  take the first object of a truncated array for the answer, and the retry would never run. The optional
   `max_tokens=` argument sets the first attempt's limit (default `llm.max_tokens`). No
   provider JSON mode is forced because the review prompt expects a top-level array.
 - **Cost reporting**: one line per call in `data/results/metrics/llm_usage.jsonl`
