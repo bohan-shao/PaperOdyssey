@@ -33,7 +33,8 @@ For each audit ID: read the question, the answer, then the excerpts it cites. Th
 | **supported** | Every statement with a citation is backed by the excerpt it cites | Some cited statements go beyond their excerpt or cite the wrong one | Most cited statements are not backed by their excerpts |
 
 - Judge only from the question, the answer and the excerpts. If an excerpt is cut off, you may
-  open the paper link.
+  open the paper link. (So `correct` means correct with respect to the evidence shown; the
+  report describes it that way, not as checked against the full papers.)
 - An answer that says the evidence is insufficient: `correct` = `y` if the excerpts really do not
   answer the question, `n` if they do. `complete` = `n`. `supported` = `y` unless it cites something
   that does not fit.

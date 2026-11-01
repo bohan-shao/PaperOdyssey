@@ -392,5 +392,5 @@ writes under `out_dir` (default `paths.eval/answer_audit/`, gitignored, shared w
 `score_sheets(out_dir) -> dict` (published as `metrics/answer_audit_<tag>.json`): `n_answers`,
 `population`, `sampled`, `criteria.<criterion>`: {`exact_agreement`, `fleiss_kappa`, `by_stratum`,
 `weighted_mean`, `sample_mean`}, `judge_vs_human`: {`judge_faithfulness_by_stratum`,
-`spearman_faithfulness_vs_supported`, `n`} and `per_answer_scores`. Every assigned row must be
+`spearman_faithfulness_vs_supported`, `n`, `scope` (the stratified sample)} and `per_answer_scores`. Every assigned row must be
 marked; changed IDs, repeated rows or other values than y/p/n raise ValueError.

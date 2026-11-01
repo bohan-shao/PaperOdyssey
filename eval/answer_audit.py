@@ -248,7 +248,9 @@ def score_sheets(out_dir: str | Path) -> dict:
         "format_version": 1, "created": datetime.now().isoformat(timespec="seconds"),
         "protocol": "y=1, p=0.5, n=0 per criterion; an answer's score is the mean of its annotators; "
                     "weighted_mean weights each judge stratum by its share of the row (population); "
-                    "agreement over each answer's annotators (Fleiss' kappa, categories y/p/n)",
+                    "agreement over each answer's annotators (Fleiss' kappa, categories y/p/n); "
+                    "annotators judge from the question, the answer and its excerpts, so correct means "
+                    "correct with respect to the evidence shown, not checked against the full papers",
         "source": manifest["source"], "split": manifest["split"], "n_answers": len(items),
         "per_answer": manifest["per_answer"], "population": population, "sampled": manifest["sampled"],
         "criteria": criteria,
@@ -258,6 +260,7 @@ def score_sheets(out_dir: str | Path) -> dict:
             "spearman_faithfulness_vs_supported": spearman(
                 [i["judge"]["faithfulness"] for i in judged], [per_item[i["audit_id"]]["supported"] for i in judged]),
             "n": len(judged),
+            "scope": "the stratified sample (low faithfulness oversampled), not the whole row",
         },
         "per_answer_scores": {i["audit_id"]: {"query_id": i["query_id"], "stratum": i["stratum"],
                                               **per_item[i["audit_id"]], "judge": i["judge"]} for i in items},
@@ -277,5 +280,6 @@ def format_summary(report: Mapping) -> str:
     rho = judge["spearman_faithfulness_vs_supported"]
     lines += ["", "LLM judge faithfulness by stratum: "
                   + ", ".join(f"{s} {v:.2f}" for s, v in judge["judge_faithfulness_by_stratum"].items() if v is not None),
-              f"Spearman(judge faithfulness, human supported) = {'n/a' if rho is None else f'{rho:.2f}'} over {judge['n']} answers"]
+              f"Spearman(judge faithfulness, human supported) = {'n/a' if rho is None else f'{rho:.2f}'} over {judge['n']} answers "
+              "(stratified sample, not the whole row)"]
     return "\n".join(lines)

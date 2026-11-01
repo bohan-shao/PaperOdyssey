@@ -195,11 +195,15 @@ of one finished answer-run row (default sizes 40/30/20/10 from the LLM-judge str
 the five annotators (pairs cycled as in D42) and writes a marking sheet and a reading packet
 per annotator. Strata and judge scores are hidden from annotators. Each answer is marked y / p
 (partly) / n on **correct**, **complete** and **supported** (every cited statement backed by its
-excerpt; rules in eval/annotation/ANSWER_AUDIT.md). `score` reports, per criterion, exact
+excerpt; rules in eval/annotation/ANSWER_AUDIT.md). Annotators judge from the question, the
+answer and its excerpts, so report `correct` as "correct with respect to the evidence shown",
+not as accuracy against the full papers. `score` reports, per criterion, exact
 agreement and Fleiss' kappa, the mean per stratum (y = 1, p = 0.5, n = 0; an answer's score is
 the mean of its two annotators) and the mean weighted by each stratum's share of the row
 (post-stratification, the estimate for the whole row), plus the judge's faithfulness per stratum
-and Spearman's correlation between judge faithfulness and human `supported`. Audit the row of the
+and Spearman's correlation between judge faithfulness and human `supported`. The correlation runs on
+the stratified sample, where low faithfulness is oversampled, so it describes whether the judge
+tracks people where it matters, not the whole row; say so next to the number. Audit the row of the
 configured system (loop on, HyDE off: row `a` of the loop × HyDE answer run). The audit checks
 the answers and the LLM judge; it is separate from the eval set's IAA (§1).
 
