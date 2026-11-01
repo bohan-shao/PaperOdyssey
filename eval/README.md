@@ -229,7 +229,10 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
 - `--protocol production` (D51) fixes none of the settings above: every row, the throughput, the
   sweeps and the examples use config.yaml as it is, each row changing only its own switches.
   Use it for the deployed system's Q2 latency. With `dense.top_k` 150, FAISS HNSW searches with
-  max(efSearch, k), so pass `--ef` values of at least 150.
+  max(efSearch, k), so `--ef` defaults to 150 200 256 512 under this protocol; every sweep row
+  records `effective_ef_search`. The rerank-depth `top_k_agreement` compares the reranker's raw
+  top 10; the deployed pipeline then applies the final per-paper/per-parent caps (`select_hits(...,
+  final=True)`), so quote it as a cost/quality proxy, not as agreement of the final top 10.
 - Run in a fresh dedicated process; loaded components from another configuration are rejected.
   `cold_start_s` is retained for compatibility but measures component load plus warm-up, with
   possibly warm OS/model file caches. Rerank sweeps collect up to the largest requested depth
