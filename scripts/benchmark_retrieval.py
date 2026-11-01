@@ -2,12 +2,17 @@
 
 Usage:
     python scripts/benchmark_retrieval.py [--config config.yaml] [--queries 100] [--concurrency 1 4 8]
-        [--ef 32 64 128 256] [--depths 10 20 30 50] [--out PATH]
+        [--ef 32 64 128 256] [--depths 10 20 30 50] [--protocol legacy_50_v2|production] [--out PATH]
 
 Pipeline: eval.latency.run_benchmark (needs the lookup, BM25 and FAISS indexes and the models;
-run inside Docker) -> results/metrics/latency_retrieval_<date>.json + a summary on stdout.
+run inside Docker) -> results/metrics/latency_retrieval_<date>.json (latency_retrieval_production_<date>.json
+with --protocol production) + a summary on stdout.
 Measures retrieve() only, no LLM stages. Uses config.yaml; configurations are switched in memory
 and config.yaml is never modified. Numbers depend on corpus size: rerun after the full KB build.
+--protocol production times the configured settings (D51, the deployed system for Q2); the default
+legacy_50_v2 fixes the ranking settings for comparisons across config changes. FAISS HNSW searches
+with max(efSearch, k), and production keeps dense.top_k 150, so --ef defaults to 150 200 256 512
+there (32 64 128 256 for legacy_50_v2); each sweep row records the efSearch actually used.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import get_config, get_path  # noqa: E402
-from eval.latency import format_summary, run_benchmark  # noqa: E402
+from eval.latency import PROTOCOLS, format_summary, run_benchmark  # noqa: E402
 
 
 def main() -> None:
@@ -30,17 +35,21 @@ def main() -> None:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--queries", type=int, default=100, help="paper titles sampled as queries")
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 4, 8])
-    parser.add_argument("--ef", type=int, nargs="+", default=[32, 64, 128, 256], help="efSearch values")
+    parser.add_argument("--ef", type=int, nargs="+", default=None,
+                        help="efSearch values (default: 32 64 128 256; with --protocol production 150 200 256 512)")
     parser.add_argument("--depths", type=int, nargs="+", default=[10, 20, 30, 50], help="rerank depths")
+    parser.add_argument("--protocol", choices=sorted(PROTOCOLS), default="legacy_50_v2",
+                        help="legacy_50_v2 (default): fixed ranking settings; production: the configured settings (D51)")
     parser.add_argument("--out", type=Path, default=None,
-                        help="report path (default results/metrics/latency_retrieval_<date>.json)")
+                        help="report path (default results/metrics/latency_retrieval_[production_]<date>.json)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     get_config(args.config)
-    report = run_benchmark(args.queries, args.concurrency, args.ef, args.depths)
-    out = args.out or get_path("results") / "metrics" / f"latency_retrieval_{date.today().isoformat()}.json"
+    report = run_benchmark(args.queries, args.concurrency, args.ef, args.depths, args.protocol)
+    prefix = "latency_retrieval_production" if args.protocol == "production" else "latency_retrieval"
+    out = args.out or get_path("results") / "metrics" / f"{prefix}_{date.today().isoformat()}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print("\n" + format_summary(report) + f"\n\nreport -> {out}")

@@ -9,7 +9,8 @@
 | `build_kb.py` | parse + clean + chunk PDFs into passages.jsonl / sections.jsonl / papers.sqlite + corpus stats (resumable); `--from-sections` chunks the parsed sections instead (ablation passages without PDFs, D36) |
 | `merge_kb_shards.py` | merge the KB members' shard builds into one KB (`kb.merge.merge_shards`, D35); refuses before writing anything when shards don't fit together |
 | `build_indexes.py` | build the lookup store + BM25 + FAISS indexes from passages.jsonl (`--only lookup\|sparse\|dense\|all`) |
-| `benchmark_retrieval.py` | retrieval-core latency benchmark (per-stage latency per config, throughput, efSearch and rerank-depth sweeps) → `metrics/latency_retrieval_<date>.json` |
+| `benchmark_retrieval.py` | retrieval-core latency benchmark (per-stage latency per config, throughput, efSearch and rerank-depth sweeps, five example queries) → `metrics/latency_retrieval_<date>.json`; `--protocol production` times the configured settings (D51) → `metrics/latency_retrieval_production_<date>.json` |
+| `run_examples.py` | the five UI example inputs through Paper Search + cited answer with the configured settings (D51): papers, answers, sources, per-stage latency and tokens → `metrics/examples_<date>.json` |
 | `probe_retrieval.py` | paired raw/template source diagnostic; four sparse/hybrid/rerank modes, unique run artifacts and one-switch comparisons (not human relevance evaluation) |
 | `eval_set.py` | evaluation set (D39): `draft` (LLM questions) -> `sheets` (one CSV per annotator) -> `build` (majority vote, eval_set.jsonl, agreement report, to_rewrite.csv) -> `rewrites` (next round); `sheets --per-question 2` and `tiebreak` for two annotators per question (D42) |
 | `run_eval.py` | `--stage retrieval`: four retrieval configurations → `retrieval_results/<configuration>_<tag>.jsonl` + `metrics/retrieval_<tag>.json`; `--stage review`: resumable Paper Search/review → `review_runs/<tag>/report.json`; `--stage all` (default): retrieval then review. `--ablation FACTOR [FACTOR]` with an explicit stage runs controlled baseline/A/B/AB experiments → `ablation_runs/<tag>/report.json` and `metrics/ablation_<factors>_<tag>.json`; `--workers N` runs N review questions at once (D48); `--stage answer --source DIR`: answers and scores a finished review run or review ablation → `answer_runs/<tag>/` + `metrics/answer_<tag>.json` (D49) |
@@ -62,5 +63,8 @@ factor catalog, result interpretation and resume rules.
 protocol with the configured models/backends/indexes, and saves complete queries and per-row
 effective settings. Use `--out` to retain multiple runs on the same day. Start it in a fresh
 process; see `eval/README.md` for baseline and startup timing definitions.
+`--protocol production` (D51) times the configured settings instead, for the deployed system's
+Q2 latency; `--ef` then defaults to 150 200 256 512 (efSearch below `dense.top_k` 150 would time
+the same search) and each row records the efSearch actually used.
 Probe format v2 shares the canonical paper metrics. Sparse-only depth is tested by comparing
 `depth_with_diversity` with `diversity_only`; `depth_only` is explicitly skipped for that mode.
