@@ -215,7 +215,10 @@ so report the judge model. Judge and generation token usage are reported separat
 - Q2 speed of the deployed retriever: `scripts/benchmark_retrieval.py --protocol production` (D51) times
   the configured settings, including the five UI example queries and their results. The default
   `legacy_50_v2` protocol fixes older settings for comparisons across config changes; it does not
-  describe the deployed system.
+  describe the deployed system. HNSW searches with max(efSearch, k), so the production efSearch
+  sweep defaults to 150 200 256 512 and records the value used. The rerank-depth `top_k_agreement`
+  is the raw reranker's top 10, before the final per-paper/per-parent caps users see; quote it as
+  a cost/quality proxy.
 - Q2 five queries end to end: `scripts/run_examples.py` (D51) runs the five UI example inputs
   through Paper Search and the cited answer with the configured settings, and saves each input's
   papers, answer, sources, per-stage latency and tokens; `--input` adds a hard comparison and an
