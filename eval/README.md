@@ -244,6 +244,19 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   costs ~7.8 ms per pair (depth 30: 232 ms, top-10 agreement 0.77). Rerun after the full KB build
   before citing numbers: BM25 and HNSW times grow with the corpus
 
+## answer_audit.py — Human answer audit (Q4, D54)
+
+- `python scripts/answer_audit.py sheets --run data/results/answer_runs/<tag>/rows/<row>`: samples
+  `eval.answer_audit.sizes` answers by LLM-judge stratum, two annotators each, and writes a CSV
+  marking sheet + HTML reading packet per annotator and `answer_audit.json` under
+  `paths.eval/answer_audit/` (never overwritten). Send each annotator their two files and
+  `eval/annotation/ANSWER_AUDIT.md`.
+- `python scripts/answer_audit.py score [--tag TAG]`: reads the marked sheets back →
+  `data/results/metrics/answer_audit_<tag>.json` (agreement, per-stratum and weighted correct /
+  complete / supported, judge vs human). Definitions: EVALUATION.md §5, SCHEMA.md §14.
+- People only: the marks must come from the annotators themselves. An AI judge's opinions belong
+  in the D49 scores, never in these sheets.
+
 ## answer_eval.py / answer_metrics.py — Answer-level evaluation (Q4/Q5, D49)
 
 - `run_answer_eval(source_dir, results_dir, tag, *, split="all", limit=None, resume=False, workers=1)`:

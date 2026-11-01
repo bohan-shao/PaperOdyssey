@@ -187,6 +187,26 @@ The eval set has no reference answers (`gold_answer` is empty, §1), so ROUGE, B
 EM/F1 against a reference cannot be computed and are not reported. Runtime citation-number
 validation only checks source identity; semantic support is measured by faithfulness below.
 
+**Human answer audit (D54).** Answer correctness therefore comes from people:
+`scripts/answer_audit.py sheets --run <answer-run row>` (`eval/answer_audit.py`) samples 100 answers
+of one finished answer-run row (default sizes 40/30/20/10 from the LLM-judge strata `perfect`
+(faithfulness 1), `mostly` (0.8 to below 1), `low` (below 0.8 or no claims) and `no_answer`
+(insufficient evidence); a short stratum's remainder goes to the others), gives each to two of
+the five annotators (pairs cycled as in D42) and writes a marking sheet and a reading packet
+per annotator. Strata and judge scores are hidden from annotators. Each answer is marked y / p
+(partly) / n on **correct**, **complete** and **supported** (every cited statement backed by its
+excerpt; rules in eval/annotation/ANSWER_AUDIT.md). Annotators judge from the question, the
+answer and its excerpts, so report `correct` as "correct with respect to the evidence shown",
+not as accuracy against the full papers. `score` reports, per criterion, exact
+agreement and Fleiss' kappa, the mean per stratum (y = 1, p = 0.5, n = 0; an answer's score is
+the mean of its two annotators) and the mean weighted by each stratum's share of the row
+(post-stratification, the estimate for the whole row), plus the judge's faithfulness per stratum
+and Spearman's correlation between judge faithfulness and human `supported`. The correlation runs on
+the stratified sample, where low faithfulness is oversampled, so it describes whether the judge
+tracks people where it matters, not the whole row; say so next to the number. Audit the row of the
+configured system (loop on, HyDE off: row `a` of the loop × HyDE answer run). The audit checks
+the answers and the LLM judge; it is separate from the eval set's IAA (§1).
+
 ## 6. RAG Metrics (Q4, RAGAS-style)
 
 Computed by `eval/answer_metrics.py` with an LLM judge, following the RAGAS definitions, for every
@@ -254,6 +274,8 @@ one-switch edges, next to the review report's source and coverage comparisons.
 - The retrieval latency benchmark writes `paths.results/metrics/latency_retrieval_<date>.json`, or
   `latency_retrieval_production_<date>.json` with `--protocol production` (§7, D51). The five
   examples end to end write `paths.results/metrics/examples_<date>.json` (§7, D51).
+- The answer audit (§5, D54) writes its sheets, packets and manifest under
+  `paths.eval/answer_audit/` and its report to `paths.results/metrics/answer_audit_<tag>.json`.
 - Answers write `paths.results/answer_runs/<tag>/` (report, `rows/<row>/answers.jsonl`, checkpoints;
   SCHEMA §13) and publish `paths.results/metrics/answer_<tag>.json`.
 - Ablations write `paths.results/ablation_runs/<tag>/report.json`, a selected-query snapshot,

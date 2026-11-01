@@ -373,3 +373,24 @@ The CLI passes `paths.results/answer_runs` as `results_dir`. Online types are un
   baseline→A, baseline→B, baseline→AB and A→AB, B→AB, over questions both rows completed.
 
 The CLI also publishes the report at `metrics/answer_<tag>.json`.
+
+## 14. Answer audit artifacts (D54)
+
+`eval.answer_audit.write_sheets(row_dir, out_dir, annotators, sizes, *, per_answer=2, split="eval",
+seed=42) -> dict` reads one answer-run row (`answers.jsonl` and `answers/<query_id>.json`) and
+writes under `out_dir` (default `paths.eval/answer_audit/`, gitignored, shared with the team):
+
+- `answer_audit_<annotator>.csv`: `audit_id, query_id, question, correct, complete, supported, note`,
+  one row per assigned answer, marks blank (`y`, `p` or `n` when marked).
+- `answer_audit_<annotator>.html`: the same answers with the question, the answer and every source
+  excerpt the answer model saw (cited ones in bold).
+- `answer_audit.json` (manifest): `source` {`row_dir`, `answers_sha256`}, `split`, `seed`,
+  `per_answer`, `annotators`, `requested_sizes`, `population` and `sampled` per stratum, `workload`,
+  and `items`: [{`audit_id`, `query_id`, `stratum`, `annotators`, `judge`: the row's D49 scores}].
+  An existing manifest is never overwritten.
+
+`score_sheets(out_dir) -> dict` (published as `metrics/answer_audit_<tag>.json`): `n_answers`,
+`population`, `sampled`, `criteria.<criterion>`: {`exact_agreement`, `fleiss_kappa`, `by_stratum`,
+`weighted_mean`, `sample_mean`}, `judge_vs_human`: {`judge_faithfulness_by_stratum`,
+`spearman_faithfulness_vs_supported`, `n`, `scope` (the stratified sample)} and `per_answer_scores`. Every assigned row must be
+marked; changed IDs, repeated rows or other values than y/p/n raise ValueError.

@@ -14,6 +14,7 @@
 | `probe_retrieval.py` | paired raw/template source diagnostic; four sparse/hybrid/rerank modes, unique run artifacts and one-switch comparisons (not human relevance evaluation) |
 | `eval_set.py` | evaluation set (D39): `draft` (LLM questions) -> `sheets` (one CSV per annotator) -> `build` (majority vote, eval_set.jsonl, agreement report, to_rewrite.csv) -> `rewrites` (next round); `sheets --per-question 2` and `tiebreak` for two annotators per question (D42) |
 | `run_eval.py` | `--stage retrieval`: four retrieval configurations → `retrieval_results/<configuration>_<tag>.jsonl` + `metrics/retrieval_<tag>.json`; `--stage review`: resumable Paper Search/review → `review_runs/<tag>/report.json`; `--stage all` (default): retrieval then review. `--ablation FACTOR [FACTOR]` with an explicit stage runs controlled baseline/A/B/AB experiments → `ablation_runs/<tag>/report.json` and `metrics/ablation_<factors>_<tag>.json`; `--workers N` runs N review questions at once (D48); `--stage answer --source DIR`: answers and scores a finished review run or review ablation → `answer_runs/<tag>/` + `metrics/answer_<tag>.json` (D49) |
+| `answer_audit.py` | human answer audit (D54): `sheets --run <answer-run row>` writes per-annotator marking sheets + reading packets; `score` → `metrics/answer_audit_<tag>.json` |
 | `sanity_check.py` | dependency-free sanity checks: config loads, packages import, schema round-trips (see README: Sanity checks) |
 | `run_ui.sh` | start Streamlit |
 
