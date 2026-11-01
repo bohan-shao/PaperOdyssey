@@ -23,8 +23,19 @@ Two presentation tabs (D23/D29) sharing the same input box:
    passages; an "About this search" margin says in words why the search ended (rounds, papers
    reviewed and accepted, re-reviews, aspects covered, cache), times each stage that ran, and
    offers the search record as JSON.
-5. Result state persists across rerenders; a failed or empty new submission clears stale results.
-6. Clear insufficient-evidence messages and actionable operational errors.
+5. While a request runs, a status box under the question lists each step as it happens (planning,
+   each round with papers reviewed and accepted, follow-up searches, writing the answer; the
+   `progress` events of SCHEMA.md §6.1) and the seconds so far. It ends as "Answer ready in X s",
+   "Search finished in X s: N papers accepted" or says there is no answer, and stays (collapsed)
+   on later reruns. The tab of the latest result opens by itself, and the examples' expander,
+   open on the first visit, folds after the first question (D58). The request runs only after
+   the rest of the page is drawn, with its status and results starting empty, so nothing of the
+   previous result stays greyed out while it runs. The first page view loads the retrieval
+   models in the background, so the first question does not wait for them.
+6. Result state persists across rerenders; a failed or empty new submission clears stale results.
+7. No answer is explained: how many rounds ran and papers were read out of the knowledge base's
+   size, what to try, and the closest papers the reviewer turned down with its reasons.
+   Operational errors name the recovery.
 
 Look (`.streamlit/config.toml`, read from the repository root where `scripts/run_ui.sh` starts the
 app): a page set like a LaTeX paper. Latin Modern (LaTeX's own face, served from `ui/static/fonts`,

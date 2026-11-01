@@ -169,7 +169,7 @@ class ReviewAndRewriteTests(unittest.TestCase):
 
 
 class LoopTests(unittest.TestCase):
-    def _run_with_patches(self, cfg: dict, **patches: object):
+    def _run_with_patches(self, cfg: dict, progress=None, **patches: object):
         from orchestration import loop
 
         defaults = {
@@ -194,7 +194,7 @@ class LoopTests(unittest.TestCase):
         for item in stack:
             item.start()
         self.addCleanup(lambda: [item.stop() for item in reversed(stack)])
-        return loop.run_query("request")
+        return loop.run_query("request", progress=progress)
 
     def test_deduplicates_across_paths_and_meets_coverage(self) -> None:
         cfg = make_config()
@@ -484,6 +484,43 @@ class LoopTests(unittest.TestCase):
         reviewed["P"].seen |= {p["passage_id"] for p in queued["P"]}
         again = loop._claim({"paper_id": "P", "top_passages": passages("n1")}, {}, reviewed, {"A"})
         self.assertEqual([p["passage_id"] for p in again["top_passages"]], ["p0", "n1", "p1"])
+
+    def test_progress_reports_each_step_in_order_without_changing_the_result(self) -> None:
+        cfg = make_config()
+        events: list[tuple[str, dict]] = []
+
+        def fake_review(candidates, criteria, text, round_no):
+            return [ReviewRecord(candidate["paper_id"], "pass" if round_no == 2 else "reject", 4, round=round_no,
+                                 covered=["aspect"] if round_no == 2 else [])
+                    for candidate in candidates]
+
+        def search(progress):
+            with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+                return self._run_with_patches(
+                    cfg, progress=progress, batch_review=fake_review,
+                    retrieve=lambda query, filters=None: RetrieveResult([hit("P1" if query == "q1" else "P2")], 1))
+
+        result = search(lambda event, details: events.append((event, dict(details))))
+        self.assertEqual(events, [
+            ("understanding", {}),
+            ("planned", {"queries": 1, "aspects": 1}),
+            ("round", {"round": 1, "queries": 1}),
+            ("round_done", {"round": 1, "reviewed": 1, "passed": 0, "covered": 0, "aspects": 1}),
+            ("follow_up", {"missing": ["aspect"]}),
+            ("round", {"round": 2, "queries": 1}),
+            ("round_done", {"round": 2, "reviewed": 2, "passed": 1, "covered": 1, "aspects": 1}),
+        ])
+        silent = search(None)
+        self.assertEqual((silent.papers, silent.reviews, silent.coverage_report),
+                         (result.papers, result.reviews, result.coverage_report))
+
+    def test_plain_rag_reports_one_retrieval(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["agentic"] = {"enabled": False}
+        events: list[tuple[str, dict]] = []
+        self._run_with_patches(cfg, progress=lambda event, details: events.append((event, dict(details))),
+                               retrieve=lambda query, filters=None: RetrieveResult([hit("P1"), hit("P2", 2)], 2))
+        self.assertEqual(events, [("round", {"round": 1, "queries": 1}), ("retrieved", {"papers": 2})])
 
     def test_plain_rag_keeps_the_retrieved_papers_in_rank_order_without_any_llm_call(self) -> None:
         from eval.review_eval import _validate_result

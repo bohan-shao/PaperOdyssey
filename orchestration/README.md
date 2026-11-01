@@ -116,8 +116,10 @@ input_text
 
 ## Interface
 ```python
-run_query(input_text: str, query_id: str | None = None) -> FinalResult
+run_query(input_text: str, query_id: str | None = None, *, progress: Progress | None = None) -> FinalResult
 ```
+- `progress`, if given, receives each step as it happens (planned, round, round_done,
+  follow_up, ...; SCHEMA.md §6.1, D58). The UI shows these live; the result is the same without it.
 - This module is **Paper Search** — a standalone capability (Q2/Q3 presentation).
 - The **downstream task** (see `downstream/`) calls this function to obtain evidence,
   then produces its own task output (D24). This module never generates answers itself.

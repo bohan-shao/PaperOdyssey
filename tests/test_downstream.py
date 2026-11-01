@@ -70,7 +70,7 @@ class DownstreamTests(unittest.TestCase):
 
     def test_answer_uses_real_text_and_one_search_and_generation(self):
         result = run("  How does it work?  ", query_id="custom")
-        self.search_call.assert_called_once_with("How does it work?", query_id="custom")
+        self.search_call.assert_called_once_with("How does it work?", query_id="custom", progress=None)
         self.client.chat_json.assert_called_once()
         prompt = json.loads(self.client.chat_json.call_args.args[0][1]["content"])
         self.assertEqual(prompt["paper_excerpts"][0]["text"], passage()["text"])
