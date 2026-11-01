@@ -469,6 +469,38 @@ class LoopTests(unittest.TestCase):
         again = loop._claim({"paper_id": "P", "top_passages": passages("n1")}, {}, reviewed, {"A"})
         self.assertEqual([p["passage_id"] for p in again["top_passages"]], ["p0", "n1", "p1"])
 
+    def test_plain_rag_keeps_the_retrieved_papers_in_rank_order_without_any_llm_call(self) -> None:
+        from eval.review_eval import _validate_result
+
+        cfg = make_config()
+        cfg["orchestration"]["agentic"] = {"enabled": False}
+        cfg["orchestration"]["hyde"]["enabled"] = True  # ignored: the plain baseline makes no LLM call
+        queries = []
+
+        def fake_retrieve(query, filters=None):
+            queries.append((query, filters))
+            hits = [hit("P2", 1), hit("P1", 2), hit("P2", 3, suffix="2"), hit("P3", 4), hit("P2", 5)]
+            return RetrieveResult(hits, 50)
+
+        def no_llm(*args, **kwargs):
+            raise AssertionError("the plain RAG baseline must not call the LLM")
+
+        with patch("orchestration.loop.get_client", side_effect=no_llm), \
+                patch("orchestration.loop.rewrite", side_effect=no_llm):
+            result = self._run_with_patches(cfg, understand=no_llm, retrieve=fake_retrieve, batch_review=no_llm)
+        self.assertEqual(queries, [("request", None)])  # the question as typed, no filters
+        self.assertEqual([p.paper_id for p in result.papers], ["P2", "P1", "P3"])
+        self.assertEqual(result.papers[0].evidence["top_passages"], ["P2_1", "P2_2"])
+        self.assertEqual({(p.verdict, p.score, p.round) for p in result.papers}, {("pass", 0, 1)})
+        self.assertEqual(result.retrieval_ranks, {"P2": 1, "P1": 2, "P3": 4})
+        self.assertEqual(result.reviews, result.papers)
+        report = result.coverage_report
+        self.assertEqual((report["termination_reason"], report["review_backend"], report["rounds"],
+                          report["papers_passed"], report["total_aspects"]), ("plain_rag", "none", 1, 3, 0))
+        self.assertEqual(result.query_plan.sub_queries, [SubQuery("request")])
+        self.assertEqual((result.latency_by_stage["understanding_ms"], result.latency_by_stage["review_ms"]), (0, 0))
+        _validate_result({"query_id": result.query_id, "input_text": "request"}, asdict(result))
+
     def test_legacy_cache_has_unavailable_trace_and_is_still_reused(self) -> None:
         from orchestration import loop
 

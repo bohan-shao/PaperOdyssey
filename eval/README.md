@@ -147,6 +147,7 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
 | `parent_doc` | `retrieval.parent_doc.enabled` | review |
 | `hyde` | `orchestration.hyde.enabled` | review |
 | `loop` | `orchestration.loop.enabled` | review |
+| `agentic` | `orchestration.agentic.enabled` (off = plain RAG baseline, D55; not with `hyde`/`loop`; compare rows on MRR/Hit@5 and `gold_in_sources`, since every plain-RAG paper passes) | review |
 
 - Supply an explicit `--stage` with `--ablation`; `all` is accepted only when every selected
   factor supports both stages. Unsupported combinations fail before execution instead of silently

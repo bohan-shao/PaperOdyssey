@@ -83,7 +83,7 @@ hypothetical document is appended as one additional `SubQuery` with empty `keywo
 {
   "paper_id": "P1234",
   "verdict": "pass",              // "pass" | "reject"
-  "score": 4,                     // 1–5
+  "score": 4,                     // 1–5; 0 = not reviewed (plain RAG baseline, D55)
   "reasons": "covers LoRA variants but lacks comparison experiments",
   "covered": ["efficient fine-tuning methods"],
   "missing": ["comparison experiment conclusions"],
@@ -119,7 +119,7 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
 descending score, then ascending `retrieval_ranks`, then paper ID. `retrieval_ranks` maps every
 reviewed paper to its best position (1 = first) among the passages of any sub-query's `retrieve()`
 result in the run, including sub-queries that returned it after its review; review scores are
-1–5 integers, so this keeps the retriever's order among equal scores. Results written before D47
+1–5 integers (0 for every plain-RAG paper, D55), so this keeps the retriever's order among equal scores. Results written before D47
 have no ranks (`{}`) and fall back to score then paper ID. `reviews`
 contains one `ReviewRecord` per reviewed paper, including rejects, in order of first review;
 the order within a round is not a relevance ranking. Each record retains its round, verdict,
@@ -128,6 +128,11 @@ later round (D53) keeps one merged record, in which a re-review can only add: a 
 replaced by a reject, and two passes keep the union of covered aspects and the higher score
 (§5). `coverage_report.re_reviews` counts re-reviews (absent before D53). On a fresh run,
 `len(reviews)` equals `coverage_report.papers_reviewed`.
+
+With `orchestration.agentic.enabled=false` (plain RAG baseline, D55) there is no review: every paper
+among the retrieved passages is a `pass` record with score 0 and its passage IDs in rank order as
+evidence, `papers` and `reviews` hold the same records in retrieval order, and `coverage_report`
+has `total_aspects` 0, `rounds` 1, `termination_reason` "plain_rag" and `review_backend` "none".
 
 `reviews` defaults to `[]` for existing callers and cached results written before this field
 was introduced. An empty trace from an old cache means the review records are unavailable;

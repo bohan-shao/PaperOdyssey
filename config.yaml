@@ -133,6 +133,9 @@ retrieval:
 
 # ---- orchestration/ orchestration layer (agentic) ----
 orchestration:
+  agentic:
+    enabled: true               # Q5 baseline (D55): false = plain RAG: the question -> hybrid retrieval + rerank
+                                # -> the same answer step; no LLM in search (understanding/HyDE/review/loop off)
   num_sub_queries: 3
   hyde:
     enabled: false              # Q3 innovation: HyDE query expansion (on = one extra LLM call)

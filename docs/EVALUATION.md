@@ -254,6 +254,7 @@ so report the judge model. Judge and generation token usage are reported separat
 | Innovation | Compared against | Existing switch |
 |---|---|---|
 | Agentic loop (orchestration layer) | Single-round parallel | `orchestration.loop.enabled=false` |
+| Agentic search as a whole (query understanding, LLM review, loop; D55) | Plain RAG: the question → hybrid retrieval + rerank → the same answer step | `orchestration.agentic.enabled=false` |
 
 Ablation matrix: baseline / +A / +B / +A+B (the assignment requires: add only A, add only B, add both, and report each gain).
 
@@ -261,6 +262,17 @@ Run the D46 matrix for Paper Search (for example `--stage review --ablation loop
 `--stage answer --source <paths.results>/ablation_runs/<tag>` answers every row's questions and reports
 paired answer-metric means and deltas (§5–§6) for baseline→A, baseline→B, baseline→AB and the
 one-switch edges, next to the review report's source and coverage comparisons.
+
+**Plain RAG baseline (D55).** `--stage review --ablation agentic` runs the plain baseline (no LLM in
+search) and the configured agentic system on the same questions; `--stage answer` on that ablation
+answers both with the same generator, prompt and evidence budget (`downstream.max_papers`,
+`passages_per_paper`, `max_chars_per_passage`). Report the paired answer metrics (§5–§6), source
+ranking (§4), latency per stage and tokens per question for both rows: this shows whether the
+orchestration earns its extra calls. Compare the rows on rank-based numbers (known-source MRR@10,
+Hit@5) and the answer stage's `gold_in_sources` / `gold_cited`, not on `source_success` or
+`source_acceptance_rate`: every plain-RAG paper is a `pass`, and the two rows' paper lists differ
+in length, neither equal to the 5 papers the answer uses. `agentic` cannot be combined with `hyde` or `loop`,
+which act only inside the agentic search.
 
 ## 9. Running and Reproduction
 
