@@ -38,6 +38,7 @@ FACTORS = {
     "hyde": {"key": "orchestration.hyde.enabled", "stages": ["review"]},
     "loop": {"key": "orchestration.loop.enabled", "stages": ["review"]},
     "agentic": {"key": "orchestration.agentic.enabled", "stages": ["review"]},  # D55: off = plain RAG
+    "re_review": {"key": "orchestration.loop.re_review", "stages": ["review"]},  # D53 evidence merging
 }
 _UNSUPPORTED = {
     "semantic_chunking": "semantic chunking requires paired prebuilt corpus/lookup/sparse/dense indexes",
@@ -112,8 +113,10 @@ def _plan(cfg: dict, factors: Sequence[str], stage: str, tag: str, questions: li
             raise ValueError("loop ablation requires max_rounds >= 2")
         if cfg["orchestration"].get("rewrite", {}).get("max_queries_per_round", 2) < 1:
             raise ValueError("loop ablation requires at least one rewrite query per round")
-    if "agentic" in factors and {"hyde", "loop"} & set(factors):
-        raise ValueError("hyde and loop act only inside the agentic search; ablate them apart from agentic")
+    if "agentic" in factors and {"hyde", "loop", "re_review"} & set(factors):
+        raise ValueError("hyde, loop and re_review act only inside the agentic search; ablate them apart from agentic")
+    if "re_review" in factors and "loop" not in factors and not cfg["orchestration"]["loop"].get("enabled", True):
+        raise ValueError("re_review only acts in rounds 2+; enable the loop or ablate it with the loop factor")
     seed = cfg.get("seed")
     if type(seed) is not int or not 0 <= seed < 2 ** 32:
         raise ValueError("seed must be an integer in [0, 2**32)")
@@ -189,7 +192,7 @@ def _review_observations(directory: Path, questions: list[dict]) -> tuple[dict, 
         cov = result["coverage_report"]
         rows[qid] = {
             "first_gold_rank": next((i for i, p in enumerate(ranked, 1) if p in gold), None),
-            "source_success": bool(accepted), "source_recall": len(accepted) / len(gold),
+            "source_success": bool(accepted), "source_recall": len(accepted) / len(gold) if gold else None,
             "wall_ms": attempt["wall_ms"], "cold_start": attempt.get("cold_start", False),
             "coverage_met": cov["covered_aspects"] == cov["total_aspects"] if cov["total_aspects"] else None,
             "rounds": cov["rounds"],
@@ -262,11 +265,16 @@ def _aggregate(plan: dict, cells: dict, questions: list[dict], manifest: dict,
         report["rows"][row]["results"] = cells.get(row, {})
     report["comparisons"] = {}
     report["interaction"] = {}
+    # Ranking and source comparisons need gold papers; unanswerable challenge questions (D56) run in
+    # every cell but are scored by eval.challenge, not here.
+    ranked = [q for q in questions if q["gold_paper_ids"]]
+    ranked_ids = {q["query_id"] for q in ranked}
     for stage in plan["stages"]:
-        data = {r: cells.get(r, {}).get(stage, {}).get("per_query", {}) for r in plan["rows"]}
-        report["comparisons"][stage] = compare_rows(questions, data, plan["edges"], stage=stage)
+        data = {r: {qid: o for qid, o in cells.get(r, {}).get(stage, {}).get("per_query", {}).items() if qid in ranked_ids}
+                for r in plan["rows"]}
+        report["comparisons"][stage] = compare_rows(ranked, data, plan["edges"], stage=stage)
         if len(plan["factors"]) == 2:
-            report["interaction"][stage] = interaction(questions, data, ("baseline", "a", "b", "ab"), stage=stage)
+            report["interaction"][stage] = interaction(ranked, data, ("baseline", "a", "b", "ab"), stage=stage)
     report["usage"] = {k: sum(c["usage"][k] for row in cells.values() for c in row.values())
                        for k in ("calls", "prompt_tokens", "completion_tokens", "total_tokens")}
     return report

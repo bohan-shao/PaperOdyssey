@@ -143,8 +143,9 @@ def _evaluate(question: dict, result: dict, *, judge: LLMClient, encoder, settin
         cited = {s.paper_id for s in answer.sources if s.number in answer.cited_source_numbers}
         row.update(status="complete",
                    answer={k: v for k, v in asdict(answer).items() if k != "search_result"},
-                   task={"gold_in_sources": bool(gold & {s.paper_id for s in answer.sources}),
-                         "gold_cited": bool(gold & cited)},
+                   # A question without gold papers (out_of_kb in the challenge set, D56) has no labels.
+                   task={"gold_in_sources": bool(gold & {s.paper_id for s in answer.sources}) if gold else None,
+                         "gold_cited": bool(gold & cited) if gold else None},
                    scores=scores, judge_ms=round((time.perf_counter() - generated) * 1000, 2))
     except Exception as exc:
         # Provider error strings can contain request details; keep the class and query only.
@@ -184,7 +185,11 @@ def _run_pending(pending: list[tuple[dict, dict]], workers: int, evaluate: Calla
 
 
 def _values(row: dict) -> dict:
-    return {**{m: row["scores"][m] for m in JUDGED}, **{m: float(row["task"][m]) for m in LABELED}}
+    return {**{m: row["scores"][m] for m in JUDGED}, **{m: _label(row["task"][m]) for m in LABELED}}
+
+
+def _label(value: bool | None) -> float | None:
+    return None if value is None else float(value)
 
 
 def _mean(values: list) -> dict:
@@ -204,7 +209,7 @@ def _score(rows: list[dict]) -> dict:
         "answered": sum(a["status"] == "answered" for a in answers),
         "insufficient_evidence": sum(a["status"] == "insufficient_evidence" for a in answers),
         "no_sources": sum(not a["sources"] for a in answers),
-        **{m: _mean([float(r["task"][m]) for r in rows]) for m in LABELED},
+        **{m: _mean([_label(r["task"][m]) for r in rows]) for m in LABELED},
         "faithfulness": {**_mean([s["faithfulness"] for s in scores]), "claims": claims, "supported_claims": supported,
                          "pooled": supported / claims if claims else None},
         "answer_relevance": {**_mean([s["answer_relevance"] for s in scores]),
@@ -271,7 +276,8 @@ def _report(manifest: dict, kind: str, plan: dict, state: dict, selection: list[
             "answers": "downstream.answer_from_search on each stored search result: the UI's evidence and "
                        "generation code, one generation call (re-asked once when the reply fails the citation "
                        "check, D50), no search calls.",
-            "labels": "gold_in_sources / gold_cited use the eval set's source paper (one per question).",
+            "labels": "gold_in_sources / gold_cited use the eval set's source paper (one per question); "
+                      "null for a question without gold papers (out_of_kb, D56), left out of means and deltas.",
             "judge": "faithfulness, answer relevance, context relevance and precision are LLM-judge scores "
                      "(eval/answer_metrics.py), not human labels; a judge sharing the generator's model can "
                      "favor its own answers. No reference answers exist, so ROUGE/BERTScore/EM are not reported.",

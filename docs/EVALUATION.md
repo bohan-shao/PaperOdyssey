@@ -182,6 +182,8 @@ Task metrics against the eval set's labels (one source paper per question):
 
 - **gold_in_sources**: the source paper is among the excerpts the answer model received
 - **gold_cited**: the answer cites an excerpt of the source paper
+- Both are undefined (null) for a question without gold papers (the challenge set's out_of_kb,
+  D56) and left out of means and paired deltas
 
 The eval set has no reference answers (`gold_answer` is empty, §1), so ROUGE, BERTScore and
 EM/F1 against a reference cannot be computed and are not reported. Runtime citation-number
@@ -274,6 +276,42 @@ Hit@5) and the answer stage's `gold_in_sources` / `gold_cited`, not on `source_s
 in length, neither equal to the 5 papers the answer uses. `agentic` cannot be combined with `hyde` or `loop`,
 which act only inside the agentic search.
 
+### Challenge set (D56)
+
+The main set's questions mostly end in one round, so the loop and evidence merging (D53) are
+measured on a separate challenge set: 10 questions each of `comparison` (two gold papers),
+`two_part` (one paper, two asks), `date` (a year bound) and `out_of_kb` (no gold; the right outcome
+is insufficient evidence), LLM-drafted from papers that are not gold in the main set and checked by
+two annotators (`eval/annotation/CHALLENGE.md`; only items both accept are used; agreement and
+Fleiss' kappa reported). It is reported apart from the main set and never used for tuning.
+
+```bash
+python scripts/challenge_set.py draft --papers <full KB>/processed/papers.sqlite   # done 2026-11-01
+python scripts/challenge_set.py sheets && python scripts/challenge_set.py build      # after marking
+python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation agentic --tag challenge-agentic --workers 8
+python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation loop re_review --tag challenge-loop --workers 8
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-agentic --tag answers-challenge-agentic --workers 8
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-loop --tag answers-challenge-loop --workers 8
+python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-agentic --answers data/results/answer_runs/answers-challenge-agentic --judge-parts --tag agentic
+python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-loop --answers data/results/answer_runs/answers-challenge-loop --judge-parts --tag loop
+```
+
+The `loop re_review` matrix has baseline (loop off), A (loop on, no re-review), B (re-review on,
+loop off: identical to the baseline by design, since re-review acts only in rounds 2+) and AB
+(both, the configured system). Per kind: `comparison` all gold found / cited, `two_part` and `date`
+gold found / cited, `date` answers citing papers outside the bound, `out_of_kb` abstention, plus
+rounds, re-reviews, search time and tokens. Found and cited are paper-level, so they move only
+when a paper turns from reject to pass; D53's main case, a later round bringing the other part's
+passage of a paper that already passed, shows only in the answer. `--judge-parts` therefore asks
+the answer judge (`eval.answer.judge_model`), once per answered `two_part` / `comparison` question,
+whether the answer addresses each drafted part (`parts`, or a comparison's `aspects`) with a cited
+statement: `parts_covered` and `all_parts_covered` (an insufficient-evidence answer covers none; the
+judge is an LLM, not a human label). With 10 questions per kind, report counts as well as rates
+(the summary prints k/n next to each yes/no rate), and repeat a run before reading a one-question
+difference as an effect (LLM variation). Quote challenge-set numbers from `challenge_<tag>.json`;
+the answer report's paired deltas leave out_of_kb questions out (no gold, null labels) but mix the
+four kinds.
+
 ## 9. Running and Reproduction
 
 - Unified entry point `scripts/run_eval.py --config config.yaml --stage <retrieval|review|all>`:
@@ -286,6 +324,9 @@ which act only inside the agentic search.
 - The retrieval latency benchmark writes `paths.results/metrics/latency_retrieval_<date>.json`, or
   `latency_retrieval_production_<date>.json` with `--protocol production` (§7, D51). The five
   examples end to end write `paths.results/metrics/examples_<date>.json` (§7, D51).
+- The challenge set (§8, D56) keeps drafts and sheets under `paths.eval/challenge/`, the set at
+  `paths.eval/challenge_set.jsonl`, and writes `metrics/challenge_iaa_<date>.json` (build) and
+  `metrics/challenge_<tag>.json` (score).
 - The answer audit (§5, D54) writes its sheets, packets and manifest under
   `paths.eval/answer_audit/` and its report to `paths.results/metrics/answer_audit_<tag>.json`.
 - Answers write `paths.results/answer_runs/<tag>/` (report, `rows/<row>/answers.jsonl`, checkpoints;

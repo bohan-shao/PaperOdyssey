@@ -147,7 +147,8 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
 | `parent_doc` | `retrieval.parent_doc.enabled` | review |
 | `hyde` | `orchestration.hyde.enabled` | review |
 | `loop` | `orchestration.loop.enabled` | review |
-| `agentic` | `orchestration.agentic.enabled` (off = plain RAG baseline, D55; not with `hyde`/`loop`; compare rows on MRR/Hit@5 and `gold_in_sources`, since every plain-RAG paper passes) | review |
+| `agentic` | `orchestration.agentic.enabled` (off = plain RAG baseline, D55; not with `hyde`/`loop`/`re_review`; compare rows on MRR/Hit@5 and `gold_in_sources`, since every plain-RAG paper passes) | review |
+| `re_review` | `orchestration.loop.re_review` (D53 evidence merging; needs the loop, D56) | review |
 
 - Supply an explicit `--stage` with `--ablation`; `all` is accepted only when every selected
   factor supports both stages. Unsupported combinations fail before execution instead of silently
@@ -244,6 +245,21 @@ performance/cost, ablation tables, and answer-level metrics (`answer_eval.py`).
   time, so concurrent sub-queries only queue); efSearch 128 → recall@50 0.998; rerank depth
   costs ~7.8 ms per pair (depth 30: 232 ms, top-10 agreement 0.77). Rerun after the full KB build
   before citing numbers: BM25 and HNSW times grow with the corpus
+
+## challenge.py — Challenge set for the agentic search (Q3/Q5, D56)
+
+- `python scripts/challenge_set.py draft --papers <full KB>/processed/papers.sqlite`: 10 questions per
+  kind (`comparison`, `two_part`, `date`, `out_of_kb`) from papers not gold in the main set →
+  `data/eval/challenge/drafts.jsonl` (LLM calls; never overwritten).
+- `sheets`: `challenge_<annotator>.csv` for each of `eval.challenge.annotators` (guide
+  `eval/annotation/CHALLENGE.md`); `build`: items every annotator accepted →
+  `data/eval/challenge_set.jsonl` + `metrics/challenge_iaa_<date>.json`.
+- Run it like the main set with `run_eval.py --eval-set data/eval/challenge_set.jsonl` (factors
+  `agentic`, `loop`, `re_review`), answer it with `--stage answer`, then `score --searches <ablation>
+  --answers <answer run> [--judge-parts]` → `metrics/challenge_<tag>.json`. `--judge-parts`: one
+  answer-judge call per answered two_part / comparison question, whether the answer addresses each
+  drafted part with a cited statement (`parts_covered`); the paper-level found / cited cannot show
+  D53 adding a passage of a paper that already passed. Commands: EVALUATION.md §8.
 
 ## answer_audit.py — Human answer audit (Q4, D54)
 

@@ -61,7 +61,8 @@ input_text
   only when it covers more). `reviews` keeps one record per paper; `round` is the round of its
   first kept verdict and `evidence.review_rounds` lists every round it was reviewed in.
   `coverage_report.re_reviews` counts re-reviews. The same passages found again cause no new
-  review. `orchestration.loop.re_review: false` switches this off (the pre-D53 behaviour).
+  review. `orchestration.loop.re_review: false` switches this off (the pre-D53 behaviour), for the
+  `re_review` ablation (D56).
 - Outputs a list of ReviewRecord; papers with `verdict="reject"` do not enter the candidate set
 - Invalid or unavailable review output is retried once, then fails the query with `OrchestrationError`
 - Reviewer backend (config `review.backend`): `llm` (default) or `jev` (TypeSafe Jev, `llm/jev.py`).

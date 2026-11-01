@@ -90,6 +90,20 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(client.chat_json([{"role": "user", "content": "x"}], "array"), [])
         self.assertEqual([r["max_tokens"] for r in server.requests], [100, 200])
 
+    def test_chat_json_never_takes_a_fragment_of_a_cut_off_reply(self) -> None:
+        # Seen with the real model: a 5-paper review array cut off at the limit parsed to its
+        # first object, so the doubled-limit retry never ran and the review failed.
+        cut = '[{"paper_id": "P1", "verdict": "pass"}, {"paper_id": "P2", "reas'
+        full = '[{"paper_id": "P1", "verdict": "pass"}, {"paper_id": "P2", "verdict": "reject"}]'
+        server = Server(ok(cut, finish_reason="length"), ok(full))
+        client = self.make(server, max_tokens=100)
+        self.assertEqual(len(client.chat_json([{"role": "user", "content": "x"}], "array")), 2)
+        self.assertEqual([r["max_tokens"] for r in server.requests], [100, 200])
+        self.assertEqual(parse_json_reply(cut), {"paper_id": "P1", "verdict": "pass"})  # prose fallback alone
+        with self.assertRaisesRegex(ValueError, "not complete JSON"):
+            parse_json_reply(cut, complete=True)
+        self.assertEqual(parse_json_reply("```json\n" + full + "\n```", complete=True)[1]["paper_id"], "P2")
+
     def test_chat_json_max_tokens_sets_the_first_attempt(self) -> None:
         server = Server(ok('{"answer": "cut', finish_reason="length"), ok('{"answer": "ok"}'))
         client = self.make(server, max_tokens=100)

@@ -209,6 +209,11 @@ eval:
     split: eval
     per_answer: 2               # annotators per answer (eval.annotation.annotators, pairs cycled as in D42)
     sizes: {perfect: 40, mostly: 30, low: 20, no_answer: 10}   # answers per LLM-judge stratum (100)
+  challenge:                    # challenge set (D56, scripts/challenge_set.py); files under paths.eval
+    dir: challenge              # drafts and marking sheets
+    set_file: challenge_set.jsonl
+    per_kind: 10                # questions per kind: comparison, two_part, date, out_of_kb
+    annotators: [A, B]          # each annotator checks every question
 
 # ---- ui/ ----
 ui:
