@@ -92,6 +92,10 @@ hypothetical document is appended as one additional `SubQuery` with empty `keywo
 }
 ```
 
+A paper reviewed again in a later round (D53) keeps one merged record: `round` is the round in
+which its kept verdict was first reached, and `evidence.review_rounds` (only on such records)
+lists every round in which it was reviewed.
+
 ## 6. Final Result — Paper Search output (written to `data/results/final_results/`)
 
 `FinalResult` is the **Paper Search** output (`orchestration.run_query()`, D24). It contains no
@@ -104,9 +108,9 @@ generated answer; the downstream task (`downstream/`) consumes it and produces i
   "input_text": "...",
   "query_plan": { ... see §4 ... },
   "papers": [ {"paper_id": "...", "verdict": "pass", "score": 4, "reasons": "...", "covered": ["..."], "missing": [], "round": 1, "evidence": {"title": "...", "top_passages": ["P1234_0007"]}} ],
-  "reviews": [ { ... see §5: every pass and reject record from every completed round ... } ],
+  "reviews": [ { ... see §5: one pass or reject record per reviewed paper ... } ],
   "retrieval_ranks": {"P1234": 1, "P5678": 3},
-  "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0", "review_backend": "llm"},
+  "coverage_report": {"total_aspects": 3, "covered_aspects": 3, "covered_criteria": ["..."], "uncovered_aspects": [], "rounds": 2, "papers_reviewed": 12, "papers_passed": 5, "re_reviews": 0, "termination_reason": "coverage_met", "cache_hit": false, "template_version": "0.2.0", "review_backend": "llm"},
   "latency_by_stage": {"understanding_ms": 1500, "hyde_ms": 0, "retrieval_ms": 420, "review_ms": 3800, "rewrite_ms": 600, "total_ms": 6500}
 }
 ```
@@ -117,9 +121,12 @@ reviewed paper to its best position (1 = first) among the passages of any sub-qu
 result in the run, including sub-queries that returned it after its review; review scores are
 1–5 integers, so this keeps the retriever's order among equal scores. Results written before D47
 have no ranks (`{}`) and fall back to score then paper ID. `reviews`
-contains all `ReviewRecord` values produced by the run, including rejects, in round order;
+contains one `ReviewRecord` per reviewed paper, including rejects, in order of first review;
 the order within a round is not a relevance ranking. Each record retains its round, verdict,
-reasons, covered/missing aspects and evidence for review evaluation. On a fresh run,
+reasons, covered/missing aspects and evidence for review evaluation. A paper reviewed again in a
+later round (D53) keeps one merged record, in which a re-review can only add: a pass is never
+replaced by a reject, and two passes keep the union of covered aspects and the higher score
+(§5). `coverage_report.re_reviews` counts re-reviews (absent before D53). On a fresh run,
 `len(reviews)` equals `coverage_report.papers_reviewed`.
 
 `reviews` defaults to `[]` for existing callers and cached results written before this field

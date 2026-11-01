@@ -9,7 +9,8 @@ import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -17,6 +18,8 @@ from config import get_config, get_path
 from kb.store import load_paper
 from llm.client import get_client
 from llm.prompt import TEMPLATE_VERSION, build_hyde_prompt
+from retrieval.index_paths import index_directory
+from retrieval.lookup import lookup_path
 from retrieval.pipeline import retrieve
 from retrieval.types import RetrievalFilters, RetrieveResult, ScoredPassage
 
@@ -41,12 +44,41 @@ def _auto_query_id(digest: str) -> str:
     return f"Q{digest[:12].upper()}"
 
 
+def _file_stamp(path: Path) -> list[object] | None:
+    """Path, size and modification time of a built file; None while it does not exist."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return [str(path), info.st_size, info.st_mtime_ns]
+
+
+def _corpus_identity(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """The built files a search reads, stamped so that a rebuild changes the cache key (D52).
+
+    The lookup store, both index manifests and the paper store. A rebuild writes them anew, so
+    their modification times change even at the same paths and corpus size. None when the
+    configuration names no corpus.
+    """
+    try:
+        retrieval_cfg = cfg["retrieval"]
+        files = {
+            "lookup": lookup_path(cfg),
+            "sparse": index_directory(retrieval_cfg["sparse"]["index_dir"], cfg) / "meta.json",
+            "dense": index_directory(retrieval_cfg["dense"]["faiss_dir"], cfg) / "meta.json",
+            "papers": _paper_database_path(cfg),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {name: _file_stamp(path) for name, path in files.items()}
+
+
 def _config_fingerprint(cfg: dict[str, Any]) -> str:
-    """The settings that can change a search result, as a stable string.
+    """The settings and built corpus that can change a search result, as a stable string.
 
     It is part of the cache key, so flipping an ablation switch (loop on/off, HyDE, reviewer,
-    retrieval settings, LLM model, chunking) or a prompt template change never returns a
-    result that was computed under different settings.
+    retrieval settings, LLM model, chunking), a prompt template change or a rebuilt KB or index
+    never returns a result that was computed under different settings or another corpus.
     """
     kb_cfg = cfg.get("kb", {})
     relevant = {
@@ -55,6 +87,7 @@ def _config_fingerprint(cfg: dict[str, Any]) -> str:
         "llm": cfg.get("llm", {}),
         "kb": {"chunk": kb_cfg.get("chunk", {}), "store": kb_cfg.get("store", {})},
         "template_version": TEMPLATE_VERSION,
+        "corpus": _corpus_identity(cfg),
     }
     return json.dumps(relevant, sort_keys=True, default=str)
 
@@ -184,6 +217,77 @@ def _candidate_from_hits(
     }
 
 
+_EVIDENCE_PASSAGES = 3  # passages per review, as in _candidate_from_hits
+
+
+@dataclass
+class _Reviewed:
+    """One paper's review state across rounds (D53)."""
+
+    record: ReviewRecord  # the kept record (`_merge_review`)
+    basis: list[dict[str, str]]  # the passages shown in the review the kept record rests on
+    seen: set[str]  # ids of every passage the reviewer was shown
+
+
+def _claim(
+    candidate: dict[str, Any],
+    queued: dict[str, list[dict[str, str]]],
+    reviewed: dict[str, _Reviewed],
+    uncovered: set[str],
+    re_review: bool = True,
+) -> dict[str, Any] | None:
+    """The candidate to review now, or None (D53). Call under the round's lock.
+
+    A paper is reviewed at most once per round, so round 1 behaves as before D53; `queued` maps
+    each paper claimed this round to the passages its review is shown. A paper reviewed in an
+    earlier round is reviewed again when this round retrieved passages of it the reviewer has not
+    seen, and its kept record is a reject or lists as missing an aspect still `uncovered`. The
+    re-review gets the kept record's passages with the new ones interleaved after the best of
+    them (at most 3; a full set drops its weakest). `re_review=False`
+    (`orchestration.loop.re_review`) restores the pre-D53 behaviour: a paper is never reviewed twice.
+    """
+    paper_id = candidate["paper_id"]
+    if paper_id in queued:
+        return None
+    earlier = reviewed.get(paper_id)
+    if earlier is not None:
+        record = earlier.record
+        if not re_review or (record.verdict == "pass" and not uncovered.intersection(record.missing)):
+            return None
+        new = [passage for passage in candidate["top_passages"] if passage["passage_id"] not in earlier.seen]
+        if not new:
+            return None
+        merged = [p for pair in zip_longest(earlier.basis, new) for p in pair if p is not None]
+        candidate = {**candidate, "top_passages": merged[:_EVIDENCE_PASSAGES]}
+    queued[paper_id] = list(candidate["top_passages"])
+    return candidate
+
+
+def _merge_review(earlier: ReviewRecord, new: ReviewRecord) -> tuple[ReviewRecord, bool]:
+    """The record kept when a paper is reviewed again (D53), and whether it rests on the new review.
+
+    A re-review can only add. A reject never replaces the kept record, so a pass stays a pass; a
+    pass replaces a reject; a second pass keeps the union of covered aspects and the higher score,
+    and takes the new review's reasons and evidence only when it covers more. `round` stays the
+    round in which the kept verdict was first reached; `evidence["review_rounds"]` lists every
+    round in which the paper was reviewed.
+    """
+    rounds = sorted({*earlier.evidence.get("review_rounds", [earlier.round]), new.round})
+    if new.verdict != "pass":
+        kept, newer = earlier, False
+    elif earlier.verdict != "pass":
+        kept, newer = new, True
+    else:
+        added = [item for item in new.covered if item not in earlier.covered]
+        covered = [*earlier.covered, *added]
+        missing = [item for item in dict.fromkeys([*earlier.missing, *new.missing]) if item not in covered]
+        base, newer = (new, True) if added else (earlier, False)
+        reasons = f"{earlier.reasons} Round {new.round} re-review: {new.reasons}".strip() if added else earlier.reasons
+        kept = replace(base, score=max(earlier.score, new.score), reasons=reasons, covered=covered,
+                       missing=missing, round=earlier.round)
+    return replace(kept, evidence={**kept.evidence, "review_rounds": rounds}), newer
+
+
 def _candidates_from_result(result: RetrieveResult, database_path: Path) -> list[dict[str, Any]]:
     grouped: dict[str, list[ScoredPassage]] = {}
     for hit in result.hits:
@@ -199,16 +303,19 @@ async def _run_round(
     criteria: list[Criterion],
     input_text: str,
     round_no: int,
-    seen_papers: set[str],
+    reviewed: dict[str, _Reviewed],
+    uncovered: set[str],
     best_ranks: dict[str, int],
     cfg: dict[str, Any],
-) -> tuple[list[ReviewRecord], int, int]:
+) -> tuple[list[ReviewRecord], dict[str, list[dict[str, str]]], int, int]:
     review_cfg = cfg["orchestration"].get("review", {})
     batch_size = max(1, int(review_cfg.get("batch_size", 5)))
     worker_count = max(1, int(review_cfg.get("max_concurrency", 2)))
+    re_review = bool(cfg["orchestration"].get("loop", {}).get("re_review", True))
     database_path = _paper_database_path(cfg)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     seen_lock = asyncio.Lock()
+    queued: dict[str, list[dict[str, str]]] = {}
     retrieval_intervals: list[tuple[float, float]] = []
     review_intervals: list[tuple[float, float]] = []
 
@@ -233,11 +340,9 @@ async def _run_round(
         candidates = await asyncio.to_thread(_candidates_from_result, result, database_path)
         for candidate in candidates:
             async with seen_lock:
-                paper_id = candidate["paper_id"]
-                if paper_id in seen_papers:
-                    continue
-                seen_papers.add(paper_id)
-            await queue.put(candidate)
+                claimed = _claim(candidate, queued, reviewed, uncovered, re_review)
+            if claimed is not None:
+                await queue.put(claimed)
 
     async def review_worker() -> list[ReviewRecord]:
         records: list[ReviewRecord] = []
@@ -297,7 +402,7 @@ async def _run_round(
         if review_intervals
         else 0
     )
-    return records, retrieval_ms, review_ms
+    return records, queued, retrieval_ms, review_ms
 
 
 async def _generate_hyde(input_text: str) -> tuple[str | None, int]:
@@ -342,10 +447,11 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
 
     current_queries = list(plan.sub_queries)
     existing_queries = [query.query for query in current_queries]
-    seen_papers: set[str] = set()
     best_ranks: dict[str, int] = {}
-    all_reviews: list[ReviewRecord] = []
+    reviewed: dict[str, _Reviewed] = {}  # one kept record per paper, in order of first review (D53)
+    re_reviews = 0
     covered: set[str] = set()
+    missing: list[str] = list(coverage_criteria)
     retrieval_ms = 0
     review_ms = 0
     rewrite_ms = 0
@@ -354,23 +460,30 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
 
     for round_no in range(1, max_rounds + 1):
         rounds = round_no
-        reviews, round_retrieval_ms, round_review_ms = await _run_round(
+        reviews, shown, round_retrieval_ms, round_review_ms = await _run_round(
             current_queries,
             plan.criteria,
             input_text,
             round_no,
-            seen_papers,
+            reviewed,
+            set(missing),
             best_ranks,
             cfg,
         )
         retrieval_ms += round_retrieval_ms
         review_ms += round_review_ms
-        all_reviews.extend(reviews)
         for record in reviews:
-            if record.verdict == "pass":
-                covered.update(item for item in record.covered if item in coverage_criteria)
-
-        passed = [record for record in all_reviews if record.verdict == "pass"]
+            passages = shown.get(record.paper_id, [])
+            ids = {passage["passage_id"] for passage in passages}
+            earlier = reviewed.get(record.paper_id)
+            if earlier is None:
+                reviewed[record.paper_id] = _Reviewed(record, passages, ids)
+                continue
+            re_reviews += 1
+            kept, newer = _merge_review(earlier.record, record)
+            reviewed[record.paper_id] = _Reviewed(kept, passages if newer else earlier.basis, earlier.seen | ids)
+        passed = [state.record for state in reviewed.values() if state.record.verdict == "pass"]
+        covered = {item for record in passed for item in record.covered if item in coverage_criteria}
         if covered.issuperset(coverage_criteria):
             termination_reason = "coverage_met"
             break
@@ -393,6 +506,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             break
         existing_queries.extend(query.query for query in current_queries)
 
+    all_reviews = [state.record for state in reviewed.values()]
     retrieval_ranks = {
         paper_id: best_ranks[paper_id]
         for paper_id in sorted({record.paper_id for record in all_reviews})
@@ -411,6 +525,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
         "rounds": rounds,
         "papers_reviewed": len(all_reviews),
         "papers_passed": len(passed_papers),
+        "re_reviews": re_reviews,
         "termination_reason": termination_reason,
         "cache_hit": False,
         "template_version": TEMPLATE_VERSION,

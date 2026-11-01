@@ -57,8 +57,10 @@ class ReviewRecord:
         reasons: Review reasons (for UI display and report case studies).
         covered: Aspects of the input requirements covered by this paper.
         missing: Aspects not covered by this paper that other papers still need to fill in.
-        round: The round in which the review happened (starting at 1).
-        evidence: The review basis (title/abstract snippets/top passage IDs), may be empty.
+        round: The round in which the review happened (starting at 1). For a paper reviewed again
+            (D53), the round in which its kept verdict was first reached.
+        evidence: The review basis (title/abstract snippets/top passage IDs), may be empty. A
+            re-reviewed paper adds `review_rounds`, every round in which it was reviewed (D53).
     """
 
     paper_id: str
@@ -77,8 +79,8 @@ class FinalResult:
 
     This is the search result only — it contains no generated answer. The downstream
     task (downstream/) consumes this and produces its own task output (D24).
-    `papers` holds passing records in `passing_order_key` order; `reviews` retains all pass/reject
-    records across rounds; `retrieval_ranks` maps every reviewed paper to its best retrieval rank
+    `papers` holds passing records in `passing_order_key` order; `reviews` retains one pass/reject
+    record per reviewed paper (a re-reviewed paper's reviews merged, D53); `retrieval_ranks` maps every reviewed paper to its best retrieval rank
     in this run (D47). Legacy cached results have an unavailable trace (`reviews=[]`) and no ranks.
     """
 
