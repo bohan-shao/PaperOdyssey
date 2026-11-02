@@ -51,7 +51,7 @@ input_text
   title + abstract (truncated) + top 2–3 passages (truncated), token budget controlled by config
 - Review concurrency is bounded by `review.max_concurrency` (6 since D58, so a round's batches
   run at once rather than two at a time) and each call's first reply limit by
-  `review.max_output_tokens` (2048; 1024 cut a third of 5-paper replies); paper metadata is enriched through
+  `review.max_output_tokens` (8192 since D59; 2048 cut a third of replies on the full KB); paper metadata is enriched through
   the read-only `kb.store.load_paper()` interface and safely falls back to retrieval evidence
 - Deduplication: within a round, a paper hit by multiple paths is reviewed only once (by paper_id).
   A later round reviews a paper again (D53) when it retrieved passages of it that the reviewer has
