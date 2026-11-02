@@ -126,6 +126,13 @@ class SheetsAndBuildTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exist"):
             challenge.write_sheets(self.drafts, self.dir, ["A"])
 
+    def test_one_annotator_reports_no_agreement(self) -> None:
+        self.mark("A", {"C001": "y", "C002": "n", "C003": "y", "C004": "y"})
+        report = challenge.build_challenge_set(self.drafts, self.dir, ["A"], self.dir / "challenge_set.jsonl")
+        self.assertEqual((report["accepted"], report["rejected"]), (3, ["C002"]))
+        self.assertIsNone(report["percentage_agreement"])
+        self.assertIsNone(report["fleiss_kappa"])
+
     def test_marks_and_questions_are_checked(self) -> None:
         self.mark("B", {"C001": "y", "C002": "y", "C003": "y", "C004": "y"})
         self.mark("A", {"C001": "y", "C002": "y", "C003": "y"})

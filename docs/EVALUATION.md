@@ -282,8 +282,10 @@ The main set's questions mostly end in one round, so the loop and evidence mergi
 measured on a separate challenge set: 10 questions each of `comparison` (two gold papers),
 `two_part` (one paper, two asks), `date` (a year bound) and `out_of_kb` (no gold; the right outcome
 is insufficient evidence), LLM-drafted from papers that are not gold in the main set and checked by
-two annotators (`eval/annotation/CHALLENGE.md`; only items both accept are used; agreement and
-Fleiss' kappa reported). It is reported apart from the main set and never used for tuning.
+the annotators in `eval.challenge.annotators` (`eval/annotation/CHALLENGE.md`; only items every
+annotator accepts are used; agreement and Fleiss' kappa are reported for two or more annotators and
+are null for one). The set in use was checked by one team member, so it has no agreement score.
+It is reported apart from the main set and never used for tuning.
 
 ```bash
 python scripts/challenge_set.py draft --papers <full KB>/processed/papers.sqlite   # done 2026-11-01

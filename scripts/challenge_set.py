@@ -87,8 +87,10 @@ def main() -> None:
                 report = build_challenge_set(drafts, folder, settings["annotators"], out)
                 metrics = get_path("results") / "metrics" / f"challenge_iaa_{date.today().isoformat()}.json"
                 _write_json(metrics, report)
+                agreement = ("none (one annotator)" if report["percentage_agreement"] is None else
+                             f"{report['percentage_agreement']:.1%}, Fleiss kappa {report['fleiss_kappa']}")
                 print(f"accepted {report['accepted']} of {report['drafted']} {report['by_kind']}; agreement "
-                      f"{report['percentage_agreement']:.1%}, Fleiss kappa {report['fleiss_kappa']} -> {out}, {metrics}")
+                      f"{agreement} -> {out}, {metrics}")
         else:
             if args.searches is None:
                 parser.error("score needs --searches ABLATION_DIR")
