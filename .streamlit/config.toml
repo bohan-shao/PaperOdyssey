@@ -4,6 +4,10 @@
 [server]
 # Serves ui/static/ (the Latin Modern fonts) at app/static/.
 enableStaticServing = true
+# No file watcher (D58): while the models load it imports transformers' optional modules one by one
+# (102 tracebacks for a missing torchvision) and twice left a question hanging with no LLM call.
+# Restart the server after changing the code.
+fileWatcherType = "none"
 
 [theme]
 # A page set like a LaTeX paper: paper ground, Latin Modern for headings, the answer and the

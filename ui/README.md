@@ -31,7 +31,9 @@ Two presentation tabs (D23/D29) sharing the same input box:
    open on the first visit, folds after the first question (D58). The request runs only after
    the rest of the page is drawn, with its status and results starting empty, so nothing of the
    previous result stays greyed out while it runs. The first page view loads the retrieval
-   models in the background, so the first question does not wait for them.
+   models in the background, so the first question does not wait for them. The file watcher is
+   off (`.streamlit/config.toml`): it froze the app while the models loaded, so restart the server
+   after changing the code.
 6. Result state persists across rerenders; a failed or empty new submission clears stale results.
 7. No answer is explained: how many rounds ran and papers were read out of the knowledge base's
    size, what to try, and the closest papers the reviewer turned down with its reasons.
