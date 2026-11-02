@@ -10,7 +10,7 @@ from typing import Any
 from config import get_config
 from llm.client import get_client
 from orchestration import run_query
-from orchestration.types import FinalResult, passing_order_key
+from orchestration.types import FinalResult, Progress, passing_order_key
 from retrieval.lookup import get_lookup_store
 
 from .citations import cited_numbers, normalize_citations
@@ -111,11 +111,12 @@ def _generate(question: str, sources: list[EvidenceSource], max_tokens: int) -> 
         return _parse_answer(get_client().chat_json(reask, ANSWER_SCHEMA, max_tokens=max_tokens), len(sources))
 
 
-def run(input_text: str, query_id: str | None = None) -> DownstreamResult:
+def run(input_text: str, query_id: str | None = None, *, progress: Progress | None = None) -> DownstreamResult:
     """Answer a question from Paper Search evidence; never bypass the retrieval contract.
 
     Empty input raises ValueError. Operational failures raise DownstreamError. Missing
     evidence returns status=insufficient_evidence without calling the answer model.
+    `progress` receives the search steps and then `answering` (SCHEMA.md §6.1).
     """
     if not isinstance(input_text, str) or not input_text.strip():
         raise ValueError("Enter a question first.")
@@ -123,13 +124,14 @@ def run(input_text: str, query_id: str | None = None) -> DownstreamResult:
     started = time.perf_counter()
     _limit(get_config().get("downstream", {}), "max_tokens", 1024)  # fail before a paid search
     try:
-        search = run_query(question, query_id=query_id)
+        search = run_query(question, query_id=query_id, progress=progress)
     except Exception as exc:
         raise DownstreamError("Paper search failed. Check the retrieval index and search configuration.") from exc
-    return answer_from_search(question, search, started=started)
+    return answer_from_search(question, search, started=started, progress=progress)
 
 
-def answer_from_search(question: str, search: FinalResult, *, started: float | None = None) -> DownstreamResult:
+def answer_from_search(question: str, search: FinalResult, *, started: float | None = None,
+                       progress: Progress | None = None) -> DownstreamResult:
     """The second half of `run`: evidence and one cited answer for a finished Paper Search result.
 
     The answer evaluation (eval/answer_eval.py, D49) calls it on stored search results, so the UI
@@ -147,6 +149,8 @@ def answer_from_search(question: str, search: FinalResult, *, started: float | N
         raise DownstreamError("Could not read paper evidence. Check the lookup store (scripts/build_indexes.py).") from exc
     evidence_end = time.perf_counter()
     if sources:
+        if progress is not None:
+            progress("answering", {"sources": len(sources)})
         try:
             status, answer, cited = _generate(question, sources, max_tokens)
         except Exception as exc:

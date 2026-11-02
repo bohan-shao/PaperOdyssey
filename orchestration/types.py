@@ -5,7 +5,7 @@ Changing this file requires syncing docs/SCHEMA.md + all callers + contract test
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 
@@ -92,6 +92,14 @@ class FinalResult:
     latency_by_stage: dict[str, int] = field(default_factory=dict)
     reviews: list[ReviewRecord] = field(default_factory=list)
     retrieval_ranks: dict[str, int] = field(default_factory=dict)
+
+
+Progress = Callable[[str, Mapping[str, object]], None]
+"""Optional step callback of `run_query` and `downstream.run` (SCHEMA.md §6.1, D58).
+
+Called with an event name and its details from the thread running the search; the UI shows each
+step as it happens. It never changes the result.
+"""
 
 
 def passing_order_key(paper_id: str, score: int, retrieval_ranks: Mapping[str, int]) -> tuple[int, float, str]:

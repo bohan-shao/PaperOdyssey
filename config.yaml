@@ -105,7 +105,7 @@ retrieval:
     query_instruction: null    # explicit override for local model paths; null selects query_format
     task_instruction: "Given a scientific question, retrieve relevant passages from research papers"
     max_length: 512            # document token limit in manifest; Qwen3 trial: 1024, batch_size: 8
-    device: null               # automatic CUDA/CPU, or an explicit torch device
+    device: null               # automatic CUDA, then Apple MPS, then CPU (D58), or an explicit torch device
     batch_size: 64
     fp16: true
     faiss_dir: faiss            # relative to paths.indices
@@ -119,7 +119,7 @@ retrieval:
   rerank:
     enabled: true
     model_name: BAAI/bge-reranker-v2-m3
-    device: null               # automatic CUDA/CPU; diagnostic runs explicitly choose CPU
+    device: null               # automatic CUDA, then Apple MPS, then CPU (D58); diagnostic runs choose CPU
     top_k: 10
     max_length: 512             # (query, passage) tokens per pair; longer pairs are truncated
     batch_size: 64              # retain the reference baseline; tune per hardware with latency benchmark
@@ -145,8 +145,10 @@ orchestration:
       pass_threshold: 0.5       # keep a paper when Jev's P(pass) >= this (tune on the dev split)
       covered_threshold: 0.5    # an aspect counts as covered when Jev's P(yes) >= this
     batch_size: 5
-    max_concurrency: 2          # concurrent LLM review workers
+    max_concurrency: 6          # concurrent LLM review calls (D58): a round's batches run at once, not 2 at a time
     max_tokens_per_paper: 1500  # token budget fed to the reviewer per paper (title + abstract + top passages)
+    max_output_tokens: 2048     # first-attempt reply limit of one review call (D58); llm.max_tokens (1024) cut
+                                # a third of 5-paper replies, each then asked again; billed per token written
     rubric:                     # fixed scoring dimensions (D10)
       - relevance              # relevance to the need
       - coverage               # coverage of the input's aspects
@@ -217,7 +219,7 @@ eval:
 
 # ---- ui/ ----
 ui:
-  title: "PaperOdyssey — arXiv Paper RAG"
+  title: "PaperOdyssey"
   example_inputs:               # Q2: 5 example inputs
     - "Compare LoRA and full fine-tuning for large language models: methods, trade-offs, and recent variants."
     - "What techniques improve long-context transformer efficiency since 2023?"

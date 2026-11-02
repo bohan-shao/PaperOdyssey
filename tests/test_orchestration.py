@@ -108,6 +108,22 @@ class ReviewAndRewriteTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0].evidence["top_passages"], ["P1_1"])
         self.assertEqual(client.chat_json.call_count, 2)
+        self.assertIsNone(client.chat_json.call_args.kwargs["max_tokens"])  # unset: the client's llm.max_tokens
+
+    def test_review_reply_limit_comes_from_config(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["review"]["max_output_tokens"] = 2048
+        client = MagicMock()
+        client.chat_json.return_value = [
+            {"paper_id": "P1", "verdict": "pass", "score": 5, "reasons": "yes", "covered": [], "missing": []}]
+        candidate = {"paper_id": "P1", "title": "One", "abstract": "A", "top_passages": [{"passage_id": "P1_1", "text": "x"}]}
+        with (
+            patch("orchestration.review.get_config", return_value=cfg),
+            patch("orchestration.review.get_client", return_value=client),
+            patch("orchestration.review.build_review_prompt", return_value=[]),
+        ):
+            batch_review([candidate], [], "request", 1)
+        self.assertEqual(client.chat_json.call_args.kwargs["max_tokens"], 2048)
 
     def test_invalid_review_retries_then_fails(self) -> None:
         client = MagicMock()
@@ -153,7 +169,7 @@ class ReviewAndRewriteTests(unittest.TestCase):
 
 
 class LoopTests(unittest.TestCase):
-    def _run_with_patches(self, cfg: dict, **patches: object):
+    def _run_with_patches(self, cfg: dict, progress=None, **patches: object):
         from orchestration import loop
 
         defaults = {
@@ -178,7 +194,7 @@ class LoopTests(unittest.TestCase):
         for item in stack:
             item.start()
         self.addCleanup(lambda: [item.stop() for item in reversed(stack)])
-        return loop.run_query("request")
+        return loop.run_query("request", progress=progress)
 
     def test_deduplicates_across_paths_and_meets_coverage(self) -> None:
         cfg = make_config()
@@ -468,6 +484,55 @@ class LoopTests(unittest.TestCase):
         reviewed["P"].seen |= {p["passage_id"] for p in queued["P"]}
         again = loop._claim({"paper_id": "P", "top_passages": passages("n1")}, {}, reviewed, {"A"})
         self.assertEqual([p["passage_id"] for p in again["top_passages"]], ["p0", "n1", "p1"])
+
+    def test_progress_reports_each_step_in_order_without_changing_the_result(self) -> None:
+        cfg = make_config()
+        events: list[tuple[str, dict]] = []
+
+        def fake_review(candidates, criteria, text, round_no):
+            return [ReviewRecord(candidate["paper_id"], "pass" if round_no == 2 else "reject", 4, round=round_no,
+                                 covered=["aspect"] if round_no == 2 else [])
+                    for candidate in candidates]
+
+        def search(progress):
+            with patch("orchestration.loop.rewrite", return_value=[SubQuery("q2")]):
+                return self._run_with_patches(
+                    cfg, progress=progress, batch_review=fake_review,
+                    retrieve=lambda query, filters=None: RetrieveResult([hit("P1" if query == "q1" else "P2")], 1))
+
+        result = search(lambda event, details: events.append((event, dict(details))))
+        self.assertEqual(events, [
+            ("understanding", {}),
+            ("planned", {"queries": 1, "aspects": 1}),
+            ("round", {"round": 1, "queries": 1}),
+            ("round_done", {"round": 1, "reviewed": 1, "passed": 0, "covered": 0, "aspects": 1}),
+            ("follow_up", {"missing": ["aspect"]}),
+            ("round", {"round": 2, "queries": 1}),
+            ("round_done", {"round": 2, "reviewed": 2, "passed": 1, "covered": 1, "aspects": 1}),
+        ])
+        silent = search(None)
+        self.assertEqual((silent.papers, silent.reviews, silent.coverage_report),
+                         (result.papers, result.reviews, result.coverage_report))
+
+    def test_a_raising_progress_callback_stops_the_search_at_that_step(self) -> None:
+        reviewed: list[str] = []
+
+        def stop_at_round(event, details):
+            if event == "round":
+                raise RuntimeError("cancelled")
+
+        with self.assertRaises(OrchestrationError):
+            self._run_with_patches(make_config(), progress=stop_at_round,
+                                   batch_review=lambda candidates, *rest: reviewed.extend(c["paper_id"] for c in candidates) or [])
+        self.assertEqual(reviewed, [])
+
+    def test_plain_rag_reports_one_retrieval(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["agentic"] = {"enabled": False}
+        events: list[tuple[str, dict]] = []
+        self._run_with_patches(cfg, progress=lambda event, details: events.append((event, dict(details))),
+                               retrieve=lambda query, filters=None: RetrieveResult([hit("P1"), hit("P2", 2)], 2))
+        self.assertEqual(events, [("round", {"round": 1, "queries": 1}), ("retrieved", {"papers": 2})])
 
     def test_plain_rag_keeps_the_retrieved_papers_in_rank_order_without_any_llm_call(self) -> None:
         from eval.review_eval import _validate_result

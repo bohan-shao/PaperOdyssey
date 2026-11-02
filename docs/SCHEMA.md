@@ -140,6 +140,30 @@ it must not be reconstructed from `papers`, which omits rejects. New cache entri
 the complete trace. Consumers needing review records must run with `orchestration.loop.cache=false`
 or use a result known to contain the complete trace.
 
+### 6.1 Progress events (D58)
+
+`orchestration.run_query(input_text, query_id=None, *, progress=None)` and
+`downstream.run(input_text, query_id=None, *, progress=None)` accept an optional
+`progress(event: str, details: Mapping[str, object]) -> None` (`orchestration.types.Progress`). It
+is called from the thread running the search, in this order. It does not change the result, but
+a callback that raises stops the request at that step: `run_query` raises `OrchestrationError`
+from it, and `downstream.run` raises `DownstreamError` (or the callback's own error for
+`answering`). The UI uses this to stop a request that a newer one replaced:
+
+| Event | Details | When |
+|---|---|---|
+| `cache_hit` | none | The search result came from the cache (no other search event follows) |
+| `understanding` | none | Query understanding starts |
+| `planned` | `queries`, `aspects` | Sub-queries (with a HyDE query when on) and coverage aspects are known |
+| `round` | `round`, `queries` | A round's retrieval and review start (plain RAG: one round, one query) |
+| `round_done` | `round`, `reviewed`, `passed`, `covered`, `aspects` | After a round: papers reviewed so far, papers passing, aspects covered |
+| `follow_up` | `missing` (list of aspects) | Follow-up queries are being written for the uncovered aspects |
+| `retrieved` | `papers` | Plain RAG (D55): papers among the retrieved passages |
+| `answering` | `sources` | `downstream.run` only: the answer call starts with this many excerpts |
+
+The UI shows each event as a line while the request runs (`ui/app.py`). `answer_from_search`
+takes the same keyword for the `answering` event.
+
 ## 7. Evaluation Set (`data/eval/eval_set.jsonl`)
 
 The original documented Q4 target was ≥1,000 items, 3 independent annotators and IAA ≥80%.
@@ -226,7 +250,8 @@ record by `passage_id`, as specified in section 10.
 
 ## 10. Cited Paper QA
 
-`downstream.run(input_text: str, query_id: str | None = None) -> DownstreamResult`:
+`downstream.run(input_text: str, query_id: str | None = None, *, progress: Progress | None = None) -> DownstreamResult`
+(`progress`: §6.1):
 
 | Field | Type | Meaning |
 |---|---|---|

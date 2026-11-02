@@ -27,7 +27,7 @@ from .errors import OrchestrationError
 from .query_understanding import understand
 from .review import batch_review
 from .rewrite import rewrite
-from .types import Criterion, FinalResult, QueryPlan, ReviewRecord, SubQuery, passing_order_key
+from .types import Criterion, FinalResult, Progress, QueryPlan, ReviewRecord, SubQuery, passing_order_key
 
 
 def _normalise_input(input_text: str) -> str:
@@ -415,7 +415,16 @@ async def _generate_hyde(input_text: str) -> tuple[str | None, int]:
         return None, round((time.perf_counter() - started) * 1000)
 
 
-def _plain_rag(input_text: str, query_id: str) -> FinalResult:
+def _notify(progress: Progress | None, event: str, **details: object) -> None:
+    """Report one step to the caller's progress callback (SCHEMA.md §6.1), if there is one.
+
+    An error the callback raises is not caught: it stops the request at this step (the UI's cancel).
+    """
+    if progress is not None:
+        progress(event, details)
+
+
+def _plain_rag(input_text: str, query_id: str, progress: Progress | None = None) -> FinalResult:
     """The non-agentic baseline (D55): the question as typed -> retrieve() -> papers in rank order.
 
     No LLM call: no query understanding, HyDE, review or rewriting. Every paper among the
@@ -423,6 +432,7 @@ def _plain_rag(input_text: str, query_id: str) -> FinalResult:
     with its passages in rank order as evidence, so Paper QA answers it with the same prompt and
     evidence budget (`downstream.max_papers`, `passages_per_paper`) as the agentic search.
     """
+    _notify(progress, "round", round=1, queries=1)
     started = time.perf_counter()
     try:
         result = retrieve(input_text)
@@ -443,6 +453,7 @@ def _plain_rag(input_text: str, query_id: str) -> FinalResult:
                      evidence={"title": titles[paper_id], "top_passages": ids})
         for paper_id, ids in passages.items()
     ]
+    _notify(progress, "retrieved", papers=len(records))
     return FinalResult(
         query_id=query_id,
         input_text=input_text,
@@ -461,9 +472,12 @@ def _plain_rag(input_text: str, query_id: str) -> FinalResult:
     )
 
 
-async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any]) -> FinalResult:
+async def _execute_workflow(
+    input_text: str, query_id: str, cfg: dict[str, Any], progress: Progress | None = None,
+) -> FinalResult:
     if not cfg["orchestration"].get("agentic", {}).get("enabled", True):
-        return await asyncio.to_thread(_plain_rag, input_text, query_id)
+        return await asyncio.to_thread(_plain_rag, input_text, query_id, progress)
+    _notify(progress, "understanding")
     understanding_started = time.perf_counter()
     plan = await asyncio.to_thread(understand, input_text)
     understanding_ms = round((time.perf_counter() - understanding_started) * 1000)
@@ -492,6 +506,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
     )
     if not coverage_criteria:
         coverage_criteria = [input_text]
+    _notify(progress, "planned", queries=len(plan.sub_queries), aspects=len(coverage_criteria))
 
     current_queries = list(plan.sub_queries)
     existing_queries = [query.query for query in current_queries]
@@ -508,6 +523,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
 
     for round_no in range(1, max_rounds + 1):
         rounds = round_no
+        _notify(progress, "round", round=round_no, queries=len(current_queries))
         reviews, shown, round_retrieval_ms, round_review_ms = await _run_round(
             current_queries,
             plan.criteria,
@@ -532,6 +548,8 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             reviewed[record.paper_id] = _Reviewed(kept, passages if newer else earlier.basis, earlier.seen | ids)
         passed = [state.record for state in reviewed.values() if state.record.verdict == "pass"]
         covered = {item for record in passed for item in record.covered if item in coverage_criteria}
+        _notify(progress, "round_done", round=round_no, reviewed=len(reviewed), passed=len(passed),
+                covered=len(covered), aspects=len(coverage_criteria))
         if covered.issuperset(coverage_criteria):
             termination_reason = "coverage_met"
             break
@@ -546,6 +564,7 @@ async def _execute_workflow(input_text: str, query_id: str, cfg: dict[str, Any])
             break
 
         missing = [criterion for criterion in coverage_criteria if criterion not in covered]
+        _notify(progress, "follow_up", missing=missing)
         rewrite_started = time.perf_counter()
         current_queries = await asyncio.to_thread(rewrite, missing, existing_queries)
         rewrite_ms += round((time.perf_counter() - rewrite_started) * 1000)
@@ -608,8 +627,11 @@ def _run_async(factory: Callable[[], Coroutine[Any, Any, FinalResult]]) -> Final
         return executor.submit(lambda: asyncio.run(factory())).result()
 
 
-def run_query(input_text: str, query_id: str | None = None) -> FinalResult:
-    """Run one complete Paper Search flow and return reviewed paper candidates."""
+def run_query(input_text: str, query_id: str | None = None, *, progress: Progress | None = None) -> FinalResult:
+    """Run one complete Paper Search flow and return reviewed paper candidates.
+
+    `progress`, if given, is called with each step as it happens (SCHEMA.md §6.1).
+    """
     input_text = _normalise_input(input_text)
     if query_id is not None and (not isinstance(query_id, str) or not query_id.strip()):
         raise ValueError("query_id must be a non-empty string when provided")
@@ -623,11 +645,12 @@ def run_query(input_text: str, query_id: str | None = None) -> FinalResult:
         assert path is not None
         cached = _read_cache(path, input_text, resolved_query_id)
         if cached is not None:
+            _notify(progress, "cache_hit")
             return cached
 
     started = time.perf_counter()
     try:
-        result = _run_async(lambda: _execute_workflow(input_text, resolved_query_id, cfg))
+        result = _run_async(lambda: _execute_workflow(input_text, resolved_query_id, cfg, progress))
     except OrchestrationError:
         raise
     except Exception as exc:

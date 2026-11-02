@@ -32,7 +32,8 @@ Meet the assignment's hard requirements: ≥10,000 documents, ≥100,000 words, 
 ### store.py — Storage
 - `passages.jsonl` append-only writes (resumable); `papers.sqlite` (table structure in SCHEMA.md §3)
 - Idempotent: rerunning with the same paper_id must not produce duplicate passages (upsert, or delete-then-insert)
-- Provide read interfaces (needed by retrieval to build indices): `iter_passages()`, `load_paper(paper_id)`
+- Provide read interfaces (needed by retrieval to build indices): `iter_passages()`, `load_paper(paper_id)`;
+  `count_papers(path)` gives the number of papers with passages (the UI shows it)
 
 ### stats.py — Statistics (Q1 item 3, must deliver)
 - Output: document count, chunk count, total word count (token or word; state the convention), type count (unique words)

@@ -52,6 +52,8 @@ The contract is in `docs/SCHEMA.md` §10. `sources` retains all supplied context
 `search_result` is the unmodified Paper Search result. Timing covers search, evidence loading,
 generation, and total wall time; LLM token usage remains in the shared client usage log.
 The UI offers a JSON download containing the answer, sources, search result, and timings.
+`run(..., progress=...)` passes the callback to Paper Search and adds an `answering` event
+before the answer call (SCHEMA.md §6.1, D58), so the UI can show each step while it waits.
 Answer results are not cached or written automatically; Paper Search retains its own cache.
 
 Evidence is read with primary-key lookups in `lookup.sqlite`, which `scripts/build_indexes.py`

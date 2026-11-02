@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 from config import get_config
 from kb import store as kb_store
 
+from .device import model_lock, torch_device
 from .lookup import LookupStore, get_lookup_store
 from .index_paths import index_directory, publish_index, validate_destination
 from .sparse import category_token
@@ -63,14 +64,13 @@ class Encoder:
 
     def __init__(self, model_name: str, batch_size: int = 64, fp16: bool = True,
                  device: str | None = None) -> None:
-        import torch
         from sentence_transformers import SentenceTransformer
 
         cfg = get_config()["retrieval"]["dense"]
         # Direct callers (e.g. semantic chunking or diagnostics) may use a different model.
         if model_name != cfg.get("model_name"):
             cfg = {}
-        device = device or cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch_device(device or cfg.get("device"))
         self.model = SentenceTransformer(model_name, device=device)
         if cfg.get("max_length") is not None:
             requested = int(cfg["max_length"])
@@ -93,7 +93,7 @@ class Encoder:
         self.name = model_name
         self.dim = int(dim_fn())
         self.batch_size = batch_size
-        self._lock = threading.Lock()
+        self._lock = model_lock(device)
 
     def encode(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
         """(n, dim) float32, rows L2-normalized."""

@@ -29,6 +29,7 @@ from dataclasses import replace
 
 from config import get_config
 
+from .device import model_lock, torch_device
 from .types import ScoredPassage
 
 
@@ -58,14 +59,14 @@ class Reranker:
         import torch
         from sentence_transformers import CrossEncoder
 
-        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch_device(device)
         self.model = CrossEncoder(model_name, max_length=max_length, device=device)
         if fp16 and device.startswith("cuda"):
             self.model.half()
         self.name = model_name
         self.batch_size = batch_size
         self._sigmoid = torch.nn.Sigmoid()
-        self._lock = threading.Lock()
+        self._lock = model_lock(device)
         self.score("warm up", ["warm up"])  # first (CUDA) call is slow; keep it out of timings
 
     def score(self, query: str, texts: Sequence[str]) -> list[float]:
