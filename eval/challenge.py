@@ -263,13 +263,16 @@ def build_challenge_set(drafts: Sequence[Mapping], sheet_dir: str | Path, annota
                 "time_bound": d.get("time_bound"), "parts": _parts(d),
             }, ensure_ascii=False) + "\n")
     votes = [[marks[a][cid] for a in annotators] for cid in by_id]
-    _, kappa = _fleiss([[sum(v), len(v) - sum(v)] for v in votes]) if len(annotators) > 1 else (None, None)
+    # One annotator has nothing to agree with: both scores stay null rather than a trivial 100%.
+    several = len(annotators) > 1
+    agreement = sum(len(set(v)) == 1 for v in votes) / len(votes) if several else None
+    _, kappa = _fleiss([[sum(v), len(v) - sum(v)] for v in votes]) if several else (None, None)
     return {
         "format_version": 1, "created": datetime.now().isoformat(timespec="seconds"),
         "annotators": list(annotators), "drafted": len(drafts), "accepted": len(accepted),
         "by_kind": {k: {"drafted": sum(d["kind"] == k for d in drafts), "accepted": sum(d["kind"] == k for d in accepted)}
                     for k in KINDS},
-        "percentage_agreement": sum(len(set(v)) == 1 for v in votes) / len(votes),
+        "percentage_agreement": agreement,
         "fleiss_kappa": kappa,
         "rejected": sorted(cid for cid in by_id if cid not in {d["challenge_id"] for d in accepted}),
         "out_path": str(out_path),
