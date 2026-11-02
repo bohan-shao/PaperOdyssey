@@ -1,0 +1,28 @@
+# Merge gate on GitHub (AGENTS.md): scripts/sanity_check.py, then the offline tests, on every pull
+# request and every push to main. Pyserini, sentence-transformers and transformers are left out
+# (Java, torch); the tests that need them skip, as on a laptop without them.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"   # as in the Dockerfile
+          cache: pip
+      - name: Install requirements.txt without Pyserini and torch
+        run: |
+          grep -vE '^(pyserini|sentence-transformers|transformers)\b' requirements.txt > "$RUNNER_TEMP/requirements-ci.txt"
+          python -m pip install -r "$RUNNER_TEMP/requirements-ci.txt"
+      - name: Sanity check
+        run: python scripts/sanity_check.py
+      - name: Offline tests
+        run: python -m unittest discover -s tests -t .
