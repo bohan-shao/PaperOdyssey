@@ -145,7 +145,10 @@ or use a result known to contain the complete trace.
 `orchestration.run_query(input_text, query_id=None, *, progress=None)` and
 `downstream.run(input_text, query_id=None, *, progress=None)` accept an optional
 `progress(event: str, details: Mapping[str, object]) -> None` (`orchestration.types.Progress`). It
-is called from the thread running the search, in this order, and never changes the result:
+is called from the thread running the search, in this order. It does not change the result, but
+a callback that raises stops the request at that step: `run_query` raises `OrchestrationError`
+from it, and `downstream.run` raises `DownstreamError` (or the callback's own error for
+`answering`). The UI uses this to stop a request that a newer one replaced:
 
 | Event | Details | When |
 |---|---|---|

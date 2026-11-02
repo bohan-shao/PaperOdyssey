@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
+import queue
+import sys
+import threading
+import time
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from streamlit.testing.v1 import AppTest
@@ -139,6 +146,70 @@ class UITests(unittest.TestCase):
             self.assertTrue(any("turned down (1)" in item.label for item in app.expander))
             self.assertEqual(app.expander[0].label, "Examples")  # folded once there is a result
             self.assertTrue(any(item.value == "About text, not proteins." for item in app.caption))
+
+
+    def running_request(self, future, lines=(), events=(), cancel=None):
+        """A request as `_start` leaves it in session state, for a rerun to pick up."""
+        waiting = queue.Queue()
+        for event in events:
+            waiting.put(event)
+        return SimpleNamespace(ask=True, future=future, events=waiting, cancel=cancel or threading.Event(),
+                               started=time.perf_counter() - 5, lines=list(lines))
+
+    def test_a_rerun_during_a_request_picks_it_up_and_shows_its_result(self):
+        # A tab or example click reruns the script while a request runs; it must not drop it.
+        done = Future()
+        done.set_result(self.answer)
+        with patch("downstream.run") as answer, lookup_store({self.source.passage_id: passage()}):
+            app = AppTest.from_file(APP).run()
+            app.session_state["request"] = self.running_request(
+                done, lines=["Reading the question and planning the searches."],
+                events=[("answering", {"sources": 1})])
+            app.run()  # no submit: the rerun of a tab click
+            self.assertEqual(len(app.exception), 0)
+            answer.assert_not_called()  # followed, not started again
+            self.assertTrue(app.status[0].label.startswith("Answer ready in "))
+            self.assertEqual(app.status[0].markdown[0].value.split("\n\n"), [
+                "Reading the question and planning the searches.", "Writing the answer from 1 excerpt."])
+            self.assertTrue(any("W[0] [\\[1\\]](#source-1)" in item.value for item in app.markdown))
+            self.assertNotIn("request", app.session_state)
+
+    def test_a_new_question_cancels_the_running_one(self):
+        cancel = threading.Event()
+        with patch("downstream.run", return_value=self.answer) as answer, \
+                lookup_store({self.source.passage_id: passage()}):
+            app = AppTest.from_file(APP).run()
+            app.session_state["request"] = self.running_request(Future(), cancel=cancel)  # never finishes
+            app.text_area[0].input("How does it work?")
+            app.button[0].click().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(cancel.is_set())
+            answer.assert_called_once()
+            self.assertTrue(app.status[0].label.startswith("Answer ready in "))
+
+    def test_a_cancelled_request_stops_at_its_next_step(self):
+        spec = importlib.util.spec_from_file_location("paperodyssey_ui_app", APP)
+        ui = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = ui  # dataclasses look the module up while it is being created
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(ui)
+        release, after = threading.Event(), []
+
+        def slow_run(question, progress):
+            progress("understanding", {})
+            release.wait(5)
+            progress("planned", {"queries": 1, "aspects": 1})  # raises once cancelled
+            after.append("planned")
+            return self.answer
+
+        with patch("downstream.run", side_effect=slow_run):
+            request = ui._start("How does it work?", ask=True)
+            request.cancel.set()
+            release.set()
+            with self.assertRaises(ui._Cancelled):
+                request.future.result(timeout=5)
+        self.assertEqual(after, [])
+        self.assertEqual(request.events.get_nowait(), ("understanding", {}))
 
 
 if __name__ == "__main__":

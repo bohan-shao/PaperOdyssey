@@ -7,17 +7,14 @@ import json
 import queue
 import sqlite3
 import sys
+import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
 
 import streamlit as st
-
-if TYPE_CHECKING:
-    from streamlit.elements.lib.mutable_status_container import StatusContainer
 
 # Streamlit may place only ui/ on sys.path when launched by the CLI.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -26,11 +23,9 @@ import downstream
 import orchestration
 from config import get_config, get_path
 from kb.store import count_papers
-from orchestration.types import FinalResult, Progress, passing_order_key
+from orchestration.types import FinalResult, passing_order_key
 from retrieval.lookup import get_lookup_store
 from retrieval.pipeline import retrieve
-
-T = TypeVar("T")
 
 # Layout, reading type and browser surfaces. Colours match .streamlit/config.toml; Latin Modern
 # is served from ui/static/fonts (see the README there).
@@ -155,43 +150,100 @@ def _step_line(event: str, details: Mapping[str, object]) -> str | None:
     return None
 
 
-def _run_live(work: Callable[[Progress], T], status: StatusContainer) -> tuple[T, list[str], float]:
-    """Run `work` in a worker thread; show its steps and the time taken so far in `status`.
+class _Cancelled(Exception):
+    """Raised by a request's progress callback once a newer request replaced it (SCHEMA.md §6.1)."""
 
-    Returns its value, the step lines shown and the seconds taken. The status box is left
-    "running" for the caller to finish; a failure marks it stopped and re-raises.
+
+_FAILED = ("The request could not be completed. Check that the knowledge base and indexes are built "
+           "and that the LLM key is set in .env, then try again.")
+
+
+@dataclass
+class _Request:
+    """An Ask or Search request, kept in session state while it runs.
+
+    A rerun during the request (a tab or an example click) stops the script run, not the request:
+    the next run follows it again from the steps shown so far. Only a new submit replaces it.
     """
+
+    ask: bool
+    future: Future
+    events: queue.Queue
+    cancel: threading.Event
+    started: float = field(default_factory=time.perf_counter)
+    lines: list[str] = field(default_factory=list)
+
+
+def _start(question: str, ask: bool) -> _Request:
+    """Start the request in a worker thread. Its progress callback queues each step and, once the
+    request is cancelled, raises, which ends the search at its next step."""
     events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
-    lines: list[str] = []
+    cancel = threading.Event()
+
+    def progress(event: str, details: Mapping[str, object]) -> None:
+        if cancel.is_set():
+            raise _Cancelled
+        events.put((event, dict(details)))
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ask")
+    work = downstream.run if ask else orchestration.run_query
+    future = pool.submit(work, question, progress=progress)
+    pool.shutdown(wait=False)  # the worker ends on its own; nothing here waits for it
+    return _Request(ask, future, events, cancel)
+
+
+def _keep_outcome(request: _Request) -> None:
+    """Move a finished request's result (or error) and steps into session state and drop it, before
+    the page shows them, so a rerun from here on finds the outcome instead of losing it."""
+    try:
+        result = request.future.result()
+    except downstream.DownstreamError as exc:
+        st.session_state["error"] = str(exc)
+        st.session_state["steps"] = ("Stopped: the request failed", request.lines)
+    except Exception:
+        # Do not expose provider responses, credentials, or tracebacks in the UI.
+        st.session_state["error"] = _FAILED
+        st.session_state["steps"] = ("Stopped: the request failed", request.lines)
+    else:
+        if request.ask:
+            st.session_state["qa_result"] = result
+            st.session_state["search_result"] = result.search_result
+        else:
+            st.session_state["search_result"] = result
+        st.session_state["steps"] = (_finished_label(result, time.perf_counter() - request.started), request.lines)
+    del st.session_state["request"]
+
+
+def _follow(request: _Request) -> None:
+    """Show the request's steps and the seconds so far until it ends, then its outcome."""
+    status = st.status(f"Working on your question ({int(time.perf_counter() - request.started)} s)",
+                       expanded=True)
     # One text element for all steps: it replaces the previous request's steps at once, where
     # one element per line would leave its later lines greyed out until this run caught up.
     body = status.empty()
-    started = time.perf_counter()
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ask")
-    future = pool.submit(work, lambda event, details: events.put((event, dict(details))))
-    shown = 0
-    try:
-        while True:
-            done = future.done()  # checked first: every event of a finished run is queued by now
-            while not events.empty():
-                line = _step_line(*events.get())
-                if line:
-                    lines.append(line)
-                    body.markdown("\n\n".join(lines))
-            if done:
-                break
-            elapsed = int(time.perf_counter() - started)
-            if elapsed != shown:  # an update without `expanded` would fold the box away
-                status.update(label=f"Working on your question ({elapsed} s)", expanded=True)
-                shown = elapsed
-            time.sleep(0.2)
-        value = future.result()  # raises the worker's error here
-    except Exception:
-        status.update(label="Stopped: the request failed", state="error", expanded=False)
-        raise
-    finally:
-        pool.shutdown(wait=False)
-    return value, lines, time.perf_counter() - started
+    if request.lines:
+        body.markdown("\n\n".join(request.lines))
+    shown = -1
+    while True:
+        done = request.future.done()  # checked first: every event of a finished run is queued by now
+        while not request.events.empty():
+            line = _step_line(*request.events.get())
+            if line:
+                request.lines.append(line)
+                body.markdown("\n\n".join(request.lines))
+        if done:
+            break
+        elapsed = int(time.perf_counter() - request.started)
+        if elapsed != shown:  # an update without `expanded` would fold the box away
+            status.update(label=f"Working on your question ({elapsed} s)", expanded=True)
+            shown = elapsed
+        time.sleep(0.2)
+    _keep_outcome(request)
+    label, _ = st.session_state["steps"]
+    failed = "error" in st.session_state
+    status.update(label=label, state="error" if failed else "complete", expanded=False)
+    if failed:
+        st.error(st.session_state["error"])
 
 
 def _finished_label(result: downstream.DownstreamResult | FinalResult, seconds: float) -> str:
@@ -205,39 +257,14 @@ def _finished_label(result: downstream.DownstreamResult | FinalResult, seconds: 
     return f"Search finished in {took}: no paper accepted"
 
 
-def _submit(question: str, ask: bool) -> None:
-    """Run Ask or Search papers only with live steps; keep the result and the steps."""
-    if not question.strip():
-        st.warning("Enter a question first.")
-        return
-    status = st.status("Working on your question (0 s)", expanded=True)
-    try:
-        if ask:
-            result, lines, seconds = _run_live(lambda progress: downstream.run(question, progress=progress), status)
-            st.session_state["qa_result"] = result
-            st.session_state["search_result"] = result.search_result
-        else:
-            result, lines, seconds = _run_live(
-                lambda progress: orchestration.run_query(question, progress=progress), status)
-            st.session_state["search_result"] = result
-    except downstream.DownstreamError as exc:
-        st.error(str(exc))
-        return
-    except Exception:
-        # Do not expose provider responses, credentials, or tracebacks in the UI.
-        st.error("The request could not be completed. Check that the knowledge base and indexes are built "
-                 "and that the LLM key is set in .env, then try again.")
-        return
-    label = _finished_label(result, seconds)
-    status.update(label=label, state="complete", expanded=False)
-    st.session_state["steps"] = (label, lines)
-
-
 def _replay_steps() -> None:
-    """The finished run's status box, kept on later reruns (opening an excerpt, a download)."""
+    """The finished request's status box (and error), kept on later reruns (a tab click, a download)."""
     label, lines = st.session_state["steps"]
-    with st.status(label, state="complete", expanded=False):
+    failed = "error" in st.session_state
+    with st.status(label, state="error" if failed else "complete", expanded=False):
         st.markdown("\n\n".join(lines))
+    if failed:
+        st.error(st.session_state["error"])
 
 
 def _explain_empty(search: FinalResult, papers_in_kb: int) -> None:
@@ -403,37 +430,45 @@ def render() -> None:
             search_only = st.form_submit_button("Search papers only")
     submitted = ask or search_only
     if submitted:
-        for key in ("qa_result", "search_result", "steps"):
+        replaced = st.session_state.get("request")
+        if replaced is not None:
+            replaced.cancel.set()  # its search stops at its next step; its result is never shown
+        for key in ("request", "qa_result", "search_result", "steps", "error"):
             st.session_state.pop(key, None)
         if question.strip():
             # Set before the tabs are drawn: the tab of the new result opens by itself, so a
             # search-only result is never behind Paper QA (tracking the tab needs on_change).
             st.session_state["tab"] = "Paper QA" if ask else "Paper Search"
             st.session_state["asked"] = True
-    # A request runs only after the whole page is drawn. Its status and the tabs start as empty
-    # slots, which drops the previous result at once instead of leaving it greyed out (stale)
-    # while the request runs; other reruns keep plain containers, so nothing is redrawn.
+            st.session_state["request"] = _start(question, ask)
+    running = "request" in st.session_state
+    # A request is followed only after the whole page is drawn. Its status and the tabs start as
+    # empty slots, which drops the previous result at once instead of leaving it greyed out
+    # (stale) while it runs; other reruns keep plain containers, so nothing is redrawn.
+    fresh = submitted or running
     with main:
-        status_slot = st.empty() if submitted else st.container()
+        status_slot = st.empty() if fresh else st.container()
     # Open until the first question, then folded, so a result is not pushed below their list; one
     # expander either way, so the change never leaves the old list greyed out during the request.
     with margin, st.container(key="examples"), st.expander("Examples", expanded=not st.session_state.get("asked")):
         _examples(cfg)
     papers_in_kb = _corpus_size(cfg)
     qa_tab, search_tab = st.tabs(["Paper QA", "Paper Search"], key="tab", on_change="rerun")
-    qa_slot = qa_tab.empty() if submitted else qa_tab.container()
-    search_slot = search_tab.empty() if submitted else search_tab.container()
-    with status_slot.container() if submitted else status_slot:
-        if submitted:
-            _submit(question, ask)
+    qa_slot = qa_tab.empty() if fresh else qa_tab.container()
+    search_slot = search_tab.empty() if fresh else search_tab.container()
+    with status_slot.container() if fresh else status_slot:
+        if submitted and not question.strip():
+            st.warning("Enter a question first.")
+        elif running:
+            _follow(st.session_state["request"])
         elif "steps" in st.session_state:
             _replay_steps()
-    with qa_slot.container() if submitted else qa_slot:
+    with qa_slot.container() if fresh else qa_slot:
         if "qa_result" in st.session_state:
             _show_answer(st.session_state["qa_result"], papers_in_kb)
         else:
             st.caption("Select Ask to get an answer that cites its sources by number.")
-    with search_slot.container() if submitted else search_slot:
+    with search_slot.container() if fresh else search_slot:
         if "search_result" in st.session_state:
             _show_search(st.session_state["search_result"], papers_in_kb)
         else:

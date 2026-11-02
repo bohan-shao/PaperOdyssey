@@ -514,6 +514,18 @@ class LoopTests(unittest.TestCase):
         self.assertEqual((silent.papers, silent.reviews, silent.coverage_report),
                          (result.papers, result.reviews, result.coverage_report))
 
+    def test_a_raising_progress_callback_stops_the_search_at_that_step(self) -> None:
+        reviewed: list[str] = []
+
+        def stop_at_round(event, details):
+            if event == "round":
+                raise RuntimeError("cancelled")
+
+        with self.assertRaises(OrchestrationError):
+            self._run_with_patches(make_config(), progress=stop_at_round,
+                                   batch_review=lambda candidates, *rest: reviewed.extend(c["paper_id"] for c in candidates) or [])
+        self.assertEqual(reviewed, [])
+
     def test_plain_rag_reports_one_retrieval(self) -> None:
         cfg = make_config()
         cfg["orchestration"]["agentic"] = {"enabled": False}

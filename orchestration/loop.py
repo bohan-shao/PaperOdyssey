@@ -416,7 +416,10 @@ async def _generate_hyde(input_text: str) -> tuple[str | None, int]:
 
 
 def _notify(progress: Progress | None, event: str, **details: object) -> None:
-    """Report one step to the caller's progress callback (SCHEMA.md §6.1), if there is one."""
+    """Report one step to the caller's progress callback (SCHEMA.md §6.1), if there is one.
+
+    An error the callback raises is not caught: it stops the request at this step (the UI's cancel).
+    """
     if progress is not None:
         progress(event, details)
 

@@ -27,7 +27,9 @@ Two presentation tabs (D23/D29) sharing the same input box:
    each round with papers reviewed and accepted, follow-up searches, writing the answer; the
    `progress` events of SCHEMA.md §6.1) and the seconds so far. It ends as "Answer ready in X s",
    "Search finished in X s: N papers accepted" or says there is no answer, and stays (collapsed)
-   on later reruns. The tab of the latest result opens by itself, and the examples' expander,
+   on later reruns. The request lives in session state while it runs, so a rerun (a tab or an
+   example click) picks it up again with its steps so far; a new question cancels it (its progress
+   callback raises, which stops the search at its next step). The tab of the latest result opens by itself, and the examples' expander,
    open on the first visit, folds after the first question (D58). The request runs only after
    the rest of the page is drawn, with its status and results starting empty, so nothing of the
    previous result stays greyed out while it runs. The first page view loads the retrieval
@@ -38,6 +40,9 @@ Two presentation tabs (D23/D29) sharing the same input box:
 7. No answer is explained: how many rounds ran and papers were read out of the knowledge base's
    size, what to try, and the closest papers the reviewer turned down with its reasons.
    Operational errors name the recovery.
+
+Needs Streamlit 1.55 or later (keyed `st.tabs` with `on_change`); tested with 1.64.0. The style block keys
+off Streamlit's `data-testid` attributes and `st-key-*` classes, so check the page after an upgrade.
 
 Look (`.streamlit/config.toml`, read from the repository root where `scripts/run_ui.sh` starts the
 app): a page set like a LaTeX paper. Latin Modern (LaTeX's own face, served from `ui/static/fonts`,
