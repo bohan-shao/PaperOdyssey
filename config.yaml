@@ -147,8 +147,8 @@ orchestration:
     batch_size: 5
     max_concurrency: 6          # concurrent LLM review calls (D58): a round's batches run at once, not 2 at a time
     max_tokens_per_paper: 1500  # token budget fed to the reviewer per paper (title + abstract + top passages)
-    max_output_tokens: 2048     # first-attempt reply limit of one review call (D58); llm.max_tokens (1024) cut
-                                # a third of 5-paper replies, each then asked again; billed per token written
+    max_output_tokens: 8192     # first-attempt reply limit of one review call (D58, D59); 2048 cut a third of
+                                # replies on the full KB, each then asked again; billed per token written
     rubric:                     # fixed scoring dimensions (D10)
       - relevance              # relevance to the need
       - coverage               # coverage of the input's aspects
