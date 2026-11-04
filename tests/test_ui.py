@@ -15,11 +15,13 @@ from unittest.mock import MagicMock, patch
 
 from streamlit.testing.v1 import AppTest
 
+from config import get_config
 from downstream import DownstreamError, DownstreamResult, EvidenceSource
 from orchestration.types import FinalResult, QueryPlan, ReviewRecord
 from tests.test_downstream import passage, search_result
 
 APP = str(Path(__file__).resolve().parents[1] / "ui" / "app.py")
+DONE = ":material/check_circle: "  # how a finished step starts in the status box
 
 
 def lookup_store(passages):
@@ -27,6 +29,10 @@ def lookup_store(passages):
     store = MagicMock()
     store.get_passages.return_value = passages
     return patch("retrieval.lookup.get_lookup_store", return_value=store)
+
+
+def markdown_text(app):
+    return "\n".join(item.value for item in app.markdown)
 
 
 class UITests(unittest.TestCase):
@@ -42,13 +48,22 @@ class UITests(unittest.TestCase):
                                        [self.source], [1], self.search,
                                        {"total_ms": 100, "generation_ms": 20})
 
+    def load_ui(self):
+        """ui/app.py as a module, for its helpers."""
+        spec = importlib.util.spec_from_file_location("paperodyssey_ui_app", APP)
+        ui = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = ui  # dataclasses look the module up while it is being created
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(ui)
+        return ui
+
     def test_submit_reuses_search_and_shows_citation_and_original_text(self):
         with patch("downstream.run", return_value=self.answer) as answer, \
                 patch("orchestration.run_query") as search, \
                 lookup_store({self.source.passage_id: passage()}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("How does it work?")
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             self.assertEqual(len(app.exception), 0)
             answer.assert_called_once()
             self.assertEqual(answer.call_args.args, ("How does it work?",))
@@ -56,23 +71,60 @@ class UITests(unittest.TestCase):
             search.assert_not_called()
             self.assertTrue(app.status[0].label.startswith("Answer ready in "))
             self.assertEqual([tab.label for tab in app.tabs], ["Paper QA", "Paper Search"])
-            # Notation stays unlinked; citations keep their brackets, so [1][2] never reads as 12.
-            self.assertTrue(any("W[0] [\\[1\\]](#source-1)" in item.value for item in app.markdown))
+            # Notation stays unlinked; citations keep their brackets, so [1][2] never reads as 12, and
+            # carry the source's title as their tooltip.
+            self.assertIn('W[0]\u2060[\\[1\\]](#source-1 "Paper 2401.00001 (2024)")', markdown_text(app))
+            # The reference: number, title, year, section and arXiv, with the excerpt behind a toggle.
+            reference = next(item.value for item in app.markdown if 'id="source-1"' in item.value)
+            self.assertIn('<span class="po-n">[1]</span>Paper 2401.00001', reference)
+            self.assertIn("2024 · Method · ", reference)
+            self.assertIn('href="https://arxiv.org/abs/2401.00001v2" target="_blank"', reference)
+            self.assertIn("Excerpt", [item.label for item in app.expander])
             self.assertTrue(any(item.value == self.source.text for item in app.text))
-            self.assertTrue(any("[1] Paper" in item.label for item in app.expander))
             self.assertEqual([button.proto.label for button in app.get("download_button")],
                              ["Download answer and sources (JSON)", "Download search record (JSON)"])
             app.run()
             answer.assert_called_once()
+
+    def test_landing_shows_examples_and_how_it_works_and_no_tabs(self):
+        with patch("downstream.run") as answer:
+            app = AppTest.from_file(APP).run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.title[0].value, "PaperOdyssey")
+            self.assertEqual(len(app.tabs), 0)  # nothing to show yet
+            examples = get_config()["ui"]["example_inputs"]
+            self.assertEqual([app.button(key=f"example_{n}").label for n in range(len(examples))], examples)
+            text = markdown_text(app)
+            self.assertIn("Examples", text)
+            self.assertIn("How it works", text)
+            for step in ("Search", "Review", "Answer"):
+                self.assertIn(f"</span>{step}</p>", text)
+            answer.assert_not_called()
+
+    def test_first_question_switches_to_the_results_layout(self):
+        with patch("downstream.run", return_value=self.answer), lookup_store({self.source.passage_id: passage()}):
+            app = AppTest.from_file(APP).run()
+            example = app.button(key="example_2").label
+            app.text_area[0].input("How does it work?")
+            app.button(key="ask_button").click().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.title), 0)  # the landing's title block gave way to the slim bar
+            text = markdown_text(app)
+            self.assertIn('class="po-wordmark">PaperOdyssey<', text)
+            self.assertNotIn("How it works", text)
+            self.assertEqual(len(app.tabs), 2)
+            # The examples moved into the bar and still fill the question box.
+            app.button(key="example_2").click().run()
+            self.assertEqual(app.text_area[0].value, example)
 
     def test_failed_followup_clears_stale_answer(self):
         with patch("downstream.run", side_effect=[self.answer, DownstreamError("Paper search failed.")]), \
                 lookup_store({}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("First question")
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             app.text_area[0].input("Second question")
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(app.error[0].value, "Paper search failed.")
             self.assertFalse(any("Low-rank updates" in item.value for item in app.markdown))
@@ -80,8 +132,9 @@ class UITests(unittest.TestCase):
     def test_empty_input_and_example_selection_do_not_call_backend(self):
         with patch("downstream.run") as answer, patch("orchestration.run_query") as search:
             app = AppTest.from_file(APP).run()
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             self.assertEqual(app.warning[0].value, "Enter a question first.")
+            self.assertEqual(len(app.tabs), 0)  # still the landing
             example = app.button(key="example_1").label
             app.button(key="example_1").click().run()
             self.assertEqual(app.text_area[0].value, example)
@@ -93,13 +146,59 @@ class UITests(unittest.TestCase):
                 lookup_store({}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("Find papers")
-            app.button[1].click().run()
+            app.button(key="search_button").click().run()
             self.assertEqual(len(app.exception), 0)
             search.assert_called_once()
             self.assertEqual(search.call_args.args, ("Find papers",))
             answer.assert_not_called()
             self.assertTrue(app.status[0].label.endswith(": 1 paper accepted"))
             self.assertEqual(app.session_state["tab"], "Paper Search")  # its tab opens, not Paper QA's
+
+    def test_paper_card_shows_score_year_reasons_and_arxiv_link(self):
+        paper = ReviewRecord("2401.00001", "pass", 4, reasons="Uses low-rank\nupdates.",
+                             covered=["Method of the update."],
+                             evidence={"title": "Paper 2401.00001", "top_passages": ["P2401.00001_0000"]})
+        found = FinalResult("q-test", "How does it work?", QueryPlan("How does it work?"), [paper],
+                            {"rounds": 1, "papers_reviewed": 7, "papers_passed": 1, "total_aspects": 2,
+                             "covered_aspects": 1, "uncovered_aspects": ["Training cost"],
+                             "termination_reason": "max_rounds"},
+                            latency_by_stage={"retrieval_ms": 1200, "review_ms": 3400, "total_ms": 4100})
+        with patch("orchestration.run_query", return_value=found), \
+                lookup_store({"P2401.00001_0000": passage()}):
+            app = AppTest.from_file(APP).run()
+            app.text_area[0].input("How does it work?")
+            app.button(key="search_button").click().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertIn("1 paper passed review out of 7 reviewed.", [item.value for item in app.caption])
+            card = next(item.value for item in app.markdown if 'class="po-paper"' in item.value)
+            self.assertIn('<span class="po-n">1</span><a href="https://arxiv.org/abs/2401.00001v2" '
+                          'target="_blank" rel="noopener noreferrer">Paper 2401.00001</a>', card)
+            self.assertIn("arXiv 2401.00001v2 · 2024 · Reviewer score 4/5", card)
+            self.assertIn('<p class="po-reasons">Uses low-rank updates.</p>', card)
+            self.assertIn("Covers: Method of the update.", card)
+            self.assertIn("1 passage the reviewer read", [item.label for item in app.expander])
+            self.assertTrue(any(item.value == passage()["text"] for item in app.text))
+            text = markdown_text(app)
+            self.assertIn("Ended after 1 round: the round limit was reached.", text)
+            self.assertIn("<td>Papers reviewed</td><td>7</td>", text)
+            self.assertIn("<td>Aspects of the question covered</td><td>1 of 2</td>", text)
+            self.assertIn("Not covered: Training cost.", text)
+            self.assertIn('<tr class="po-total"><td>Total</td><td>4.10</td></tr>', text)
+
+    def test_titles_are_escaped_in_html_and_in_citation_tooltips(self):
+        source = EvidenceSource(1, "2401.00001", "P2401.00001_0000", 'A <b>"bold"</b> $x$ title', None,
+                                "", None, passage()["text"])
+        answer = DownstreamResult("q-test", "How?", "It works [1].", "answered", [source], [1], self.search,
+                                  {"total_ms": 100})
+        with patch("downstream.run", return_value=answer), lookup_store({}):
+            app = AppTest.from_file(APP).run()
+            app.text_area[0].input("How?")
+            app.button(key="ask_button").click().run()
+            self.assertEqual(len(app.exception), 0)
+            text = markdown_text(app)
+            self.assertIn('[\\[1\\]](#source-1 "A <b>\\"bold\\"</b> $x$ title")', text)
+            self.assertIn("</span>A &lt;b&gt;&quot;bold&quot;&lt;/b&gt; $x$ title</p>", text)
+            self.assertNotIn("<b>", text.replace('"A <b>\\"bold\\"</b>', ""))
 
     def test_steps_show_while_running_and_stay_after_a_rerun(self):
         def run_with_steps(question, progress):
@@ -115,19 +214,34 @@ class UITests(unittest.TestCase):
                 lookup_store({self.source.passage_id: passage()}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("How does it work?")
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             app.run()  # a later rerun (opening an excerpt, a download) keeps the finished steps
             self.assertEqual(len(app.exception), 0)
             status = app.status[0]
             self.assertTrue(status.label.startswith("Answer ready in "))
-            self.assertEqual(status.markdown[0].value.split("\n\n"), [
+            self.assertEqual(status.markdown[0].value.split("\n\n"), [DONE + line for line in (
                 "Reading the question and planning the searches.",
                 "Planned 3 searches for 2 aspects of the question.",
                 "Round 1: running 3 searches.",
                 "Round 1 done: 12 papers reviewed so far, 1 accepted, 1 of 2 aspects covered.",
                 "Not covered yet: Training cost. Writing new searches for it.",
                 "Writing the answer from 1 excerpt.",
-            ])
+            )])
+
+    def test_the_step_under_way_shimmers_and_a_failed_one_is_marked(self):
+        ui = self.load_ui()
+        lines = ["Planned 1 search for 1 aspect of the question.", "Not covered yet: a [b]. Writing new searches."]
+        self.assertEqual(ui._steps_markdown(lines, running=True).split("\n\n"), [
+            DONE + lines[0], ":material/pending: :shimmer[Not covered yet: a \\[b\\]. Writing new searches.]"])
+        self.assertEqual(ui._steps_markdown(lines, failed=True).split("\n\n")[-1], ":material/cancel: " + lines[1])
+        self.assertEqual(ui._steps_markdown([]), "")
+
+    def test_long_section_names_are_shortened(self):
+        ui = self.load_ui()
+        self.assertEqual(ui._short_section("Method"), "Method")
+        short = ui._short_section("Prompting-based Hallucination Verification and Mitigation / Generation")
+        self.assertEqual(short, "Prompting-based Hallucination Verificat…")
+        self.assertLessEqual(len(short), 40)
 
     def test_no_answer_says_why_and_shows_the_closest_rejected_papers(self):
         search = FinalResult("q-none", "Protein folding?", QueryPlan("Protein folding?"), [],
@@ -139,14 +253,14 @@ class UITests(unittest.TestCase):
         with patch("downstream.run", return_value=empty), lookup_store({}):
             app = AppTest.from_file(APP).run()
             app.text_area[0].input("Protein folding?")
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             self.assertEqual(len(app.exception), 0)
             self.assertIn("no paper covers this question", app.status[0].label)
             self.assertIn("The search ran 3 rounds and the reviewer read 9 papers", app.info[0].value)
             self.assertTrue(any("turned down (1)" in item.label for item in app.expander))
-            self.assertEqual(app.expander[0].label, "Examples")  # folded once there is a result
+            self.assertIn('<p class="po-entry-title">A text paper</p><p class="po-meta">Reviewer score 2/5</p>',
+                          markdown_text(app))
             self.assertTrue(any(item.value == "About text, not proteins." for item in app.caption))
-
 
     def running_request(self, future, lines=(), events=(), cancel=None):
         """A request as `_start` leaves it in session state, for a rerun to pick up."""
@@ -170,8 +284,8 @@ class UITests(unittest.TestCase):
             answer.assert_not_called()  # followed, not started again
             self.assertTrue(app.status[0].label.startswith("Answer ready in "))
             self.assertEqual(app.status[0].markdown[0].value.split("\n\n"), [
-                "Reading the question and planning the searches.", "Writing the answer from 1 excerpt."])
-            self.assertTrue(any("W[0] [\\[1\\]](#source-1)" in item.value for item in app.markdown))
+                DONE + "Reading the question and planning the searches.", DONE + "Writing the answer from 1 excerpt."])
+            self.assertIn('W[0]\u2060[\\[1\\]](#source-1 "Paper 2401.00001 (2024)")', markdown_text(app))
             self.assertNotIn("request", app.session_state)
 
     def test_a_new_question_cancels_the_running_one(self):
@@ -181,18 +295,14 @@ class UITests(unittest.TestCase):
             app = AppTest.from_file(APP).run()
             app.session_state["request"] = self.running_request(Future(), cancel=cancel)  # never finishes
             app.text_area[0].input("How does it work?")
-            app.button[0].click().run()
+            app.button(key="ask_button").click().run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(cancel.is_set())
             answer.assert_called_once()
             self.assertTrue(app.status[0].label.startswith("Answer ready in "))
 
     def test_a_cancelled_request_stops_at_its_next_step(self):
-        spec = importlib.util.spec_from_file_location("paperodyssey_ui_app", APP)
-        ui = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = ui  # dataclasses look the module up while it is being created
-        self.addCleanup(sys.modules.pop, spec.name, None)
-        spec.loader.exec_module(ui)
+        ui = self.load_ui()
         release, after = threading.Event(), []
 
         def slow_run(question, progress):
