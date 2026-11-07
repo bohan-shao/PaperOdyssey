@@ -257,6 +257,8 @@ so report the judge model. Judge and generation token usage are reported separat
 |---|---|---|
 | Agentic loop (orchestration layer) | Single-round parallel | `orchestration.loop.enabled=false` |
 | Agentic search as a whole (query understanding, LLM review, loop; D55) | Plain RAG: the question → hybrid retrieval + rerank → the same answer step | `orchestration.agentic.enabled=false` |
+| Query understanding (sub-queries and aspects; D61) | The question as typed as the only sub-query and aspect | `orchestration.understanding.enabled=false` |
+| LLM review (D61) | One round without review: the sub-queries' rankings merged by RRF, every paper kept | `orchestration.review.enabled=false` |
 
 Ablation matrix: baseline / +A / +B / +A+B (the assignment requires: add only A, add only B, add both, and report each gain).
 
@@ -275,6 +277,21 @@ Hit@5) and the answer stage's `gold_in_sources` / `gold_cited`, not on `source_s
 `source_acceptance_rate`: every plain-RAG paper is a `pass`, and the two rows' paper lists differ
 in length, neither equal to the 5 papers the answer uses. `agentic` cannot be combined with `hyde` or `loop`,
 which act only inside the agentic search.
+
+**Query understanding × LLM review (D61).** D55 removes both components at once. `--stage review
+--ablation understanding review` separates them: baseline (both off: D55's plain RAG result through
+the agentic path), A (the LLM's sub-queries merged by RRF, no review), B (the question as typed,
+reviewed, with the loop) and AB (the configured system), on the eval split and on the challenge set.
+Rows without review keep every retrieved paper, so compare them on rank-based numbers and the
+answer metrics, as for D55:
+
+```bash
+python scripts/run_eval.py --stage review --ablation understanding review --split eval --tag understanding-review_2026-11-06 --workers 4
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/understanding-review_2026-11-06 --split eval --tag understanding-review_2026-11-06 --workers 16
+python scripts/run_eval.py --eval-set data/eval/challenge_set.jsonl --stage review --ablation understanding review --split eval --tag challenge-understanding-review --workers 4
+python scripts/run_eval.py --stage answer --source data/results/ablation_runs/challenge-understanding-review --split eval --tag answers-challenge-understanding-review --workers 8
+python scripts/challenge_set.py score --searches data/results/ablation_runs/challenge-understanding-review --answers data/results/answer_runs/answers-challenge-understanding-review --judge-parts --tag understanding-review
+```
 
 ### Challenge set (D56)
 

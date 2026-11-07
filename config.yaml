@@ -136,10 +136,15 @@ orchestration:
   agentic:
     enabled: true               # Q5 baseline (D55): false = plain RAG: the question -> hybrid retrieval + rerank
                                 # -> the same answer step; no LLM in search (understanding/HyDE/review/loop off)
+  understanding:
+    enabled: true               # Q5 ablation (D61): false = no LLM query plan; the question as typed is the only
+                                # sub-query and the only aspect
   num_sub_queries: 3
   hyde:
     enabled: false              # Q3 innovation: HyDE query expansion (on = one extra LLM call)
   review:
+    enabled: true               # Q5 ablation (D61): false = no LLM review; one round, the sub-queries' rankings
+                                # fused by RRF (retrieval.fusion.rrf_k), every paper kept unreviewed
     backend: llm                # llm | jev (Q5 comparison: LLM reviewer vs TypeSafe Jev, llm/jev.py)
     jev:
       pass_threshold: 0.5       # keep a paper when Jev's P(pass) >= this (tune on the dev split)

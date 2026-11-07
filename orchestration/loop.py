@@ -24,7 +24,7 @@ from retrieval.pipeline import retrieve
 from retrieval.types import RetrievalFilters, RetrieveResult, ScoredPassage
 
 from .errors import OrchestrationError
-from .query_understanding import understand
+from .query_understanding import literal_plan, understand
 from .review import batch_review
 from .rewrite import rewrite
 from .types import Criterion, FinalResult, Progress, QueryPlan, ReviewRecord, SubQuery, passing_order_key
@@ -472,17 +472,91 @@ def _plain_rag(input_text: str, query_id: str, progress: Progress | None = None)
     )
 
 
+async def _unreviewed_search(
+    input_text: str, query_id: str, plan: QueryPlan, cfg: dict[str, Any],
+    understanding_ms: int, hyde_ms: int, progress: Progress | None = None,
+) -> FinalResult:
+    """One round without LLM review (`orchestration.review.enabled=false`, D61).
+
+    Every sub-query of the plan goes to retrieve(), and the sub-queries' paper rankings (each paper at
+    its best passage) are merged by reciprocal rank fusion: a paper scores the sum of
+    1 / (`retrieval.fusion.rrf_k` + rank) over the sub-queries that retrieved it; ties go to the better
+    best rank, then paper ID. As in the plain RAG baseline (D55) every paper is a "pass" with score 0
+    (not reviewed) and its passages in rank order as evidence, so Paper QA answers it with the same
+    evidence budget. `retrieval_ranks` holds the fused position, which makes the fusion the
+    `passing_order_key` order. Without a reviewer there is no coverage signal, so the search ends
+    after this round. With one sub-query (query understanding off as well) the papers, their order
+    and their evidence are those of the plain RAG baseline.
+    """
+    _notify(progress, "round", round=1, queries=len(plan.sub_queries))
+    started = time.perf_counter()
+
+    async def search(sub_query: SubQuery) -> RetrieveResult:
+        try:
+            return await asyncio.to_thread(retrieve, sub_query.query, filters=_to_filters(sub_query.filters))
+        except Exception as exc:
+            raise OrchestrationError(f"retrieval failed for query {sub_query.query!r}: {exc}") from exc
+
+    results = await asyncio.gather(*(search(sub_query) for sub_query in plan.sub_queries))
+    retrieval_ms = round((time.perf_counter() - started) * 1000)
+    rrf_k = int(cfg.get("retrieval", {}).get("fusion", {}).get("rrf_k", 60))
+    fused: dict[str, float] = {}
+    best: dict[str, int] = {}
+    passages: dict[str, dict[str, tuple[int, float, str]]] = {}
+    titles: dict[str, str] = {}
+    for result in results:
+        paper_ranks: dict[str, int] = {}
+        for item in sorted(result.hits, key=lambda hit: (hit.rank, -hit.score, hit.passage_id)):
+            paper_ranks.setdefault(item.paper_id, item.rank)
+            titles.setdefault(item.paper_id, item.title)
+            order_key = (item.rank, -item.score, item.passage_id)
+            known = passages.setdefault(item.paper_id, {})
+            if item.passage_id not in known or order_key < known[item.passage_id]:
+                known[item.passage_id] = order_key
+        for paper_id, rank in paper_ranks.items():
+            fused[paper_id] = fused.get(paper_id, 0.0) + 1.0 / (rrf_k + rank)
+            best[paper_id] = min(best.get(paper_id, rank), rank)
+    order = sorted(fused, key=lambda paper_id: (-fused[paper_id], best[paper_id], paper_id))
+    records = [
+        ReviewRecord(paper_id, "pass", 0, reasons="Review disabled (D61): retrieved, fused, not reviewed.", round=1,
+                     evidence={"title": titles[paper_id],
+                               "top_passages": [key[2] for key in sorted(passages[paper_id].values())]})
+        for paper_id in order
+    ]
+    _notify(progress, "retrieved", papers=len(records))
+    return FinalResult(
+        query_id=query_id,
+        input_text=input_text,
+        query_plan=plan,
+        papers=records,
+        coverage_report={
+            "total_aspects": 0, "covered_aspects": 0, "covered_criteria": [], "uncovered_aspects": [],
+            "rounds": 1, "papers_reviewed": len(records), "papers_passed": len(records), "re_reviews": 0,
+            "termination_reason": "review_disabled", "cache_hit": False, "template_version": TEMPLATE_VERSION,
+            "review_backend": "none",
+        },
+        reviews=records,
+        retrieval_ranks={paper_id: position for position, paper_id in enumerate(order, start=1)},
+        latency_by_stage={"understanding_ms": understanding_ms, "hyde_ms": hyde_ms, "retrieval_ms": retrieval_ms,
+                          "review_ms": 0, "rewrite_ms": 0, "total_ms": 0},
+    )
+
+
 async def _execute_workflow(
     input_text: str, query_id: str, cfg: dict[str, Any], progress: Progress | None = None,
 ) -> FinalResult:
-    if not cfg["orchestration"].get("agentic", {}).get("enabled", True):
-        return await asyncio.to_thread(_plain_rag, input_text, query_id, progress)
-    _notify(progress, "understanding")
-    understanding_started = time.perf_counter()
-    plan = await asyncio.to_thread(understand, input_text)
-    understanding_ms = round((time.perf_counter() - understanding_started) * 1000)
-
     orchestration_cfg = cfg["orchestration"]
+    if not orchestration_cfg.get("agentic", {}).get("enabled", True):
+        return await asyncio.to_thread(_plain_rag, input_text, query_id, progress)
+    understanding_ms = 0
+    if orchestration_cfg.get("understanding", {}).get("enabled", True):
+        _notify(progress, "understanding")
+        understanding_started = time.perf_counter()
+        plan = await asyncio.to_thread(understand, input_text)
+        understanding_ms = round((time.perf_counter() - understanding_started) * 1000)
+    else:  # D61: no LLM plan; the question as typed is the only sub-query and the only aspect
+        plan = literal_plan(input_text)
+
     hyde_ms = 0
     if orchestration_cfg.get("hyde", {}).get("enabled", False):
         hypothetical, hyde_ms = await _generate_hyde(input_text)
@@ -492,6 +566,9 @@ async def _execute_workflow(
                 plan,
                 sub_queries=[*plan.sub_queries, SubQuery(query=hypothetical, filters=shared_filters)],
             )
+
+    if not orchestration_cfg.get("review", {}).get("enabled", True):
+        return await _unreviewed_search(input_text, query_id, plan, cfg, understanding_ms, hyde_ms, progress)
 
     loop_cfg = orchestration_cfg.get("loop", {})
     loop_enabled = bool(loop_cfg.get("enabled", True))

@@ -121,7 +121,12 @@ def _parse_plan(raw: object, input_text: str, max_queries: int) -> QueryPlan:
     return QueryPlan(input_text=input_text, sub_queries=queries, criteria=criteria)
 
 
-def _fallback_plan(input_text: str) -> QueryPlan:
+def literal_plan(input_text: str) -> QueryPlan:
+    """The plan without query understanding: the input as typed is the only sub-query and aspect.
+
+    It is the fallback when the LLM fails twice, and the plan of every search with
+    `orchestration.understanding.enabled=false` (D61), which makes no LLM call for it.
+    """
     return QueryPlan(
         input_text=input_text,
         sub_queries=[SubQuery(query=input_text)],
@@ -154,4 +159,4 @@ def understand(input_text: str) -> QueryPlan:
             return _parse_plan(raw, input_text, max_queries)
         except Exception:  # The documented fallback covers transport and schema failures.
             continue
-    return _fallback_plan(input_text)
+    return literal_plan(input_text)

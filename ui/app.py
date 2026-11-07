@@ -131,7 +131,8 @@ _ENDINGS = {"coverage_met": "every aspect of the question was covered",
             "max_rounds": "the round limit was reached",
             "loop_disabled": "the follow-up loop is switched off",
             "rewrite_exhausted": "no new follow-up queries were left",
-            "plain_rag": "one retrieval, without review"}
+            "plain_rag": "one retrieval, without review",
+            "review_disabled": "one round of retrieval, without review"}
 # The pattern downstream/qa.py links sources with: new-style and old-style arXiv identifiers.
 _ARXIV_ID = re.compile(r"(?:\d{4}\.\d{4,5}|[A-Za-z][A-Za-z.\-]*/\d{7})(?:v\d+)?")
 # Progress steps: finished, the one under way, and the one a failed request stopped at.

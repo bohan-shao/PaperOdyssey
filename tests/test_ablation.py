@@ -309,6 +309,32 @@ class AblationIntegrationTest(unittest.TestCase):
         self.assertFalse(self.results.exists())
         self.assertEqual(self.cfg, self.original_cfg)
 
+    def test_understanding_and_review_factors_plan_four_cells_and_guard_their_combinations(self) -> None:
+        self.original_cfg["orchestration"].update(agentic={"enabled": True}, understanding={"enabled": True})
+        self.original_cfg["orchestration"]["review"]["enabled"] = True
+        self.cfg = copy.deepcopy(self.original_cfg)
+        with self.harness():
+            plan = self.run_matrix(factors=["understanding", "review"], stage="review", dry_run=True)
+        keys = ("orchestration.understanding.enabled", "orchestration.review.enabled")
+        self.assertEqual({row: tuple(spec["overrides"][key] for key in keys) for row, spec in plan["rows"].items()},
+                         {"baseline": (False, False), "a": (True, False), "b": (False, True), "ab": (True, True)})
+        cases = [
+            ("agentic with understanding", ["agentic", "understanding"], {}),
+            ("agentic with review", ["review", "agentic"], {}),
+            ("review with the loop", ["review", "loop"], {}),
+            ("review with re_review", ["re_review", "review"], {}),
+            ("understanding under plain RAG", ["understanding"], {"agentic": {"enabled": False}}),
+        ]
+        for name, factors, orchestration in cases:
+            self.cfg = copy.deepcopy(self.original_cfg)
+            self.cfg["orchestration"].update(copy.deepcopy(orchestration))
+            with self.subTest(name=name), self.harness() as fake:
+                with self.assertRaises(ValueError):
+                    self.run_matrix(factors=factors, stage="review")
+                fake.ablation_fresh.assert_not_called()
+                fake.review_cell.assert_not_called()
+        self.assertFalse(self.results.exists())
+
     def test_backend_weight_loop_and_switch_guards_run_before_runtime(self) -> None:
         cases = [
             ("both channels disabled", ["rerank"], "retrieval", {"retrieval.sparse.enabled": False, "retrieval.dense.enabled": False}),

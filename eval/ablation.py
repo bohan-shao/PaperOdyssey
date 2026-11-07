@@ -39,6 +39,8 @@ FACTORS = {
     "loop": {"key": "orchestration.loop.enabled", "stages": ["review"]},
     "agentic": {"key": "orchestration.agentic.enabled", "stages": ["review"]},  # D55: off = plain RAG
     "re_review": {"key": "orchestration.loop.re_review", "stages": ["review"]},  # D53 evidence merging
+    "understanding": {"key": "orchestration.understanding.enabled", "stages": ["review"]},  # D61: off = question as typed
+    "review": {"key": "orchestration.review.enabled", "stages": ["review"]},  # D61: off = RRF order, not reviewed
 }
 _UNSUPPORTED = {
     "semantic_chunking": "semantic chunking requires paired prebuilt corpus/lookup/sparse/dense indexes",
@@ -113,8 +115,14 @@ def _plan(cfg: dict, factors: Sequence[str], stage: str, tag: str, questions: li
             raise ValueError("loop ablation requires max_rounds >= 2")
         if cfg["orchestration"].get("rewrite", {}).get("max_queries_per_round", 2) < 1:
             raise ValueError("loop ablation requires at least one rewrite query per round")
-    if "agentic" in factors and {"hyde", "loop", "re_review"} & set(factors):
-        raise ValueError("hyde, loop and re_review act only inside the agentic search; ablate them apart from agentic")
+    inside_agentic = {"hyde", "loop", "re_review", "understanding", "review"}
+    if "agentic" in factors and inside_agentic & set(factors):
+        raise ValueError("hyde, loop, re_review, understanding and review act only inside the agentic search; "
+                         "ablate them apart from agentic")
+    if {"understanding", "review"} & set(factors) and not cfg["orchestration"].get("agentic", {}).get("enabled", True):
+        raise ValueError("understanding and review act only inside the agentic search; enable orchestration.agentic")
+    if "review" in factors and {"loop", "re_review"} & set(factors):
+        raise ValueError("the loop and re_review need the reviewer's coverage; ablate them apart from review")
     if "re_review" in factors and "loop" not in factors and not cfg["orchestration"]["loop"].get("enabled", True):
         raise ValueError("re_review only acts in rounds 2+; enable the loop or ablate it with the loop factor")
     seed = cfg.get("seed")

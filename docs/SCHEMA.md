@@ -134,6 +134,14 @@ among the retrieved passages is a `pass` record with score 0 and its passage IDs
 evidence, `papers` and `reviews` hold the same records in retrieval order, and `coverage_report`
 has `total_aspects` 0, `rounds` 1, `termination_reason` "plain_rag" and `review_backend` "none".
 
+With `orchestration.review.enabled=false` (D61) there is no review either: the sub-queries' rankings
+are merged by reciprocal rank fusion, every retrieved paper is a `pass` record with score 0 and its
+passage IDs in rank order as evidence, `papers` and `reviews` hold the same records in fused order,
+`retrieval_ranks` gives each paper's position in the fusion (1 = first) instead of its best passage
+rank, and `coverage_report` has `total_aspects` 0, `rounds` 1, `termination_reason`
+"review_disabled" and `review_backend` "none". With `orchestration.understanding.enabled=false`
+(D61) `query_plan` has the question as typed as its only sub-query and only extracted criterion.
+
 `reviews` defaults to `[]` for existing callers and cached results written before this field
 was introduced. An empty trace from an old cache means the review records are unavailable;
 it must not be reconstructed from `papers`, which omits rejects. New cache entries preserve

@@ -566,6 +566,83 @@ class LoopTests(unittest.TestCase):
         self.assertEqual((result.latency_by_stage["understanding_ms"], result.latency_by_stage["review_ms"]), (0, 0))
         _validate_result({"query_id": result.query_id, "input_text": "request"}, asdict(result))
 
+    def test_understanding_off_reviews_the_question_as_typed_as_its_only_aspect(self) -> None:
+        cfg = make_config()
+        cfg["orchestration"]["understanding"] = {"enabled": False}
+        queries: list[tuple[str, object]] = []
+        criteria_seen: list[list[Criterion]] = []
+
+        def no_plan(*args, **kwargs):
+            raise AssertionError("query understanding is off: no LLM plan")
+
+        def fake_review(candidates, criteria, text, round_no):
+            criteria_seen.append(list(criteria))
+            return [ReviewRecord(c["paper_id"], "pass", 4, covered=["request"], round=round_no) for c in candidates]
+
+        events: list[str] = []
+        result = self._run_with_patches(
+            cfg, progress=lambda event, details: events.append(event), understand=no_plan, batch_review=fake_review,
+            retrieve=lambda query, filters=None: queries.append((query, filters)) or RetrieveResult([hit("P1")], 1),
+        )
+        self.assertEqual(queries, [("request", None)])
+        self.assertEqual(criteria_seen, [[Criterion("request", "extracted")]])
+        self.assertEqual(result.query_plan.sub_queries, [SubQuery("request")])
+        self.assertNotIn("understanding", events)
+        report = result.coverage_report
+        self.assertEqual((report["termination_reason"], report["covered_aspects"], report["total_aspects"],
+                          report["review_backend"]), ("coverage_met", 1, 1, "llm"))
+        self.assertEqual(result.latency_by_stage["understanding_ms"], 0)
+
+    def test_review_off_fuses_the_sub_queries_by_rrf_in_one_unreviewed_round(self) -> None:
+        from eval.review_eval import _validate_result
+
+        cfg = make_config()
+        cfg["orchestration"]["review"]["enabled"] = False
+        cfg["retrieval"] = {"fusion": {"rrf_k": 60}}
+        results = {
+            "q1": [hit("P1", 1), hit("P2", 2), hit("P1", 3, suffix="2")],
+            "q2": [hit("P3", 1), hit("P2", 2, suffix="3"), hit("P4", 3)],
+        }
+
+        def no_llm(*args, **kwargs):
+            raise AssertionError("review is off: no review or rewrite call")
+
+        with patch("orchestration.loop.rewrite", side_effect=no_llm):
+            result = self._run_with_patches(
+                cfg,
+                understand=lambda text: QueryPlan(text, [SubQuery("q1"), SubQuery("q2")], [Criterion("aspect")]),
+                retrieve=lambda query, filters=None: RetrieveResult(results[query], 3),
+                batch_review=no_llm,
+            )
+        # P2 is retrieved by both sub-queries (2/62 beats 1/61); P1 and P3 tie on fusion and best rank -> ID.
+        self.assertEqual([p.paper_id for p in result.papers], ["P2", "P1", "P3", "P4"])
+        self.assertEqual(result.retrieval_ranks, {"P2": 1, "P1": 2, "P3": 3, "P4": 4})
+        self.assertEqual(result.papers[0].evidence["top_passages"], ["P2_1", "P2_3"])
+        self.assertEqual(result.papers[1].evidence["top_passages"], ["P1_1", "P1_2"])
+        self.assertEqual({(p.verdict, p.score, p.round) for p in result.papers}, {("pass", 0, 1)})
+        self.assertEqual(result.reviews, result.papers)
+        report = result.coverage_report
+        self.assertEqual((report["termination_reason"], report["review_backend"], report["rounds"],
+                          report["papers_passed"], report["total_aspects"]), ("review_disabled", "none", 1, 4, 0))
+        self.assertEqual(result.latency_by_stage["review_ms"], 0)
+        _validate_result({"query_id": result.query_id, "input_text": "request"}, asdict(result))
+
+    def test_understanding_and_review_off_reproduce_the_plain_rag_result(self) -> None:
+        hits = [hit("P2", 1), hit("P1", 2), hit("P2", 3, suffix="2"), hit("P3", 4), hit("P2", 5)]
+
+        def run(cfg: dict) -> FinalResult:
+            return self._run_with_patches(cfg, retrieve=lambda query, filters=None: RetrieveResult(list(hits), 50))
+
+        plain = make_config()
+        plain["orchestration"]["agentic"] = {"enabled": False}
+        both_off = make_config()
+        both_off["orchestration"]["understanding"] = {"enabled": False}
+        both_off["orchestration"]["review"]["enabled"] = False
+        baseline, result = run(plain), run(both_off)
+        self.assertEqual([(p.paper_id, p.evidence["top_passages"], p.score) for p in result.papers],
+                         [(p.paper_id, p.evidence["top_passages"], p.score) for p in baseline.papers])
+        self.assertEqual(result.query_plan.sub_queries, baseline.query_plan.sub_queries)
+
     def test_legacy_cache_has_unavailable_trace_and_is_still_reused(self) -> None:
         from orchestration import loop
 
