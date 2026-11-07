@@ -81,7 +81,8 @@ class FinalResult:
     task (downstream/) consumes this and produces its own task output (D24).
     `papers` holds passing records in `passing_order_key` order; `reviews` retains one pass/reject
     record per reviewed paper (a re-reviewed paper's reviews merged, D53); `retrieval_ranks` maps every reviewed paper to its best retrieval rank
-    in this run (D47). Legacy cached results have an unavailable trace (`reviews=[]`) and no ranks.
+    in this run (D47), or, with review off (D61), to its position in the fusion of the sub-queries' rankings.
+    Legacy cached results have an unavailable trace (`reviews=[]`) and no ranks.
     """
 
     query_id: str
@@ -107,8 +108,9 @@ def passing_order_key(paper_id: str, score: int, retrieval_ranks: Mapping[str, i
 
     Descending review score, then the paper's best retrieval rank (1 = the top passage of some
     sub-query's retrieve() result; a paper without a rank, as in legacy results, sorts last), then
-    paper ID. Review scores are 1-5 integers (0 for every paper of the plain RAG baseline, D55),
-    so ties are common: the rank keeps the retriever's order among them instead of arXiv-ID order.
+    paper ID. Review scores are 1-5 integers (0 for every paper of the plain RAG baseline, D55, and
+    of a search with review off, D61, whose ranks are fused positions), so ties are common: the
+    rank keeps the retriever's order among them instead of arXiv-ID order.
     """
     rank = retrieval_ranks.get(paper_id)
     return -score, float(rank) if rank is not None else float("inf"), paper_id

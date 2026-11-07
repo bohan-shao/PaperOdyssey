@@ -37,6 +37,10 @@ input_text
   - Keywords for BM25; filters extracted from the input (e.g. "after 2023" → year_min=2023)
   - Query planning emits input-specific criteria with source `extracted`; fixed rubric entries are merged only during review
 - Failure strategy: LLM output is not JSON → retry → if it still fails, fall back to a single sub-query (the original text)
+  and a single extracted criterion (the original text), `literal_plan()`
+- Ablation switch (D61): `orchestration.understanding.enabled=false` skips the LLM call and searches with
+  `literal_plan()`: the question as typed is the only sub-query and the only coverage aspect, so the
+  reviewer and the loop work on the whole question
 
 ### HyDE
 - `orchestration.hyde.enabled=true` adds one hypothetical academic abstract as an extra retrieval path
@@ -87,6 +91,17 @@ input_text
   query understanding, HyDE, review and the loop are skipped, and their switches are ignored.
 - Paper QA answers it with the same prompt and evidence budget as the agentic search, so
   `--ablation agentic` measures what the orchestration adds (Q5).
+
+### loop.py — Search without review (D61)
+- `orchestration.review.enabled=false` keeps query understanding (and HyDE, if on) but drops the reviewer:
+  one round, every sub-query → `retrieve()`, and the sub-queries' paper rankings (each paper at its best
+  passage) merged by reciprocal rank fusion, score = Σ 1 / (`retrieval.fusion.rrf_k` + rank); ties go to
+  the better best rank, then paper ID. Every paper is kept as in D55 (`pass`, score 0, its passages in
+  rank order as evidence) and `retrieval_ranks` holds the fused position, so Paper QA and the evaluator
+  read the fused order. Without coverage there is no loop: termination reason `review_disabled`.
+- With query understanding off as well, the result has the plain RAG baseline's papers, order and evidence.
+- Ablation factors `understanding` and `review` (`--stage review --ablation understanding review`)
+  separate the two components that D55's `agentic` factor removes together (Q5).
 
 ### loop.py — Loop control (D11)
 - asyncio producer-consumer: retrieval tasks run in parallel and enqueue as soon as they finish; review workers consume in parallel

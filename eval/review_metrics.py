@@ -32,6 +32,7 @@ from collections import Counter
 _TERMINATION_REASONS = {
     "coverage_met", "min_papers", "max_rounds", "loop_disabled", "rewrite_exhausted",
     "plain_rag",  # D55: the non-agentic baseline, no review
+    "review_disabled",  # D61: one round without review, the sub-queries' rankings fused
 }
 
 
@@ -121,7 +122,8 @@ def coverage_stats(coverage_reports: list[dict]) -> dict:
 
     Required integer fields: total_aspects, covered_aspects, rounds (>=1), papers_reviewed,
     papers_passed. Counts are nonnegative, covered <= total, and passed <= reviewed.
-    termination_reason must be one of the orchestration loop's five termination reasons or plain_rag (D55).
+    termination_reason must be one of the orchestration loop's five termination reasons, plain_rag (D55)
+    or review_disabled (D61).
     Additional fields (cache_hit, review_backend, etc.) do not affect this aggregation.
 
     coverage_ratio pools aspect counts; mean_coverage averages per-query ratios with a
