@@ -3,8 +3,9 @@
 > Course assignment: AI6127 Deep Neural Networks for NLP (2026). Deadline **2026-11-07 23:59 SGT**, submit via Blackboard.
 > Status (2026-11-07): the knowledge base, retrieval core, Paper Search, cited Paper QA, Streamlit UI and evaluation
 > tooling are implemented and were evaluated on the full knowledge base (19,941 arXiv papers, 658,871 passages).
-> Metrics, run artifacts, latency benchmarks, examples and UI screenshots are in the results archive linked from the
-> report (`paperodyssey_results_2026-11-07.zip`; its `RESULTS_INDEX.md` lists every run).
+> The knowledge base, the evaluation datasets and every run behind the report's numbers (retrieved results, review
+> verdicts, generated answers, metrics, latency, examples and UI screenshots) are in the data archive linked from the
+> report (`paperodyssey_data_2026-11-07.zip`; its `README.md` maps each folder to the report).
 > To install and run the system, see [How to Run](#how-to-run).
 
 ## What the System Does
@@ -171,10 +172,12 @@ dl 1RQk2kMY8liF2TLPercGXYR6NCmn3Av0_ data/SHA256SUMS
 (cd data && sha256sum -c SHA256SUMS --ignore-missing)                # 3 x OK; on macOS: shasum -a 256 -c
 ```
 
-The folder's `raw/` (paper metadata) and `results/` (corpus statistics, parse-quality checks) are not
-needed to run the system. The fixed evaluation set, `data/eval/eval_set.jsonl` (1,027 questions), is
-in this repository. The 34-question challenge set ships in the results archive as
-`inputs/challenge_set.jsonl`; copy it to `data/eval/` to rerun the challenge-set experiments.
+The data archive linked from the report holds the same files under `knowledge_base/`, so copying them
+from there works too. The Drive folder's `raw/` (paper metadata) and `results/` (corpus statistics,
+parse-quality checks) are not needed to run the system. The fixed evaluation set,
+`data/eval/eval_set.jsonl` (1,027 questions), is in this repository. The 34-question challenge set is in
+the data archive as `eval/challenge_set.jsonl`; copy it to `data/eval/` to rerun the challenge-set
+experiments.
 
 Rebuilding the knowledge base from arXiv instead means downloading 20,000 PDFs (about 48 GB, roughly
 18 hours from one IP address); the steps are in [kb/README.md](kb/README.md).
@@ -235,7 +238,7 @@ tokens. Add `--limit 3` with its own `--tag` for a quick check, or `--dry-run` t
 plan; an interrupted run continues with `--resume` and the same tag. `--eval-set
 data/eval/challenge_set.jsonl` runs the challenge set, and `scripts/challenge_set.py score` scores it.
 [scripts/README.md](scripts/README.md) and [eval/README.md](eval/README.md) describe every stage,
-ablation factor and output file; the results archive's `RESULTS_INDEX.md` lists the run behind each
+ablation factor and output file; the data archive's `RESULTS_INDEX.md` lists the run behind each
 reported result.
 
 ## Conventions
@@ -270,7 +273,8 @@ edit `AGENTS.md` only.
 - [ ] Q3/Q5 innovation: ablation switch exists with an explicit default
 
 **Weekly meetings**: sync on progress and blockers. **Data distribution**: the knowledge base is shared
-on Google Drive and the results as the results archive on Dropbox; indices are built locally. The reviewed
+on Google Drive; the data archive linked from the report packs it together with both evaluation sets and the
+formal results; indices are built locally. The reviewed
 `data/eval/eval_set.jsonl` is versioned so evaluations use the same questions; its provenance and hash
 are in `data/README.md`.
 

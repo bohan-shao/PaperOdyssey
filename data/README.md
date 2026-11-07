@@ -4,7 +4,8 @@
 > `results/` statistics) is in the public Google Drive folder
 > [PaperOdyssey-KB-merged](https://drive.google.com/drive/folders/1p2TmBcvMgRn88Bar-sGEIUH4VuNiFxY7)
 > (download steps in the root [README](../README.md#3-download-the-knowledge-base)); indices are built locally
-> with `scripts/build_indexes.py`; evaluation results are shared as the results archive linked from the report.
+> with `scripts/build_indexes.py`. The data archive linked from the report packs the knowledge base, both
+> evaluation sets and the formal results together.
 > The reviewed `eval/eval_set.jsonl` is the sole dataset exception, alongside directory documentation and
 > placeholders, so every evaluation uses the same version.
 
