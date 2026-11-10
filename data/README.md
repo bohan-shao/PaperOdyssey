@@ -1,8 +1,13 @@
 # data/ Data directory
 
-> Data, indices and results are excluded by .gitignore and shared via Dropbox. The reviewed
-> `eval/eval_set.jsonl` is the sole dataset exception, alongside directory documentation and placeholders,
-> so every evaluation uses the same version. Package the required artifacts with the final coursework submission.
+> Data, indices and results are excluded by .gitignore. The knowledge base (`raw/`, `processed/` and its
+> `results/` statistics) is in the public Google Drive folder
+> [PaperOdyssey-KB-merged](https://drive.google.com/drive/folders/1p2TmBcvMgRn88Bar-sGEIUH4VuNiFxY7)
+> (download steps in the root [README](../README.md#3-download-the-knowledge-base)); indices are built locally
+> with `scripts/build_indexes.py`. The data archive linked from the report packs the knowledge base, both
+> evaluation sets and the formal results together.
+> The reviewed `eval/eval_set.jsonl` is the sole dataset exception, alongside directory documentation and
+> placeholders, so every evaluation uses the same version.
 
 | Subdirectory | Contents | Producer |
 |---|---|---|
@@ -25,6 +30,6 @@ Changes to this dataset require review and an updated hash/count description. Re
 with evaluation results. Raw annotation sheets and IAA reports remain shared artifacts, not git data.
 
 Conventions:
-- Large files (PDFs/indexes) go only to Dropbox, not git; `*.jsonl`/`*.json` can be synced
+- Large files (PDFs/indexes) never go into git; share them on Google Drive or Dropbox
 - Result files named with a date suffix do not overwrite older versions (`metrics/retrieval_2026-09-30.json`)
 - Every number cited in the report must be traceable to a file under `results/`

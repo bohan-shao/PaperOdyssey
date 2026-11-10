@@ -5,8 +5,8 @@
 # module's dependencies, but before merging, verify a clean
 # `pip install -r requirements.txt` works.
 # Use `>=` lower bounds instead of exact pins to avoid conflicts
-# between teammates; for reproduction, record actual versions
-# (pip freeze) in results/ during the evaluation/report phase.
+# between teammates. The exact versions of the environment the
+# reported results came from are in requirements-lock.txt.
 # ============================================================
 
 # ---- Common ----
